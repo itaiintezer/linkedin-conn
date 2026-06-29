@@ -1,5 +1,17 @@
 import { test, expect } from 'vitest';
-import { resolveMessage } from '../../src/core/message.js';
+import { resolveMessage, selectNoteSource, applyFirstName } from '../../src/core/message.js';
+
+test('selectNoteSource picks custom over template, leaving {firstName} intact', () => {
+  expect(selectNoteSource('Hey {firstName}', 'Hi {firstName}')).toBe('Hey {firstName}');
+  expect(selectNoteSource(null, 'Hi {firstName}')).toBe('Hi {firstName}');
+  expect(selectNoteSource('  ', '  ')).toBeNull();
+});
+
+test('applyFirstName substitutes the live name (and truncates)', () => {
+  expect(applyFirstName('Hi {firstName}!', 'Liron')).toBe('Hi Liron!');
+  expect(applyFirstName('Hi {firstName}!', null)).toBe('Hi there!');
+  expect(applyFirstName('x'.repeat(400), 'Jane').length).toBe(300);
+});
 
 test('custom message takes precedence and substitutes {firstName}', () => {
   expect(resolveMessage('Hey {firstName}, loved your post', 'template', 'Jane'))

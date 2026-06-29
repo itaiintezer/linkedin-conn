@@ -1,6 +1,6 @@
 import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
-import { resolveMessage } from '../core/message.js';
+import { selectNoteSource } from '../core/message.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { pickDue } from '../core/schedule.js';
 
@@ -23,7 +23,9 @@ export async function runSenderOnce(repos: Repos, driver: BrowserDriver, now: Da
     const cohort = repos.cohorts.findById(p.cohort_id)!;
     repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
 
-    const note = resolveMessage(p.custom_message, cohort.message_template, p.first_name);
+    // Pass the raw note template (with {firstName} intact); the driver substitutes the
+    // real name it reads from the profile at send time.
+    const note = selectNoteSource(p.custom_message, cohort.message_template);
     let outcome = await driver.sendConnectionRequest(p.profile_url, note);
 
     if (outcome.firstName) repos.profiles.setStatus(p.id, 'sending', { first_name: outcome.firstName });

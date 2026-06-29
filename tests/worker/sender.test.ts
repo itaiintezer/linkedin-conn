@@ -22,7 +22,7 @@ test('sends due profiles, records sent status + event, respects remaining cap', 
   await runSenderOnce(repos, driver, now);
 
   expect(driver.sentLog).toHaveLength(2);
-  expect(driver.sentLog[0].message).toBe('Hi there'); // first_name null on first contact -> 'there'
+  expect(driver.sentLog[0].message).toBe('Hi Test'); // driver substitutes the live name it reads ('Test')
   expect(repos.profiles.byStatus('sent')).toHaveLength(2);
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(2);
 });

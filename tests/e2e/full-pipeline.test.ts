@@ -47,8 +47,8 @@ test('happy path: list -> schedule -> send -> accept -> metrics', async () => {
   const sendNow = new Date(planNow.getTime() + 2 * 60_000);
   await runSenderOnce(repos, driver, sendNow);
   expect(driver.sentLog).toHaveLength(3);
-  // first_name is null on first contact -> {firstName} resolves to 'there'
-  expect(driver.sentLog.every((s) => s.message === 'Hi there')).toBe(true);
+  // driver substitutes {firstName} with the live name it reads (FakeDriver uses 'Test')
+  expect(driver.sentLog.every((s) => s.message === 'Hi Test')).toBe(true);
   expect(repos.profiles.byStatus('sent')).toHaveLength(3);
 
   // 4. Acceptance check: 2 became connections, the third never resolves (expired).
@@ -101,5 +101,5 @@ test('per-contact custom message overrides the cohort template', async () => {
   await runSenderOnce(repos, driver, new Date(planNow.getTime() + 2 * 60_000));
 
   const dave = driver.sentLog.find((s) => s.url === 'https://www.linkedin.com/in/qa-dave');
-  expect(dave?.message).toBe('Loved your talk, there!'); // custom msg used, token substituted
+  expect(dave?.message).toBe('Loved your talk, Test!'); // custom msg used, {firstName}->live name
 });

@@ -3,6 +3,7 @@ import type { BrowserDriver, SendOutcome } from '../types.js';
 import { CloakSession } from './cloak-session.js';
 import { SEL, URLS, customInviteUrl, profileSlug } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
+import { applyFirstName } from '../core/message.js';
 
 const rand = (min: number, max: number) => min + Math.floor(Math.random() * (max - min));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -61,7 +62,9 @@ export class LinkedInDriver implements BrowserDriver {
         }
         await addNote.click();
         await sleep(rand(800, 1800));
-        await page.locator(SEL.noteTextarea).fill(message);
+        // Substitute {firstName} with the name captured during the pre-visit (step 1).
+        const note = applyFirstName(message, firstName ?? null);
+        await page.locator(SEL.noteTextarea).fill(note);
         await sleep(rand(700, 1600));
         await page.locator(SEL.sendInvitation).first().click();
       } else {
