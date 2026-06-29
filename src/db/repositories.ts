@@ -1,6 +1,16 @@
 import type { DB } from './database.js';
 import type { Cohort, Profile, Settings, ProfileStatus, EventType } from '../types.js';
 
+const PROFILE_COLUMNS = new Set([
+  'first_name', 'custom_message', 'attempts', 'last_error',
+  'scheduled_for', 'sent_at', 'accepted_at', 'resolved_at',
+]);
+const SETTINGS_COLUMNS = new Set([
+  'workday_start_hour', 'workday_end_hour', 'weekdays_only', 'weekly_cap',
+  'batch_size', 'batches_per_day', 'acceptance_checks_per_day', 'account_type',
+  'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
+]);
+
 export class CohortRepo {
   constructor(private db: DB) {}
   create(name: string, template: string | null, allowNoNote: boolean): Cohort {
@@ -10,13 +20,13 @@ export class CohortRepo {
     return this.findByName(name)!;
   }
   findByName(name: string): Cohort | undefined {
-    return this.db.prepare('SELECT * FROM cohorts WHERE name = ?').get(name) as Cohort | undefined;
+    return this.db.prepare('SELECT * FROM cohorts WHERE name = ?').get(name) as unknown as Cohort | undefined;
   }
   findById(id: number): Cohort | undefined {
-    return this.db.prepare('SELECT * FROM cohorts WHERE id = ?').get(id) as Cohort | undefined;
+    return this.db.prepare('SELECT * FROM cohorts WHERE id = ?').get(id) as unknown as Cohort | undefined;
   }
   list(): Cohort[] {
-    return this.db.prepare('SELECT * FROM cohorts ORDER BY created_at DESC').all() as Cohort[];
+    return this.db.prepare('SELECT * FROM cohorts ORDER BY created_at DESC').all() as unknown as Cohort[];
   }
   getOrCreate(name: string, template: string | null, allowNoNote: boolean): Cohort {
     return this.findByName(name) ?? this.create(name, template, allowNoNote);
@@ -28,23 +38,26 @@ export class ProfileRepo {
   add(cohortId: number, normalizedUrl: string, customMessage: string | null): Profile {
     const existing = this.db
       .prepare('SELECT * FROM profiles WHERE profile_url = ?')
-      .get(normalizedUrl) as Profile | undefined;
+      .get(normalizedUrl) as unknown as Profile | undefined;
     if (existing) return existing;
     this.db.prepare(
       'INSERT INTO profiles (cohort_id, profile_url, custom_message) VALUES (?, ?, ?)',
     ).run(cohortId, normalizedUrl, customMessage);
-    return this.db.prepare('SELECT * FROM profiles WHERE profile_url = ?').get(normalizedUrl) as Profile;
+    return this.db.prepare('SELECT * FROM profiles WHERE profile_url = ?').get(normalizedUrl) as unknown as Profile;
   }
   countAll(): number {
-    return (this.db.prepare('SELECT COUNT(*) c FROM profiles').get() as { c: number }).c;
+    return (this.db.prepare('SELECT COUNT(*) c FROM profiles').get() as unknown as { c: number }).c;
   }
   byStatus(status: ProfileStatus): Profile[] {
-    return this.db.prepare('SELECT * FROM profiles WHERE status = ? ORDER BY id').all(status) as Profile[];
+    return this.db.prepare('SELECT * FROM profiles WHERE status = ? ORDER BY id').all(status) as unknown as Profile[];
   }
   setStatus(id: number, status: ProfileStatus, fields: Partial<Profile> = {}): void {
     const sets: string[] = ['status = ?'];
     const vals: unknown[] = [status];
-    for (const [k, v] of Object.entries(fields)) { sets.push(`${k} = ?`); vals.push(v); }
+    for (const [k, v] of Object.entries(fields)) {
+      if (!PROFILE_COLUMNS.has(k)) throw new Error(`Illegal profile column: ${k}`);
+      sets.push(`${k} = ?`); vals.push(v);
+    }
     vals.push(id);
     this.db.prepare(`UPDATE profiles SET ${sets.join(', ')} WHERE id = ?`).run(...(vals as any[]));
   }
@@ -52,7 +65,7 @@ export class ProfileRepo {
     this.db.prepare("UPDATE profiles SET status='scheduled', scheduled_for=? WHERE id=?").run(iso, id);
   }
   all(): Profile[] {
-    return this.db.prepare('SELECT * FROM profiles ORDER BY id').all() as Profile[];
+    return this.db.prepare('SELECT * FROM profiles ORDER BY id').all() as unknown as Profile[];
   }
 }
 
@@ -68,18 +81,19 @@ export class EventRepo {
   countSentSince(iso: string): number {
     return (this.db
       .prepare("SELECT COUNT(*) c FROM send_log WHERE outcome='sent' AND at >= ?")
-      .get(iso) as { c: number }).c;
+      .get(iso) as unknown as { c: number }).c;
   }
 }
 
 export class SettingsRepo {
   constructor(private db: DB) {}
   get(): Settings {
-    return this.db.prepare('SELECT * FROM settings WHERE id = 1').get() as Settings;
+    return this.db.prepare('SELECT * FROM settings WHERE id = 1').get() as unknown as Settings;
   }
   update(patch: Partial<Settings>): void {
     const keys = Object.keys(patch).filter((k) => k !== 'id');
     if (keys.length === 0) return;
+    for (const k of keys) if (!SETTINGS_COLUMNS.has(k)) throw new Error(`Illegal settings column: ${k}`);
     const sets = keys.map((k) => `${k} = ?`).join(', ');
     const vals = keys.map((k) => (patch as any)[k]);
     this.db.prepare(`UPDATE settings SET ${sets} WHERE id = 1`).run(...(vals as any[]));
