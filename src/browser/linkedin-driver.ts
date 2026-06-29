@@ -1,7 +1,7 @@
 import type { Page } from 'playwright-core';
 import type { BrowserDriver, SendOutcome } from '../types.js';
 import { CloakSession } from './cloak-session.js';
-import { SEL, URLS } from './linkedin-selectors.js';
+import { SEL, URLS, customInviteUrl, profileSlug } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
 
 const rand = (min: number, max: number) => min + Math.floor(Math.random() * (max - min));
@@ -27,35 +27,49 @@ export class LinkedInDriver implements BrowserDriver {
 
   async sendConnectionRequest(url: string, message: string | null): Promise<SendOutcome> {
     const page = await this.session.page();
+    const slug = profileSlug(url);
+    if (!slug) return { result: 'error', error: `cannot parse profile slug from ${url}` };
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
-      await sleep(rand(1500, 4000));
+      // New LinkedIn UI: go straight to the invite composer route for this profile.
+      await page.goto(customInviteUrl(slug), { waitUntil: 'domcontentloaded' });
+      await sleep(rand(2000, 4500));
       const firstName = await this.readFirstName(page);
 
-      if (await page.locator(SEL.pendingBadge).first().isVisible().catch(() => false)) {
-        return { result: 'already', firstName };
-      }
+      const sendWithout = page.locator(SEL.sendWithoutNote).first();
+      const addNote = page.locator(SEL.addNoteButton).first();
+      const hasSendWithout = await sendWithout.isVisible().catch(() => false);
+      const hasAddNote = await addNote.isVisible().catch(() => false);
 
-      const clicked = await this.clickConnect(page);
-      if (!clicked) return { result: 'unavailable', firstName };
+      // No invite dialog → checkpoint, already-pending, or can't-invite.
+      if (!hasSendWithout && !hasAddNote) {
+        const body = (await page.content().catch(() => '')) || '';
+        if (/captcha|checkpoint|verify you|unusual activity|security check/i.test(body)) {
+          return { result: 'checkpoint', error: 'checkpoint detected' };
+        }
+        if (await page.locator(SEL.pendingBadge).first().isVisible().catch(() => false)) {
+          return { result: 'already', firstName };
+        }
+        return { result: 'unavailable', firstName };
+      }
 
       if (message !== null) {
-        const addNote = page.locator(SEL.addNoteButton).first();
-        if (await addNote.isVisible().catch(() => false)) {
-          await addNote.click();
-          await sleep(rand(800, 2000));
-          if (await page.locator(SEL.noteQuotaDialog).first().isVisible().catch(() => false)) {
-            return { result: 'note_quota', firstName };
-          }
-          await page.locator(SEL.noteTextarea).fill(message);
-          await sleep(rand(800, 2000));
-          await page.locator(SEL.sendButton).first().click();
-          return { result: 'sent', firstName };
+        if (!hasAddNote) {
+          // Can't attach a note (e.g. weekly note quota). Let the caller decide whether
+          // to fall back to a bare request.
+          return { result: 'note_quota', firstName };
         }
+        await addNote.click();
+        await sleep(rand(800, 1800));
+        await page.locator(SEL.noteTextarea).fill(message);
+        await sleep(rand(700, 1600));
+        await page.locator(SEL.sendInvitation).first().click();
+        await sleep(rand(1500, 3000));
+        return { result: 'sent', firstName };
       }
-      const without = page.locator(SEL.sendWithoutNote).first();
-      if (await without.isVisible().catch(() => false)) await without.click();
-      else await page.locator(SEL.sendButton).first().click();
+
+      // Bare request (no note).
+      await sendWithout.click();
+      await sleep(rand(1500, 3000));
       return { result: 'sent', firstName };
     } catch (e) {
       const body = (await page.content().catch(() => '')) || '';
@@ -66,23 +80,12 @@ export class LinkedInDriver implements BrowserDriver {
     }
   }
 
+  // The new profile UI has no <h1>; the profile name is reliably in the document title.
   private async readFirstName(page: Page): Promise<string | undefined> {
-    const h1 = await page.locator('h1').first().textContent().catch(() => null);
-    if (!h1) return undefined;
-    return h1.trim().split(/\s+/)[0];
-  }
-
-  private async clickConnect(page: Page): Promise<boolean> {
-    const direct = page.locator(SEL.connectButton).first();
-    if (await direct.isVisible().catch(() => false)) { await direct.click(); return true; }
-    const more = page.locator(SEL.moreButton).first();
-    if (await more.isVisible().catch(() => false)) {
-      await more.click();
-      await sleep(rand(500, 1200));
-      const item = page.locator(SEL.moreConnectItem).first();
-      if (await item.isVisible().catch(() => false)) { await item.click(); return true; }
-    }
-    return false;
+    const title = (await page.title().catch(() => '')) || '';
+    const name = title.replace(/^\(\d+\+?\)\s*/, '').replace(/\s*[|·].*$/, '').trim();
+    if (!name || /linkedin/i.test(name)) return undefined;
+    return name.split(/\s+/)[0];
   }
 
   async readPendingInvites(): Promise<string[]> {

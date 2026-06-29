@@ -1,21 +1,46 @@
+// ALL LinkedIn DOM selectors live here — LinkedIn changes its markup, so this is the
+// single place to update when sends start failing.
+//
+// Verified against the live "new" LinkedIn React UI (2026-06): the Connect control on a
+// profile is an obfuscated <a href="/preload/custom-invite/?vanityName=..."> with hashed
+// class names. Rather than click it, we navigate directly to that custom-invite route,
+// which opens a stable dialog with aria-labelled buttons.
+
 export const SEL = {
-  feedMarker: 'div.feed-identity-module, main.scaffold-layout__main',
-  loginField: 'input#username',
-  connectButton: 'button[aria-label^="Invite"][aria-label*="connect"]',
-  moreButton: 'button[aria-label="More actions"]',
-  moreConnectItem: 'div[aria-label^="Invite"][role="button"], div.artdeco-dropdown__item:has-text("Connect")',
+  feedMarker: 'main',
+
+  // Invite composer dialog (shown at the custom-invite route)
+  sendWithoutNote: 'button[aria-label="Send without a note"]',
   addNoteButton: 'button[aria-label="Add a note"]',
   noteTextarea: 'textarea[name="message"]',
-  sendButton: 'button[aria-label="Send invitation"], button[aria-label="Send now"]',
-  sendWithoutNote: 'button[aria-label="Send without a note"]',
-  pendingBadge: 'button[aria-label^="Pending"], span.artdeco-button__text:has-text("Pending")',
-  invitationCardLink: 'a[data-test-app-aware-link][href*="/in/"]',
+  sendInvitation: 'button[aria-label="Send invitation"]',
+  dismissDialog: 'button[aria-label="Dismiss"]',
+
+  // Pending state (profile page)
+  pendingBadge: '[aria-label*="Pending" i]',
+
+  // Weekly invite-limit / quota wording (best-effort; wording varies)
+  noteQuotaDialog: 'text=/weekly invitation limit|reached the weekly|out of invitations|limit of invitations/i',
+
+  // Acceptance reader (list pages). NOTE: unverified against the new UI — acceptance
+  // tracking may need its own selector pass.
+  invitationCardLink: 'a[href*="/in/"]',
   connectionCardLink: 'a[href*="/in/"]',
-  noteQuotaDialog: 'text=/free to send a personalized invitation|out of personalized invitations/i',
 };
 
 export const URLS = {
   home: 'https://www.linkedin.com/feed/',
+  login: 'https://www.linkedin.com/login',
   sentInvitations: 'https://www.linkedin.com/mynetwork/invitation-manager/sent/',
   connections: 'https://www.linkedin.com/mynetwork/invite-connect/connections/',
 };
+
+/** The direct invite-composer route for a profile slug (e.g. "liron-lalezary"). */
+export function customInviteUrl(slug: string): string {
+  return `https://www.linkedin.com/preload/custom-invite/?vanityName=${slug}`;
+}
+
+/** Extract the vanity slug from a normalized profile URL. */
+export function profileSlug(profileUrl: string): string | null {
+  return profileUrl.match(/\/in\/([^/?#]+)/)?.[1] ?? null;
+}
