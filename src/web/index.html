@@ -1,1 +1,173 @@
-<!-- placeholder -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RELAY · LinkedIn Outreach Console</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6">
+          <path d="M3 12h4l2 6 4-14 2 8h6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <div class="brand-text">
+        <h1>RELAY</h1>
+        <p>connection ops console</p>
+      </div>
+    </div>
+
+    <div class="login-status" id="loginStatus" aria-live="polite">
+      <span class="led" id="loginLed"></span>
+      <span class="login-label" id="loginLabel">checking link…</span>
+      <button class="btn btn-ghost" id="connectBtn" hidden>Connect LinkedIn</button>
+    </div>
+  </header>
+
+  <div class="pause-banner" id="pauseBanner" hidden role="alert">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+    <span><strong>Engine paused.</strong> <span id="pauseReason"></span></span>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab is-active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="add">Add List</button>
+    <button class="tab" data-tab="cohorts">Cohorts</button>
+    <button class="tab" data-tab="metrics">Metrics</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <!-- DASHBOARD -->
+    <section class="panel" id="tab-dashboard">
+      <div class="panel-head">
+        <h2>Live Status</h2>
+        <div class="panel-actions">
+          <span class="refresh-dot" id="refreshDot" title="auto-refresh"></span>
+          <button class="btn btn-amber" id="pauseToggle">Pause</button>
+        </div>
+      </div>
+
+      <div class="cards" id="statCards"></div>
+
+      <div class="panel-head sub">
+        <h3>Queue</h3>
+        <span class="muted" id="queueCount"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Profile</th><th>Cohort</th><th>Status</th><th>Scheduled</th><th>Note</th></tr>
+          </thead>
+          <tbody id="queueBody"></tbody>
+        </table>
+        <div class="empty" id="queueEmpty" hidden>No profiles queued yet.</div>
+      </div>
+    </section>
+
+    <!-- ADD LIST -->
+    <section class="panel" id="tab-add" hidden>
+      <div class="panel-head"><h2>Add List</h2></div>
+      <form id="listForm" class="form-grid">
+        <div class="field">
+          <label for="listCohort">Cohort name</label>
+          <input id="listCohort" type="text" required placeholder="e.g. Q3 SaaS founders" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="listTemplate">Message template <span class="hint" id="tplCount">0 / 300</span></label>
+          <textarea id="listTemplate" maxlength="300" rows="3" placeholder="Hi {firstName}, I came across your work and…"></textarea>
+          <p class="hint">Use <code>{firstName}</code> to personalize. Leave blank for no note.</p>
+        </div>
+        <div class="field check">
+          <label class="checkbox"><input id="listAllowNoNote" type="checkbox" /><span>Allow sending without a note</span></label>
+        </div>
+        <div class="field">
+          <label for="listText">Profiles <span class="hint">paste URLs, CSV, or TXT — one per line or comma-separated</span></label>
+          <textarea id="listText" rows="9" placeholder="https://www.linkedin.com/in/jane-doe/&#10;https://www.linkedin.com/in/john-smith/"></textarea>
+        </div>
+        <div class="field row-between">
+          <label class="file-input">
+            <input id="listFile" type="file" accept=".csv,.txt" />
+            <span>Load .csv / .txt file</span>
+          </label>
+          <button class="btn btn-green" type="submit">Enqueue list</button>
+        </div>
+      </form>
+      <div class="toast" id="listResult" hidden></div>
+    </section>
+
+    <!-- COHORTS -->
+    <section class="panel" id="tab-cohorts" hidden>
+      <div class="panel-head"><h2>Cohorts</h2></div>
+      <div class="cohorts-layout">
+        <div class="cohort-list-wrap">
+          <h3>Existing</h3>
+          <div id="cohortList" class="cohort-list"></div>
+          <div class="empty" id="cohortEmpty" hidden>No cohorts yet.</div>
+        </div>
+        <form id="cohortForm" class="form-grid card-form">
+          <h3>Create / update</h3>
+          <div class="field">
+            <label for="cohortName">Name</label>
+            <input id="cohortName" type="text" required placeholder="cohort name" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="cohortTemplate">Message template</label>
+            <textarea id="cohortTemplate" maxlength="300" rows="4" placeholder="Hi {firstName}, …"></textarea>
+          </div>
+          <div class="field check">
+            <label class="checkbox"><input id="cohortAllowNoNote" type="checkbox" /><span>Allow no note</span></label>
+          </div>
+          <button class="btn btn-green" type="submit">Save cohort</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- METRICS -->
+    <section class="panel" id="tab-metrics" hidden>
+      <div class="panel-head"><h2>Metrics</h2></div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr><th>Cohort</th><th class="num">Sent</th><th class="num">Accepted</th><th class="num">Pending</th><th class="num">Expired</th><th>Acceptance rate</th><th class="num">Median days</th></tr>
+          </thead>
+          <tbody id="metricsBody"></tbody>
+        </table>
+        <div class="empty" id="metricsEmpty" hidden>No metrics yet — send some requests first.</div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="panel" id="tab-settings" hidden>
+      <div class="panel-head"><h2>Settings</h2></div>
+      <form id="settingsForm" class="form-grid settings-grid">
+        <div class="field"><label for="setWeeklyCap">Weekly cap</label><input id="setWeeklyCap" type="number" min="0" /></div>
+        <div class="field"><label for="setBatchSize">Batch size</label><input id="setBatchSize" type="number" min="0" /></div>
+        <div class="field"><label for="setBatchesPerDay">Batches / day</label><input id="setBatchesPerDay" type="number" min="0" /></div>
+        <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" min="0" max="23" /></div>
+        <div class="field"><label for="setEnd">Workday end hour</label><input id="setEnd" type="number" min="0" max="23" /></div>
+        <div class="field">
+          <label for="setAccountType">Account type</label>
+          <select id="setAccountType">
+            <option value="unknown">Unknown</option>
+            <option value="free">Free</option>
+            <option value="premium">Premium</option>
+            <option value="salesnav">Sales Navigator</option>
+          </select>
+        </div>
+        <div class="field span-all">
+          <button class="btn btn-green" type="submit">Save settings</button>
+        </div>
+      </form>
+      <div class="toast" id="settingsResult" hidden></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
