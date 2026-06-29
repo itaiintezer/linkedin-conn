@@ -67,3 +67,12 @@ test('does nothing when paused', async () => {
   await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
   expect(driver.sentLog).toHaveLength(0);
 });
+
+test('not logged in: skips without sending and without hard-pausing', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.loggedIn = false;
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(driver.sentLog).toHaveLength(0);
+  expect(repos.settings.get().paused).toBe(0); // transient, not a hard pause
+});

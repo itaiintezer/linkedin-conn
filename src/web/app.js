@@ -113,6 +113,13 @@ function renderCards(status) {
     { cls: 'accent-accepted', label: 'Accepted', value: c.accepted || 0 },
     { cls: 'accent-attn', label: 'Needs attention', value: c.needs_attention || 0 },
   ];
+  // Show the Retry button only when there's something to retry.
+  const retryable = (c.failed || 0) + (c.needs_attention || 0);
+  const retryBtn = $('#retryFailed');
+  if (retryBtn) {
+    retryBtn.hidden = retryable === 0;
+    retryBtn.textContent = retryable ? `Retry failed (${retryable})` : 'Retry failed';
+  }
   const wrap = $('#statCards');
   wrap.replaceChildren(...cards.map((card) => {
     const valNode = el('div', { class: 'value' }, String(card.value));
@@ -158,7 +165,7 @@ async function refreshQueue() {
       el('td', { class: 'mono' }, p.cohort_name || '—'),
       el('td', {}, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
       el('td', { class: 'mono' }, fmtTime(p.scheduled_for)),
-      el('td', { class: p.last_error ? 'err' : 'mono' }, p.last_error || '—'),
+      el('td', { class: p.last_error ? 'err' : 'mono', title: p.last_error || '' }, p.last_error || '—'),
     )));
   } catch (_) { /* transient */ }
 }
@@ -189,6 +196,17 @@ function initDashboard() {
       btn.textContent = 'Failed';
     }
     setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+  });
+
+  $('#retryFailed').addEventListener('click', async () => {
+    const btn = $('#retryFailed');
+    btn.disabled = true;
+    try {
+      await api('/api/retry', { method: 'POST' });
+      await refreshStatus();
+      await refreshQueue();
+    } catch (_) { /* ignore */ }
+    btn.disabled = false;
   });
 }
 

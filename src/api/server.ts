@@ -121,6 +121,13 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
     return { ok: true, promoted: candidates.length };
   });
 
+  // Reset failed / needs-attention profiles back to queued so they get retried.
+  app.post('/api/retry', async () => {
+    const targets = [...repos.profiles.byStatus('failed'), ...repos.profiles.byStatus('needs_attention')];
+    for (const p of targets) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null, last_error: null });
+    return { ok: true, retried: targets.length };
+  });
+
   app.post('/api/login', async () => { void driver.openLoginWindow(); return { ok: true }; });
   app.get('/api/login-status', async () => ({ loggedIn: await driver.isLoggedIn() }));
 

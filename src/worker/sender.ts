@@ -7,10 +7,10 @@ import { pickDue } from '../core/schedule.js';
 export async function runSenderOnce(repos: Repos, driver: BrowserDriver, now: Date): Promise<void> {
   const settings = repos.settings.get();
   if (settings.paused) return;
-  if (!(await driver.isLoggedIn())) {
-    repos.settings.update({ paused: 1, pause_reason: 'Not logged in' });
-    return;
-  }
+  // Not logged in is a transient condition, not a reason to hard-pause: skip this run
+  // (the dashboard's login indicator already surfaces it) and resume automatically once
+  // the user logs in. Pause is reserved for checkpoints and manual pauses.
+  if (!(await driver.isLoggedIn())) return;
 
   const sentInWindow = repos.events.countSentSince(windowStartIso(now));
   let remaining = remainingCapacity(settings.weekly_cap, sentInWindow);

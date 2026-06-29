@@ -22,6 +22,20 @@ test('POST /api/run-now promotes queued profiles and sends a batch immediately',
   expect(repos.profiles.byStatus('sent')).toHaveLength(1);
 });
 
+test('POST /api/retry resets failed/needs_attention profiles to queued', async () => {
+  const c = repos.cohorts.create('R', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fail-a', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/attn-b', null);
+  repos.profiles.setStatus(a.id, 'failed', { last_error: 'boom' });
+  repos.profiles.setStatus(b.id, 'needs_attention', { last_error: 'checkpoint' });
+  const res = await app.inject({ method: 'POST', url: '/api/retry' });
+  expect(res.statusCode).toBe(200);
+  expect(JSON.parse(res.body).retried).toBe(2);
+  expect(repos.profiles.byStatus('queued')).toHaveLength(2);
+  expect(repos.profiles.byStatus('failed')).toHaveLength(0);
+  expect(repos.profiles.byStatus('needs_attention')).toHaveLength(0);
+});
+
 test('POST /api/profiles enqueues a normalized profile and creates the cohort', async () => {
   const res = await app.inject({
     method: 'POST', url: '/api/profiles',
