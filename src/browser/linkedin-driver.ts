@@ -30,25 +30,26 @@ export class LinkedInDriver implements BrowserDriver {
     const slug = profileSlug(url);
     if (!slug) return { result: 'error', error: `cannot parse profile slug from ${url}` };
     try {
-      // New LinkedIn UI: go straight to the invite composer route for this profile.
-      await page.goto(customInviteUrl(slug), { waitUntil: 'domcontentloaded' });
-      await sleep(rand(2000, 4500));
+      // 1) Pre-visit the profile: capture the name and detect an already-pending invite
+      //    (so we never re-send) or a checkpoint.
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await sleep(rand(1500, 3500));
       const firstName = await this.readFirstName(page);
+      if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
+      if (await page.locator(SEL.pendingBadge).first().isVisible().catch(() => false)) {
+        return { result: 'already', firstName };
+      }
 
+      // 2) Open the invite composer route and submit.
+      await page.goto(customInviteUrl(slug), { waitUntil: 'domcontentloaded' });
+      await sleep(rand(2000, 4000));
       const sendWithout = page.locator(SEL.sendWithoutNote).first();
       const addNote = page.locator(SEL.addNoteButton).first();
       const hasSendWithout = await sendWithout.isVisible().catch(() => false);
       const hasAddNote = await addNote.isVisible().catch(() => false);
 
-      // No invite dialog → checkpoint, already-pending, or can't-invite.
       if (!hasSendWithout && !hasAddNote) {
-        const body = (await page.content().catch(() => '')) || '';
-        if (/captcha|checkpoint|verify you|unusual activity|security check/i.test(body)) {
-          return { result: 'checkpoint', error: 'checkpoint detected' };
-        }
-        if (await page.locator(SEL.pendingBadge).first().isVisible().catch(() => false)) {
-          return { result: 'already', firstName };
-        }
+        if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
         return { result: 'unavailable', firstName };
       }
 
@@ -63,21 +64,31 @@ export class LinkedInDriver implements BrowserDriver {
         await page.locator(SEL.noteTextarea).fill(message);
         await sleep(rand(700, 1600));
         await page.locator(SEL.sendInvitation).first().click();
-        await sleep(rand(1500, 3000));
-        return { result: 'sent', firstName };
+      } else {
+        await sendWithout.click();
       }
-
-      // Bare request (no note).
-      await sendWithout.click();
       await sleep(rand(1500, 3000));
-      return { result: 'sent', firstName };
-    } catch (e) {
-      const body = (await page.content().catch(() => '')) || '';
-      if (/captcha|checkpoint|verify|unusual activity/i.test(body)) {
-        return { result: 'checkpoint', error: 'checkpoint detected' };
+
+      // 3) Confirm the invite actually registered. The composer route only spins after
+      //    submit and gives no success signal, so we trust LinkedIn's own state instead
+      //    of the click: the profile must now show a Pending badge.
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      try {
+        await page.waitForSelector(SEL.pendingBadge, { timeout: 9000 });
+        return { result: 'sent', firstName };
+      } catch {
+        if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
+        return { result: 'error', error: 'send not confirmed: no Pending state after submit', firstName };
       }
+    } catch (e) {
+      if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected' };
       return { result: 'error', error: (e as Error).message };
     }
+  }
+
+  private async looksLikeCheckpoint(page: Page): Promise<boolean> {
+    const body = (await page.content().catch(() => '')) || '';
+    return /captcha|checkpoint|verify you|unusual activity|security check/i.test(body);
   }
 
   // The new profile UI has no <h1>; the profile name is reliably in the document title.
@@ -92,6 +103,9 @@ export class LinkedInDriver implements BrowserDriver {
     const page = await this.session.page();
     await page.goto(URLS.sentInvitations, { waitUntil: 'domcontentloaded' });
     await sleep(rand(2000, 4000));
+    // The list lazy-loads; load it all so we never falsely "expire" a pending invite
+    // that simply hadn't scrolled into view.
+    await this.autoScroll(page);
     return this.collectProfileLinks(page, SEL.invitationCardLink);
   }
 
@@ -99,7 +113,21 @@ export class LinkedInDriver implements BrowserDriver {
     const page = await this.session.page();
     await page.goto(URLS.connections, { waitUntil: 'domcontentloaded' });
     await sleep(rand(2000, 4000));
+    await this.autoScroll(page, 6); // a few pages of "recently added" is enough
     return this.collectProfileLinks(page, SEL.connectionCardLink);
+  }
+
+  // Scroll to the bottom repeatedly until the number of profile links stops growing
+  // (lazy-loaded lists), bounded by maxRounds.
+  private async autoScroll(page: Page, maxRounds = 15): Promise<void> {
+    let prev = -1;
+    for (let i = 0; i < maxRounds; i++) {
+      const count = await page.locator('a[href*="/in/"]').count();
+      if (count === prev) break;
+      prev = count;
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await sleep(rand(900, 1700));
+    }
   }
 
   private async collectProfileLinks(page: Page, selector: string): Promise<string[]> {
