@@ -28,7 +28,7 @@ test('assignSchedule groups profiles into batches of batchSize', () => {
 });
 
 test('pickDue returns only due profiles, capped by remaining', () => {
-  const now = new Date('2026-06-29T13:30:00');
+  const now = new Date('2026-06-29T13:30:00Z');
   const rows = [
     { id: 1, scheduled_for: '2026-06-29T09:00:00.000Z' },
     { id: 2, scheduled_for: '2026-06-29T13:00:00.000Z' },

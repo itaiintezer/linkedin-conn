@@ -37,12 +37,6 @@ export function pickDue<T extends { scheduled_for: string | null }>(
   remaining: number,
 ): T[] {
   return rows
-    .filter((r) => {
-      if (r.scheduled_for === null) return false;
-      // Normalise to local time by stripping any UTC suffix so the comparison
-      // is consistent with a `now` that was also constructed from a local string.
-      const local = r.scheduled_for.replace(/Z$/, '').replace(/[+-]\d{2}:\d{2}$/, '');
-      return new Date(local) <= now;
-    })
+    .filter((r) => r.scheduled_for !== null && new Date(r.scheduled_for) <= now)
     .slice(0, Math.max(0, remaining));
 }
