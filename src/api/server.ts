@@ -113,10 +113,12 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
     const now = new Date();
     const dueIso = new Date(now.getTime() - 1000).toISOString();
     const batch = repos.settings.get().batch_size;
-    const queued = repos.profiles.byStatus('queued').slice(0, batch);
-    for (const p of queued) repos.profiles.setScheduled(p.id, dueIso);
+    // Make the next batch due immediately, pulling from queued first, then already-
+    // scheduled (future) profiles, so "Run now" always sends something if work exists.
+    const candidates = [...repos.profiles.byStatus('queued'), ...repos.profiles.byStatus('scheduled')].slice(0, batch);
+    for (const p of candidates) repos.profiles.setScheduled(p.id, dueIso);
     await runSenderOnce(repos, driver, now);
-    return { ok: true, promoted: queued.length };
+    return { ok: true, promoted: candidates.length };
   });
 
   app.post('/api/login', async () => { void driver.openLoginWindow(); return { ok: true }; });
