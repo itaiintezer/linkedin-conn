@@ -49,3 +49,12 @@ test('POST /api/pause and /api/resume toggle paused', async () => {
   await app.inject({ method: 'POST', url: '/api/resume' });
   expect(repos.settings.get().paused).toBe(0);
 });
+
+test('POST /api/settings ignores unknown keys and applies known ones', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/settings',
+    payload: { weekly_cap: 42, bogus_column: 999 },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(repos.settings.get().weekly_cap).toBe(42);
+});

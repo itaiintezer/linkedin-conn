@@ -10,8 +10,20 @@ import { windowStartIso } from '../core/rate-limit.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const ALLOWED_SETTINGS_KEYS = new Set([
+  'workday_start_hour', 'workday_end_hour', 'weekdays_only', 'weekly_cap',
+  'batch_size', 'batches_per_day', 'acceptance_checks_per_day', 'account_type',
+  'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
+]);
+
 export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstance {
   const app = Fastify({ logger: false });
+
+  app.setErrorHandler((err, _req, reply) => {
+    const e = err as any;
+    const status = e.statusCode && e.statusCode < 500 ? e.statusCode : 400;
+    reply.code(status).send({ error: e.message });
+  });
 
   app.register(fastifyStatic, { root: join(__dirname, '..', 'web'), prefix: '/' });
 
@@ -80,7 +92,15 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
     `).all());
 
   app.get('/api/settings', async () => repos.settings.get());
-  app.post('/api/settings', async (req) => { repos.settings.update(req.body as any); return repos.settings.get(); });
+  app.post('/api/settings', async (req) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const patch: Record<string, unknown> = {};
+    for (const k of Object.keys(body)) {
+      if (ALLOWED_SETTINGS_KEYS.has(k)) patch[k] = body[k];
+    }
+    repos.settings.update(patch as any);
+    return repos.settings.get();
+  });
 
   app.post('/api/pause', async () => { repos.settings.update({ paused: 1, pause_reason: 'Manual pause' }); return { ok: true }; });
   app.post('/api/resume', async () => { repos.settings.update({ paused: 0, pause_reason: null }); return { ok: true }; });

@@ -19,6 +19,6 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   const future = allTimes.filter((t) => t.getTime() > now.getTime());
   const times = future.length ? future : [new Date(now.getTime() + 60_000)];
 
-  const assignments = assignSchedule(queued.map((p) => p.id), times, s.batch_size);
+  const assignments = assignSchedule(queued.map((p) => p.id), times, Math.max(1, s.batch_size));
   for (const a of assignments) repos.profiles.setScheduled(a.id, a.when.toISOString());
 }
