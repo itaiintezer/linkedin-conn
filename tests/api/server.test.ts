@@ -11,6 +11,17 @@ beforeEach(() => {
   app = buildServer(repos, new FakeDriver());
 });
 
+test('POST /api/run-now promotes queued profiles and sends a batch immediately', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Now', text: 'https://linkedin.com/in/run-now-1', message_template: 'Hi', allow_no_note: true },
+  });
+  const res = await app.inject({ method: 'POST', url: '/api/run-now' });
+  expect(res.statusCode).toBe(200);
+  expect(JSON.parse(res.body).promoted).toBe(1);
+  expect(repos.profiles.byStatus('sent')).toHaveLength(1);
+});
+
 test('POST /api/profiles enqueues a normalized profile and creates the cohort', async () => {
   const res = await app.inject({
     method: 'POST', url: '/api/profiles',

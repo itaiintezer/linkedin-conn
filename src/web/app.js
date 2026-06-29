@@ -173,6 +173,23 @@ function initDashboard() {
     } catch (_) { /* ignore */ }
     btn.disabled = false;
   });
+
+  $('#runNow').addEventListener('click', async () => {
+    const btn = $('#runNow');
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = 'Running…';
+    try {
+      const res = await api('/api/run-now', { method: 'POST' });
+      btn.textContent = res && typeof res.promoted === 'number'
+        ? `Triggered ${res.promoted}` : 'Triggered';
+      await refreshStatus();
+      await refreshQueue();
+    } catch (_) {
+      btn.textContent = 'Failed';
+    }
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
+  });
 }
 
 /* ---------- add list ---------- */

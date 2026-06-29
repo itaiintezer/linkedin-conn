@@ -7,6 +7,7 @@ import type { BrowserDriver } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
 import { windowStartIso } from '../core/rate-limit.js';
+import { runSenderOnce } from '../worker/sender.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -104,6 +105,19 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
 
   app.post('/api/pause', async () => { repos.settings.update({ paused: 1, pause_reason: 'Manual pause' }); return { ok: true }; });
   app.post('/api/resume', async () => { repos.settings.update({ paused: 0, pause_reason: null }); return { ok: true }; });
+
+  // Manual trigger: promote up to batch_size queued profiles to due-now and run one
+  // sender batch immediately. Respects pause/login (runSenderOnce returns early if paused
+  // or not logged in). Useful for testing and for sending on demand.
+  app.post('/api/run-now', async () => {
+    const now = new Date();
+    const dueIso = new Date(now.getTime() - 1000).toISOString();
+    const batch = repos.settings.get().batch_size;
+    const queued = repos.profiles.byStatus('queued').slice(0, batch);
+    for (const p of queued) repos.profiles.setScheduled(p.id, dueIso);
+    await runSenderOnce(repos, driver, now);
+    return { ok: true, promoted: queued.length };
+  });
 
   app.post('/api/login', async () => { void driver.openLoginWindow(); return { ok: true }; });
   app.get('/api/login-status', async () => ({ loggedIn: await driver.isLoggedIn() }));
