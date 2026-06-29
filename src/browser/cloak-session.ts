@@ -14,6 +14,11 @@ import { BROWSER_PROFILE_DIR } from '../config.js';
 export class CloakSession {
   private ctx: BrowserContext | null = null;
 
+  /** Whether the browser has been launched yet (no side effects). */
+  get launched(): boolean {
+    return this.ctx !== null;
+  }
+
   /** Launch (or return the cached) persistent context bound to BROWSER_PROFILE_DIR. */
   async context(): Promise<BrowserContext> {
     if (this.ctx) return this.ctx;
