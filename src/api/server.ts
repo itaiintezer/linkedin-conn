@@ -6,6 +6,7 @@ import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
+import { estimateQueueCompletion, nextBatch, orderUpcoming } from '../core/forecast.js';
 import { windowStartIso } from '../core/rate-limit.js';
 import { Mutex } from '../core/mutex.js';
 import { runSenderOnce } from '../worker/sender.js';
@@ -62,14 +63,23 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     for (const p of repos.profiles.all()) counts[p.status] = (counts[p.status] ?? 0) + 1;
     const s = repos.settings.get();
     const a = repos.appState.get();
+    const now = new Date();
+    const queueRemaining = (counts.queued ?? 0) + (counts.scheduled ?? 0);
+    const scheduledRows = repos.profiles.byStatus('scheduled');
     return {
       paused: s.paused,
       pause_reason: s.pause_reason,
-      weekly_sent: repos.events.countSentSince(windowStartIso(new Date())),
+      weekly_sent: repos.events.countSentSince(windowStartIso(now)),
       weekly_cap: s.weekly_cap,
       counts,
       loggedIn: a.login_logged_in === 1,
       login_as_of: a.login_confirmed_at,
+      acceptance_checked_at: a.acceptance_checked_at,
+      forecast: {
+        queue_remaining: queueRemaining,
+        eta: estimateQueueCompletion(queueRemaining, s, now),
+        next_batch: nextBatch(scheduledRows, now),
+      },
       guardrail: {
         tripped: a.guardrail_tripped,
         reason: a.guardrail_reason,
@@ -106,6 +116,18 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
       ORDER BY p.id DESC LIMIT 500
     `).all());
 
+  app.get('/api/queue', async (req) => {
+    const limitRaw = Number((req.query as { limit?: string }).limit);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 10;
+    const rows = repos.db.prepare(`
+      SELECT p.id, p.profile_url, p.status, p.scheduled_for, c.name AS cohort_name
+      FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
+      WHERE p.status IN ('queued','scheduled')
+    `).all() as unknown as { id: number; profile_url: string; status: string; scheduled_for: string | null; cohort_name: string }[];
+    const ordered = orderUpcoming(rows);
+    return { upcoming: ordered.slice(0, limit), total_remaining: ordered.length };
+  });
+
   app.get('/api/settings', async () => repos.settings.get());
   app.post('/api/settings', async (req) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -141,6 +163,30 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     const targets = [...repos.profiles.byStatus('failed'), ...repos.profiles.byStatus('needs_attention')];
     for (const p of targets) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null, last_error: null });
     return { ok: true, retried: targets.length };
+  });
+
+  // Problem profiles for the Attention tab: failed + needs_attention with their errors.
+  app.get('/api/attention', async () =>
+    repos.db.prepare(`
+      SELECT p.id, p.profile_url, p.status, p.last_error, p.attempts,
+             p.sent_at, p.scheduled_for, c.name AS cohort_name
+      FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
+      WHERE p.status IN ('failed','needs_attention')
+      ORDER BY p.id DESC
+    `).all());
+
+  app.post('/api/profiles/:id/retry', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
+    repos.profiles.setStatus(id, 'queued', { scheduled_for: null, last_error: null });
+    return { ok: true };
+  });
+
+  app.post('/api/profiles/:id/dismiss', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
+    repos.profiles.setStatus(id, 'skipped', { last_error: null });
+    return { ok: true };
   });
 
   // Opening the login window navigates the shared browser page, so it must queue behind

@@ -47,6 +47,9 @@ export class ProfileRepo {
     ).run(cohortId, normalizedUrl, customMessage);
     return this.db.prepare('SELECT * FROM profiles WHERE profile_url = ?').get(normalizedUrl) as unknown as Profile;
   }
+  findById(id: number): Profile | undefined {
+    return this.db.prepare('SELECT * FROM profiles WHERE id = ?').get(id) as unknown as Profile | undefined;
+  }
   countAll(): number {
     return (this.db.prepare('SELECT COUNT(*) c FROM profiles').get() as unknown as { c: number }).c;
   }

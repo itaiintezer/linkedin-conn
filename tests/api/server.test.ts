@@ -199,3 +199,69 @@ test('POST /api/login waits for the browser lock before navigating (no concurren
   await new Promise((r) => setTimeout(r, 0)); // let the queued login run
   expect(driver.open).toBe(true); // login window opened once the lock was free
 });
+
+test('GET /api/status includes forecast and acceptance_checked_at', async () => {
+  const c = repos.cohorts.create('F', 'hi', true);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/q1', null);
+  const p2 = repos.profiles.add(c.id, 'https://www.linkedin.com/in/q2', null);
+  repos.profiles.setScheduled(p2.id, '2099-01-01T10:00:00.000Z');
+  repos.appState.setAcceptanceChecked('2026-06-30T07:00:00.000Z');
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  const body = JSON.parse(res.body);
+  expect(body.acceptance_checked_at).toBe('2026-06-30T07:00:00.000Z');
+  expect(body.forecast.queue_remaining).toBe(2); // 1 queued + 1 scheduled
+  expect(body.forecast).toHaveProperty('eta');
+  expect(body.forecast.next_batch).toEqual({ at: '2099-01-01T10:00:00.000Z', count: 1 });
+});
+
+test('GET /api/queue returns ordered upcoming work and total', async () => {
+  const c = repos.cohorts.create('Q', 'hi', true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/sched-late', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/sched-early', null);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/queued', null);
+  repos.profiles.setScheduled(a.id, '2099-01-02T10:00:00.000Z');
+  repos.profiles.setScheduled(b.id, '2099-01-01T10:00:00.000Z');
+  const res = await app.inject({ method: 'GET', url: '/api/queue?limit=2' });
+  const body = JSON.parse(res.body);
+  expect(body.total_remaining).toBe(3);
+  expect(body.upcoming).toHaveLength(2);
+  expect(body.upcoming[0].profile_url).toBe('https://www.linkedin.com/in/sched-early');
+  expect(body.upcoming[1].profile_url).toBe('https://www.linkedin.com/in/sched-late');
+});
+
+test('GET /api/attention lists failed and needs_attention with errors', async () => {
+  const c = repos.cohorts.create('At', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fail', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/attn', null);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/ok', null);
+  repos.profiles.setStatus(a.id, 'failed', { last_error: 'boom' });
+  repos.profiles.setStatus(b.id, 'needs_attention', { last_error: 'note quota' });
+  const res = await app.inject({ method: 'GET', url: '/api/attention' });
+  const body = JSON.parse(res.body);
+  expect(body).toHaveLength(2);
+  expect(body.map((r) => r.last_error).sort()).toEqual(['boom', 'note quota']);
+});
+
+test('POST /api/profiles/:id/retry requeues a single profile', async () => {
+  const c = repos.cohorts.create('R1', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/r1', null);
+  repos.profiles.setStatus(a.id, 'failed', { last_error: 'boom' });
+  const res = await app.inject({ method: 'POST', url: `/api/profiles/${a.id}/retry` });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.findById(a.id).status).toBe('queued');
+  expect(repos.profiles.findById(a.id).last_error).toBeNull();
+});
+
+test('POST /api/profiles/:id/dismiss marks it skipped', async () => {
+  const c = repos.cohorts.create('D1', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/d1', null);
+  repos.profiles.setStatus(a.id, 'needs_attention', { last_error: 'x' });
+  const res = await app.inject({ method: 'POST', url: `/api/profiles/${a.id}/dismiss` });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.findById(a.id).status).toBe('skipped');
+});
+
+test('POST /api/profiles/:id/retry 404s for an unknown id', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/profiles/99999/retry' });
+  expect(res.statusCode).toBe(404);
+});
