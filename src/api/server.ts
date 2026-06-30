@@ -60,12 +60,21 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
     const counts: Record<string, number> = {};
     for (const p of repos.profiles.all()) counts[p.status] = (counts[p.status] ?? 0) + 1;
     const s = repos.settings.get();
+    const a = repos.appState.get();
     return {
       paused: s.paused,
       pause_reason: s.pause_reason,
       weekly_sent: repos.events.countSentSince(windowStartIso(new Date())),
       weekly_cap: s.weekly_cap,
       counts,
+      loggedIn: a.login_logged_in === 1,
+      login_as_of: a.login_confirmed_at,
+      guardrail: {
+        tripped: a.guardrail_tripped,
+        reason: a.guardrail_reason,
+        detail: a.guardrail_detail,
+        trippedAt: a.guardrail_tripped_at,
+      },
     };
   });
 
@@ -133,7 +142,28 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
   });
 
   app.post('/api/login', async () => { void driver.openLoginWindow(); return { ok: true }; });
-  app.get('/api/login-status', async () => ({ loggedIn: await driver.isLoggedIn() }));
+  app.get('/api/login-status', async () => {
+    const a = repos.appState.get();
+    return { loggedIn: a.login_logged_in === 1, asOf: a.login_confirmed_at };
+  });
+
+  // Re-verify the live session before clearing a tripped guardrail; only resume if the
+  // session is back AND the current page isn't a checkpoint.
+  app.post('/api/guardrail/acknowledge', async () => {
+    const now = new Date();
+    const snap = await driver.readLoginState();
+    repos.appState.setLogin(snap, now.toISOString());
+    const checkpoint = await driver.checkpointPresent();
+    if (snap.loggedIn && !checkpoint) {
+      repos.appState.clearGuardrail();
+      repos.appState.resetFailureStreak();
+      return { ok: true, resumed: true };
+    }
+    const reason = !snap.loggedIn ? 'login_lost' : 'checkpoint';
+    const detail = !snap.loggedIn ? 'Still not logged in' : 'Checkpoint still present';
+    repos.appState.trip(reason, detail, now.toISOString());
+    return { ok: true, resumed: false, reason };
+  });
 
   return app;
 }

@@ -116,3 +116,43 @@ test('POST /api/settings accepts onboarded', async () => {
   await app.inject({ method: 'POST', url: '/api/settings', payload: { onboarded: 1 } });
   expect(repos.settings.get().onboarded).toBe(1);
 });
+
+test('GET /api/login-status reads the cache without touching the browser', async () => {
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-30T08:00:00.000Z');
+  const res = await app.inject({ method: 'GET', url: '/api/login-status' });
+  const body = JSON.parse(res.body);
+  expect(body.loggedIn).toBe(true);
+  expect(body.asOf).toBe('2026-06-30T08:00:00.000Z');
+});
+
+test('GET /api/status includes guardrail state', async () => {
+  repos.appState.trip('checkpoint', 'captcha', '2026-06-30T09:00:00.000Z');
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  const body = JSON.parse(res.body);
+  expect(body.guardrail).toMatchObject({
+    tripped: 1, reason: 'checkpoint', detail: 'captcha', trippedAt: '2026-06-30T09:00:00.000Z',
+  });
+});
+
+test('POST /api/guardrail/acknowledge clears the guardrail when healthy', async () => {
+  const driver = new FakeDriver();
+  driver.loggedIn = true; driver.checkpoint = false;
+  const a = buildServer(repos, driver);
+  repos.appState.trip('checkpoint', 'captcha', '2026-06-30T09:00:00.000Z');
+  const res = await a.inject({ method: 'POST', url: '/api/guardrail/acknowledge' });
+  expect(JSON.parse(res.body).resumed).toBe(true);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+  expect(repos.appState.get().failure_streak).toBe(0);
+});
+
+test('POST /api/guardrail/acknowledge stays tripped when still unhealthy', async () => {
+  const driver = new FakeDriver();
+  driver.loggedIn = false; // still logged out
+  const a = buildServer(repos, driver);
+  repos.appState.trip('login_lost', 'gone', '2026-06-30T09:00:00.000Z');
+  const res = await a.inject({ method: 'POST', url: '/api/guardrail/acknowledge' });
+  const body = JSON.parse(res.body);
+  expect(body.resumed).toBe(false);
+  expect(body.reason).toBe('login_lost');
+  expect(repos.appState.get().guardrail_tripped).toBe(1);
+});
