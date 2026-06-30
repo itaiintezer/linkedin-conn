@@ -77,3 +77,17 @@ test('login lost on the live check trips login_lost and reads nothing', async ()
   expect(repos.appState.get().guardrail_reason).toBe('login_lost');
   expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
 });
+
+test('stamps acceptance_checked_at after a clean read', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedSent('https://www.linkedin.com/in/a', c.id);
+  driver.connections = ['https://www.linkedin.com/in/a'];
+  const now = new Date('2026-06-29T12:00:00Z');
+  await runAcceptanceCheck(repos, driver, now);
+  expect(repos.appState.get().acceptance_checked_at).toBe(now.toISOString());
+});
+
+test('does not stamp acceptance_checked_at when there is nothing to verify', async () => {
+  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+  expect(repos.appState.get().acceptance_checked_at).toBeNull();
+});

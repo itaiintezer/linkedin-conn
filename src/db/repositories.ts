@@ -136,6 +136,10 @@ export class AppStateRepo {
   resetFailureStreak(): void {
     this.db.prepare('UPDATE app_state SET failure_streak = 0 WHERE id = 1').run();
   }
+
+  setAcceptanceChecked(iso: string): void {
+    this.db.prepare('UPDATE app_state SET acceptance_checked_at = ? WHERE id = 1').run(iso);
+  }
 }
 
 export class Repos {

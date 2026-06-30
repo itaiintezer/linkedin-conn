@@ -87,6 +87,7 @@ export interface AppState {
   guardrail_detail: string | null;
   guardrail_tripped_at: string | null; // ISO
   failure_streak: number;
+  acceptance_checked_at: string | null; // ISO, last successful acceptance read
 }
 
 /** A point-in-time read of LinkedIn auth from the browser's li_at cookie. */

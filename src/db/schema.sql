@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS app_state (
   guardrail_reason TEXT,
   guardrail_detail TEXT,
   guardrail_tripped_at TEXT,
-  failure_streak INTEGER NOT NULL DEFAULT 0
+  failure_streak INTEGER NOT NULL DEFAULT 0,
+  acceptance_checked_at TEXT
 );
 
 INSERT OR IGNORE INTO app_state (id) VALUES (1);

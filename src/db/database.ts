@@ -32,4 +32,8 @@ export function runMigrations(db: DB): void {
   if (!cols.includes('failure_threshold')) {
     db.exec('ALTER TABLE settings ADD COLUMN failure_threshold INTEGER NOT NULL DEFAULT 3');
   }
+  const appCols = (db.prepare('PRAGMA table_info(app_state)').all() as { name: string }[]).map((c) => c.name);
+  if (!appCols.includes('acceptance_checked_at')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN acceptance_checked_at TEXT');
+  }
 }

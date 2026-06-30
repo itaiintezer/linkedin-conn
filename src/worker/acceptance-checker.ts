@@ -39,5 +39,6 @@ export async function runAcceptanceCheck(repos: Repos, driver: BrowserDriver, no
     repos.profiles.setStatus(id, 'expired', { resolved_at: iso });
     repos.events.recordEvent(id, 'expired');
   }
+  repos.appState.setAcceptanceChecked(iso);
   recordSuccess(repos); // a clean read clears any accumulated streak
 }
