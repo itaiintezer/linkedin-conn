@@ -8,6 +8,8 @@ import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
 import { windowStartIso } from '../core/rate-limit.js';
 import { runSenderOnce } from '../worker/sender.js';
+import { defaultCohortName } from '../core/cohort-name.js';
+import { deriveAllowNoNote } from '../core/message.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -15,6 +17,7 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'workday_start_hour', 'workday_end_hour', 'weekdays_only', 'weekly_cap',
   'batch_size', 'batches_per_day', 'acceptance_checks_per_day', 'account_type',
   'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
+  'onboarded',
 ]);
 
 export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstance {
@@ -29,22 +32,23 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
   app.register(fastifyStatic, { root: join(__dirname, '..', 'web'), prefix: '/' });
 
   app.post('/api/profiles', async (req, reply) => {
-    const { url, cohort, message } = req.body as { url: string; cohort: string; message?: string };
+    const { url, cohort, message } = req.body as { url: string; cohort?: string; message?: string };
     const normalized = normalizeProfileUrl(url ?? '');
     if (!normalized) return reply.code(400).send({ error: 'invalid linkedin profile url' });
-    const c = repos.cohorts.getOrCreate(cohort, null, false);
+    const cohortName = (cohort && cohort.trim()) || defaultCohortName(new Date());
+    const c = repos.cohorts.getOrCreate(cohortName, null, true);
     const p = repos.profiles.add(c.id, normalized, message ?? null);
     return { id: p.id, profile_url: p.profile_url };
   });
 
   app.post('/api/lists', async (req) => {
-    const { cohort, text, message_template, allow_no_note } =
-      req.body as { cohort: string; text: string; message_template?: string; allow_no_note?: boolean };
-    const c = repos.cohorts.getOrCreate(cohort, message_template ?? null, !!allow_no_note);
-    if (message_template !== undefined || allow_no_note !== undefined) {
-      repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
-        .run(message_template ?? c.message_template, allow_no_note ? 1 : c.allow_no_note, c.id);
-    }
+    const { cohort, text, message_template } =
+      req.body as { cohort?: string; text: string; message_template?: string };
+    const cohortName = (cohort && cohort.trim()) || defaultCohortName(new Date());
+    const allowNoNote = deriveAllowNoNote(message_template);
+    const c = repos.cohorts.getOrCreate(cohortName, message_template ?? null, allowNoNote);
+    repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
+      .run(message_template ?? c.message_template, allowNoNote ? 1 : 0, c.id);
     const urls = extractProfileUrls(text ?? '');
     const before = repos.profiles.countAll();
     for (const u of urls) repos.profiles.add(c.id, u, null);
@@ -68,11 +72,11 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
   app.get('/api/cohorts', async () => repos.cohorts.list());
 
   app.post('/api/cohorts', async (req) => {
-    const { name, message_template, allow_no_note } =
-      req.body as { name: string; message_template?: string; allow_no_note?: boolean };
-    const c = repos.cohorts.getOrCreate(name, message_template ?? null, !!allow_no_note);
+    const { name, message_template } = req.body as { name: string; message_template?: string };
+    const allowNoNote = deriveAllowNoNote(message_template);
+    const c = repos.cohorts.getOrCreate(name, message_template ?? null, allowNoNote);
     repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
-      .run(message_template ?? null, allow_no_note ? 1 : 0, c.id);
+      .run(message_template ?? null, allowNoNote ? 1 : 0, c.id);
     return repos.cohorts.findById(c.id);
   });
 

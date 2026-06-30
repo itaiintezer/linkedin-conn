@@ -45,6 +45,7 @@ export interface Settings {
   max_delay_ms: number;
   paused: number;
   pause_reason: string | null;
+  onboarded: number;
 }
 
 export type SendResult =

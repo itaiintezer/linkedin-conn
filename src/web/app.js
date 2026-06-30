@@ -67,6 +67,7 @@ function initTabs() {
       $$('.tab').forEach((t) => t.classList.toggle('is-active', t === tab));
       const name = tab.dataset.tab;
       $$('main > .panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
+      if (name === 'add') loadCohortOptions();
       if (name === 'cohorts') loadCohorts();
       if (name === 'metrics') loadMetrics();
       if (name === 'settings') loadSettings();
@@ -211,38 +212,95 @@ function initDashboard() {
 }
 
 /* ---------- add list ---------- */
+function todayCohortName() {
+  const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const d = new Date();
+  return `${M[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+function countProfiles(text) {
+  const re = /https?:\/\/[^\s,"'<>]*linkedin\.com\/in\/[A-Za-z0-9\-_%]+\/?/gi;
+  const seen = new Set();
+  for (const m of String(text).matchAll(re)) seen.add(m[0].toLowerCase().replace(/\/+$/, ''));
+  return seen.size;
+}
+
+async function loadCohortOptions() {
+  const sel = $('#listCohortSelect');
+  if (!sel) return;
+  const current = sel.value;
+  try {
+    const cohorts = await api('/api/cohorts');
+    sel.replaceChildren(
+      el('option', { value: '', text: 'New (auto-dated)' }),
+      ...cohorts.map((c) => el('option', { value: c.name, text: c.name })),
+    );
+    sel.value = current; // preserve selection across refreshes when still present
+  } catch (_) { /* leave the default option */ }
+}
+
 function initAddList() {
-  const tpl = $('#listTemplate'), counter = $('#tplCount');
-  const updateCount = () => { counter.textContent = `${tpl.value.length} / 300`; };
-  tpl.addEventListener('input', updateCount);
+  const tpl = $('#listTemplate'), counter = $('#tplCount'), area = $('#listText');
+  const updateTplCount = () => { counter.textContent = `${tpl.value.length} / 300`; };
+  tpl.addEventListener('input', updateTplCount);
+  updateTplCount();
+
+  $('#listCohort').placeholder = todayCohortName();
+
+  const submitBtn = $('#listForm button[type="submit"]');
+  const updateCount = () => {
+    const n = countProfiles(area.value);
+    $('#listCount').textContent = `${n} profile${n === 1 ? '' : 's'} detected`;
+    if (submitBtn) submitBtn.textContent = n ? `Enqueue ${n}` : 'Enqueue';
+  };
+  area.addEventListener('input', updateCount);
   updateCount();
 
-  $('#listFile').addEventListener('change', (e) => {
-    const file = e.target.files && e.target.files[0];
+  // Drag-drop a .csv/.txt onto the profiles box (replaces the old file picker).
+  ['dragover', 'dragenter'].forEach((ev) => area.addEventListener(ev, (e) => { e.preventDefault(); area.classList.add('drag'); }));
+  ['dragleave', 'dragend'].forEach((ev) => area.addEventListener(ev, () => area.classList.remove('drag')));
+  area.addEventListener('drop', (e) => {
+    e.preventDefault();
+    area.classList.remove('drag');
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const existing = $('#listText').value.trim();
-      $('#listText').value = existing ? existing + '\n' + reader.result : String(reader.result);
+      const existing = area.value.trim();
+      area.value = existing ? existing + '\n' + reader.result : String(reader.result);
+      updateCount();
     };
     reader.readAsText(file);
+  });
+
+  // Pick an existing cohort -> prefill + lock its name, prefill its template. "New" -> unlock.
+  $('#listCohortSelect').addEventListener('change', async (e) => {
+    const name = e.target.value;
+    if (!name) { $('#listCohort').value = ''; $('#listCohort').disabled = false; return; }
+    try {
+      const cohorts = await api('/api/cohorts');
+      const c = cohorts.find((x) => x.name === name);
+      if (c) {
+        $('#listCohort').value = c.name; $('#listCohort').disabled = true;
+        tpl.value = c.message_template || ''; updateTplCount();
+      }
+    } catch (_) { /* ignore */ }
   });
 
   $('#listForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const result = $('#listResult');
     const payload = {
-      cohort: $('#listCohort').value.trim(),
-      text: $('#listText').value,
+      cohort: $('#listCohort').value.trim() || undefined,
+      text: area.value,
       message_template: tpl.value.trim() || undefined,
-      allow_no_note: $('#listAllowNoNote').checked,
     };
-    if (!payload.cohort) { toast(result, 'Cohort name is required.', true); return; }
     try {
       const r = await api('/api/lists', { method: 'POST', body: payload });
       toast(result, `Added ${r.added} of ${r.found} found.`);
-      $('#listText').value = '';
-      $('#listFile').value = '';
+      area.value = '';
+      updateCount();
+      loadCohortOptions();
     } catch (err) {
       toast(result, `Failed: ${err.message}`, true);
     }
@@ -261,10 +319,7 @@ async function loadCohorts() {
         ? el('div', { class: 'tpl', text: c.message_template })
         : el('div', { class: 'tpl none', text: 'No template (bare request)' });
       return el('div', { class: 'cohort-card', onclick: () => fillCohortForm(c) },
-        el('div', { class: 'name' },
-          el('span', { text: c.name }),
-          el('span', { class: 'tag' + (c.allow_no_note ? ' on' : ''), text: c.allow_no_note ? 'no-note ok' : 'note req' }),
-        ),
+        el('div', { class: 'name' }, el('span', { text: c.name })),
         tplText,
       );
     }));
@@ -274,7 +329,6 @@ async function loadCohorts() {
 function fillCohortForm(c) {
   $('#cohortName').value = c.name || '';
   $('#cohortTemplate').value = c.message_template || '';
-  $('#cohortAllowNoNote').checked = !!c.allow_no_note;
   $('#cohortName').focus();
 }
 
@@ -284,7 +338,6 @@ function initCohorts() {
     const payload = {
       name: $('#cohortName').value.trim(),
       message_template: $('#cohortTemplate').value.trim() || undefined,
-      allow_no_note: $('#cohortAllowNoNote').checked,
     };
     if (!payload.name) return;
     try {
@@ -358,6 +411,47 @@ function initSettings() {
   });
 }
 
+/* ---------- first-run setup wizard ---------- */
+function initWizard() {
+  const wiz = $('#setupWizard');
+  if (!wiz) return;
+  let pollId = null;
+  const showStep = (n) => $$('#setupWizard [data-step]').forEach((s) => { s.hidden = s.dataset.step !== String(n); });
+
+  const startLoginPoll = () => {
+    if (pollId) return;
+    pollId = setInterval(async () => {
+      try {
+        const { loggedIn } = await api('/api/login-status');
+        $('#wizLoginState').innerHTML = loggedIn
+          ? '<span class="led on"></span>Connected'
+          : '<span class="led off"></span>Waiting for login…';
+        $('#wizNext').disabled = !loggedIn;
+      } catch (_) { /* keep waiting */ }
+    }, 2000);
+  };
+  const stopLoginPoll = () => { if (pollId) { clearInterval(pollId); pollId = null; } };
+
+  $('#wizConnectBtn').addEventListener('click', async () => {
+    $('#wizLoginState').innerHTML = '<span class="led off"></span>Opening login window…';
+    try { await api('/api/login', { method: 'POST' }); } catch (_) { /* surfaced via poll */ }
+    startLoginPoll();
+  });
+  $('#wizNext').addEventListener('click', () => showStep(2));
+  $('#wizFinish').addEventListener('click', async () => {
+    const account_type = $('#wizAccountType').value;
+    try { await api('/api/settings', { method: 'POST', body: { account_type, onboarded: 1 } }); } catch (_) { /* ignore */ }
+    stopLoginPoll();
+    wiz.hidden = true;
+    refreshLogin();
+    loadSettings();
+  });
+
+  api('/api/settings').then((s) => {
+    if (!s.onboarded) { wiz.hidden = false; showStep(1); startLoginPoll(); }
+  }).catch(() => { /* if settings unreachable, don't block the app */ });
+}
+
 /* ---------- boot ---------- */
 function tick() { refreshStatus(); refreshQueue(); }
 
@@ -368,6 +462,7 @@ function init() {
   initAddList();
   initCohorts();
   initSettings();
+  initWizard();
 
   refreshLogin();
   tick();
