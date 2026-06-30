@@ -1,10 +1,13 @@
-import type { BrowserDriver, SendOutcome, SendResult } from '../types.js';
+import type { BrowserDriver, SendOutcome, SendResult, LoginSnapshot } from '../types.js';
 import { applyFirstName } from '../core/message.js';
 export type { BrowserDriver };
 
 /** In-memory driver for testing workers without a real browser. */
 export class FakeDriver implements BrowserDriver {
   loggedIn = true;
+  open = false;
+  cookieExpiry: string | null = null;
+  checkpoint = false;
   pending: string[] = [];
   connections: string[] = [];
   scripted = new Map<string, SendResult>();
@@ -14,8 +17,14 @@ export class FakeDriver implements BrowserDriver {
   sentLog: { url: string; message: string | null }[] = [];
 
   async isLoggedIn() { return this.loggedIn; }
-  async openLoginWindow() { this.loggedIn = true; }
+  browserOpen() { return this.open; }
+  async readLoginState(): Promise<LoginSnapshot> {
+    this.open = true;
+    return { loggedIn: this.loggedIn, cookieExpiry: this.cookieExpiry };
+  }
+  async openLoginWindow() { this.open = true; this.loggedIn = true; }
   async sendConnectionRequest(url: string, message: string | null): Promise<SendOutcome> {
+    this.open = true;
     // Faithfully mirror the real driver: substitute {firstName} with the name it reads.
     const note = message === null ? null : applyFirstName(message, this.firstName);
     this.sentLog.push({ url, message: note });
@@ -24,5 +33,6 @@ export class FakeDriver implements BrowserDriver {
   }
   async readPendingInvites() { return this.pending; }
   async readRecentConnections() { return this.connections; }
-  async close() {}
+  async checkpointPresent() { return this.checkpoint; }
+  async close() { this.open = false; }
 }

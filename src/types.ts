@@ -60,11 +60,18 @@ export interface SendOutcome {
 
 export interface BrowserDriver {
   isLoggedIn(): Promise<boolean>;
+  /** No side effects: whether the browser context is currently open. */
+  browserOpen(): boolean;
+  /** Read the li_at cookie. Opens the context if needed (callers that must not
+   *  open the browser guard with browserOpen() first). */
+  readLoginState(): Promise<LoginSnapshot>;
   openLoginWindow(): Promise<void>;
   // message === null => send a bare request (no note)
   sendConnectionRequest(url: string, message: string | null): Promise<SendOutcome>;
   readPendingInvites(): Promise<string[]>;     // normalized profile URLs
   readRecentConnections(): Promise<string[]>;  // normalized profile URLs
+  /** Whether the currently-loaded page looks like a checkpoint/captcha. */
+  checkpointPresent(): Promise<boolean>;
   close(): Promise<void>;
 }
 

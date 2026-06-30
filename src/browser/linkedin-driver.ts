@@ -1,5 +1,5 @@
 import type { Page } from 'playwright-core';
-import type { BrowserDriver, SendOutcome } from '../types.js';
+import type { BrowserDriver, SendOutcome, LoginSnapshot } from '../types.js';
 import { CloakSession } from './cloak-session.js';
 import { SEL, URLS, customInviteUrl, profileSlug } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
@@ -19,6 +19,29 @@ export class LinkedInDriver implements BrowserDriver {
     const ctx = await this.session.context();
     const cookies = await ctx.cookies('https://www.linkedin.com');
     return cookies.some((c) => c.name === 'li_at' && !!c.value);
+  }
+
+  browserOpen(): boolean {
+    return this.session.launched;
+  }
+
+  async readLoginState(): Promise<LoginSnapshot> {
+    // Opens the context if needed — callers that must stay non-disruptive
+    // (the dashboard poll, the orchestrator refresher) guard with browserOpen() first.
+    const ctx = await this.session.context();
+    const cookies = await ctx.cookies('https://www.linkedin.com');
+    const li = cookies.find((c) => c.name === 'li_at' && !!c.value);
+    const expirySec = li?.expires;
+    const cookieExpiry = typeof expirySec === 'number' && expirySec > 0
+      ? new Date(expirySec * 1000).toISOString()
+      : null;
+    return { loggedIn: !!li, cookieExpiry };
+  }
+
+  async checkpointPresent(): Promise<boolean> {
+    if (!this.session.launched) return false;
+    const page = await this.session.page();
+    return this.looksLikeCheckpoint(page);
   }
 
   async openLoginWindow(): Promise<void> {
@@ -106,6 +129,7 @@ export class LinkedInDriver implements BrowserDriver {
     const page = await this.session.page();
     await page.goto(URLS.sentInvitations, { waitUntil: 'domcontentloaded' });
     await sleep(rand(2000, 4000));
+    if (await this.looksLikeCheckpoint(page)) throw new Error('checkpoint detected during invitations read');
     // The list lazy-loads; load it all so we never falsely "expire" a pending invite
     // that simply hadn't scrolled into view.
     await this.autoScroll(page);
@@ -116,6 +140,7 @@ export class LinkedInDriver implements BrowserDriver {
     const page = await this.session.page();
     await page.goto(URLS.connections, { waitUntil: 'domcontentloaded' });
     await sleep(rand(2000, 4000));
+    if (await this.looksLikeCheckpoint(page)) throw new Error('checkpoint detected during connections read');
     await this.autoScroll(page, 6); // a few pages of "recently added" is enough
     return this.collectProfileLinks(page, SEL.connectionCardLink);
   }
