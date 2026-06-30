@@ -26,6 +26,9 @@ export function runMigrations(db: DB): void {
     // Don't show the wizard to users who already configured an account type.
     db.exec("UPDATE settings SET onboarded = 1 WHERE account_type != 'unknown'");
   }
+  // Note: new tables (e.g. app_state) need no migration here — schema.sql's
+  // `CREATE TABLE IF NOT EXISTS` runs on every openDatabase and back-fills them.
+  // Only new columns on pre-existing tables require an explicit ALTER below.
   if (!cols.includes('failure_threshold')) {
     db.exec('ALTER TABLE settings ADD COLUMN failure_threshold INTEGER NOT NULL DEFAULT 3');
   }

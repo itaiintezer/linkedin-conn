@@ -33,7 +33,7 @@ test('opens in-memory db and creates all tables', () => {
     .all() as { name: string }[];
   const names = rows.map((r) => r.name);
   expect(names).toEqual(
-    expect.arrayContaining(['cohorts', 'profiles', 'send_log', 'profile_events', 'settings']),
+    expect.arrayContaining(['app_state', 'cohorts', 'profiles', 'send_log', 'profile_events', 'settings']),
   );
 });
 
