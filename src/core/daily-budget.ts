@@ -13,6 +13,7 @@ export function dailyTargetFor(s: Settings): number {
  */
 export function committedToday(repos: Repos, now: Date): number {
   const dayStart = new Date(now);
+  // Local day boundary on purpose: mirrors the scheduler's local-time working-hours window.
   dayStart.setHours(0, 0, 0, 0);
   const startIso = dayStart.toISOString();
   const scheduled = repos.profiles.byStatus('scheduled').length;

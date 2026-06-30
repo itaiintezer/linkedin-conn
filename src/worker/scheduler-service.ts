@@ -1,7 +1,7 @@
 import type { Repos } from '../db/repositories.js';
 import { planDailyBatches, assignSchedule } from '../core/schedule.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
-import { dailyTargetFor, committedToday } from '../core/daily-budget.js';
+import { dailyRemainingFor } from '../core/daily-budget.js';
 
 export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = Math.random): void {
   const s = repos.settings.get();
@@ -23,8 +23,7 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   // volume is batches_per_day * batch_size. Without this, a single day could spend the
   // entire weekly allowance at once (and a late-day run would pile it onto one slot).
   const batchSize = Math.max(1, s.batch_size);
-  const dailyTarget = dailyTargetFor(s);
-  const dailyBudget = Math.max(0, dailyTarget - committedToday(repos, now));
+  const dailyBudget = dailyRemainingFor(repos, s, now);
   if (dailyBudget <= 0) return;
 
   const allTimes = planDailyBatches(now, {
