@@ -12,6 +12,8 @@ function dailySendRate(s: Settings): number {
   return weeklyThroughput / sendingDaysPerWeek;
 }
 
+// UTC day-of-week: used by estimateQueueCompletion where only the calendar date
+// (not the wall-clock hour) matters. Batch-time prediction uses isLocalSendingDay.
 function isSendingDay(d: Date, weekdaysOnly: boolean): boolean {
   if (!weekdaysOnly) return true;
   const day = d.getUTCDay();
@@ -67,7 +69,7 @@ export function orderUpcoming<T extends { id: number; status: string; scheduled_
   return [...scheduled, ...queued];
 }
 
-export type NextBatch =
+export type NextBatchResult =
   | null
   | { estimated: false; at: string; count: number }
   | { estimated: true; at: string; count: number }
@@ -89,6 +91,7 @@ function isLocalSendingDay(d: Date, weekdaysOnly: boolean): boolean {
   return day !== 0 && day !== 6;
 }
 
+/** Clone of `day` with the time set to `startHour:00:00.000` in local time. */
 function localWindowStart(day: Date, startHour: number): Date {
   const d = new Date(day);
   d.setHours(startHour, 0, 0, 0);
@@ -114,8 +117,9 @@ export function nextBatchForecast(
   scheduledRows: { scheduled_for: string | null }[],
   ctx: NextBatchContext,
   now: Date,
-): NextBatch {
+): NextBatchResult {
   const s = ctx.settings;
+  const weekdaysOnly = s.weekdays_only === 1;
   if (ctx.backlog <= 0) return null;
   if (ctx.guardrailTripped) return { blocked: true, reason: 'Guardrail tripped' };
   if (ctx.paused) return { blocked: true, reason: 'Paused' };
@@ -125,11 +129,12 @@ export function nextBatchForecast(
   const exact = nextBatch(scheduledRows, now);
   if (exact) return { estimated: false, at: exact.at, count: exact.count };
 
+  // Approximate: one batch's worth, ignoring weekly/daily caps (display hint only).
   const count = Math.min(Math.max(1, s.batch_size), ctx.backlog);
   const endToday = new Date(now);
   endToday.setHours(s.workday_end_hour, 0, 0, 0);
   const canRunToday =
-    isLocalSendingDay(now, s.weekdays_only === 1) &&
+    isLocalSendingDay(now, weekdaysOnly) &&
     now.getTime() < endToday.getTime() &&
     ctx.dailyRemaining > 0;
 
