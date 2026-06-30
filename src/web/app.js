@@ -243,6 +243,55 @@ async function refreshStatus() {
   } catch (_) { /* transient; next tick retries */ }
 }
 
+/* ---------- note hover popover ----------
+   The "Up next" notes don't fit inline, so each row shows a small glyph that
+   reveals the full note on hover/focus. The popover lives on <body> with
+   position:fixed so it escapes the table's overflow:hidden (rounded corners),
+   and flips above→below when there isn't room overhead. */
+const ICON_NOTE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_NONOTE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6 18.4 18.4" stroke-linecap="round"/></svg>';
+
+let notePop = null;
+function ensureNotePop() {
+  if (!notePop) {
+    notePop = el('div', { class: 'note-pop', role: 'tooltip' });
+    notePop.hidden = true;
+    document.body.appendChild(notePop);
+  }
+  return notePop;
+}
+function showNotePop(anchor, text) {
+  const pop = ensureNotePop();
+  pop.textContent = text;
+  pop.hidden = false;
+  const a = anchor.getBoundingClientRect();
+  const p = pop.getBoundingClientRect();
+  const below = a.top - p.height - 8 < 8;
+  const top = below ? a.bottom + 8 : a.top - p.height - 8;
+  let left = a.left + a.width / 2 - p.width / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - p.width - 8));
+  pop.style.top = `${top}px`;
+  pop.style.left = `${left}px`;
+  pop.classList.toggle('below', below);
+}
+function hideNotePop() { if (notePop) notePop.hidden = true; }
+
+function noteCell(note) {
+  const has = !!(note && note.trim());
+  const text = has ? note : 'No note — bare request';
+  const btn = el('button', {
+    class: 'note-btn' + (has ? '' : ' empty'),
+    type: 'button',
+    'aria-label': has ? `Note: ${note}` : 'No note — bare request',
+    onmouseenter: function () { showNotePop(this, text); },
+    onmouseleave: hideNotePop,
+    onfocus: function () { showNotePop(this, text); },
+    onblur: hideNotePop,
+  });
+  btn.innerHTML = has ? ICON_NOTE : ICON_NONOTE;
+  return el('td', { class: 'note-col' }, btn);
+}
+
 let queueLimit = 10;
 
 async function refreshQueue() {
@@ -258,7 +307,7 @@ async function refreshQueue() {
       el('td', { class: 'mono' }, p.cohort_name || '—'),
       el('td', {}, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
       el('td', { class: 'mono' }, fmtTime(p.scheduled_for)),
-      el('td', { class: 'mono' }, '—'),
+      noteCell(p.note),
     )));
   } catch (_) { /* transient */ }
 }

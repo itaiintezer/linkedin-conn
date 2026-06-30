@@ -328,6 +328,33 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .data-table .mono { font-family: var(--mono); color: var(--ink-3); font-size: 13px; }
 .err { color: var(--red); font-size: 13px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- Queue note glyph + hover popover ---------- */
+.data-table th.note-col, .data-table td.note-col { text-align: center; width: 64px; padding-left: 8px; padding-right: 8px; }
+.note-btn {
+  display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0;
+  border-radius: var(--radius-xs); border: 1px solid transparent; background: transparent;
+  color: var(--brand-700); cursor: pointer;
+  transition: background .14s ease, border-color .14s ease, color .14s ease;
+}
+.note-btn:hover, .note-btn:focus-visible { background: var(--brand-50); border-color: var(--brand-100); outline: none; }
+.note-btn.empty { color: var(--ink-faint); cursor: default; }
+.note-btn.empty:hover, .note-btn.empty:focus-visible { background: var(--line-soft); border-color: var(--line); color: var(--ink-3); }
+
+/* `body > .note-pop` (not just `.note-pop`) so position:fixed beats the global
+   `body > *:not(.atmosphere){position:relative}` rule, which has higher
+   specificity and would otherwise pin the popover into document flow. */
+body > .note-pop {
+  position: fixed; z-index: 100; max-width: 300px;
+  background: var(--ink); color: #fff;
+  border-radius: var(--radius-sm); padding: 10px 13px; box-shadow: var(--shadow-lg);
+  font-family: var(--sans); font-size: 13px; font-weight: 400; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; pointer-events: none;
+  animation: notePopIn .12s ease both;
+}
+@keyframes notePopIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.note-pop.below { animation-name: notePopInDown; }
+@keyframes notePopInDown { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
 /* ---------- Status pills (tinted) ---------- */
 .pill {
   display: inline-flex; align-items: center; gap: 7px;

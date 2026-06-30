@@ -130,10 +130,11 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     const limitRaw = Number((req.query as { limit?: string }).limit);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 10;
     const rows = repos.db.prepare(`
-      SELECT p.id, p.profile_url, p.status, p.scheduled_for, c.name AS cohort_name
+      SELECT p.id, p.profile_url, p.status, p.scheduled_for, c.name AS cohort_name,
+             COALESCE(NULLIF(p.custom_message, ''), NULLIF(c.message_template, '')) AS note
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       WHERE p.status IN ('queued','scheduled')
-    `).all() as unknown as { id: number; profile_url: string; status: string; scheduled_for: string | null; cohort_name: string }[];
+    `).all() as unknown as { id: number; profile_url: string; status: string; scheduled_for: string | null; cohort_name: string; note: string | null }[];
     const ordered = orderUpcoming(rows);
     return { upcoming: ordered.slice(0, limit), total_remaining: ordered.length };
   });
