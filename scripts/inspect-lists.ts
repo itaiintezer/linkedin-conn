@@ -11,7 +11,7 @@ const PAGES = [
 
 const ctx = await launchPersistentContext({
   userDataDir: BROWSER_PROFILE_DIR, headless: false, humanize: true,
-  viewport: { width: 1280, height: 1000 },
+  locale: 'en-US', viewport: { width: 1280, height: 1000 },
 });
 const page = ctx.pages()[0] ?? (await ctx.newPage());
 try {

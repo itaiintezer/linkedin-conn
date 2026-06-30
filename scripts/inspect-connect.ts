@@ -7,7 +7,7 @@ const slug = process.argv[2] ?? 'liron-lalezary';
 const target = `https://www.linkedin.com/preload/custom-invite/?vanityName=${slug}`;
 const ctx = await launchPersistentContext({
   userDataDir: BROWSER_PROFILE_DIR, headless: false, humanize: true,
-  viewport: { width: 1280, height: 900 },
+  locale: 'en-US', viewport: { width: 1280, height: 900 },
 });
 const page = ctx.pages()[0] ?? (await ctx.newPage());
 try {

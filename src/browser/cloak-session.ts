@@ -26,6 +26,7 @@ export class CloakSession {
       userDataDir: BROWSER_PROFILE_DIR,
       headless: false,
       humanize: true,
+      locale: 'en-US',
       viewport: { width: 1280, height: 900 },
     });
     return this.ctx;

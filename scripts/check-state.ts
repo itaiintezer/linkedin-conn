@@ -6,7 +6,7 @@ import { BROWSER_PROFILE_DIR } from '../src/config.js';
 const url = process.argv[2] ?? 'https://www.linkedin.com/in/liron-lalezary';
 const ctx = await launchPersistentContext({
   userDataDir: BROWSER_PROFILE_DIR, headless: false, humanize: true,
-  viewport: { width: 1280, height: 900 },
+  locale: 'en-US', viewport: { width: 1280, height: 900 },
 });
 const page = ctx.pages()[0] ?? (await ctx.newPage());
 try {

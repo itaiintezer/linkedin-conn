@@ -1,7 +1,7 @@
 import type { Page } from 'playwright-core';
 import type { BrowserDriver, SendOutcome, LoginSnapshot } from '../types.js';
 import { CloakSession } from './cloak-session.js';
-import { SEL, URLS, customInviteUrl, profileSlug } from './linkedin-selectors.js';
+import { SEL, find, URLS, customInviteUrl, profileSlug } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
 import { applyFirstName } from '../core/message.js';
 
@@ -50,15 +50,20 @@ export class LinkedInDriver implements BrowserDriver {
       await sleep(rand(1500, 3500));
       const firstName = await this.readFirstName(page);
       if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
-      if (await page.locator(SEL.pendingBadge).first().isVisible().catch(() => false)) {
+      if (await find.pendingBadge(page).first().isVisible().catch(() => false)) {
         return { result: 'already', firstName };
       }
 
-      // 2) Open the invite composer route and submit.
+      // 2) Open the invite composer: direct custom-invite route first, then
+      //    fall back to clicking the Connect control on the profile UI.
       await page.goto(customInviteUrl(slug), { waitUntil: 'domcontentloaded' });
       await sleep(rand(2000, 4000));
-      const sendWithout = page.locator(SEL.sendWithoutNote).first();
-      const addNote = page.locator(SEL.addNoteButton).first();
+      if (!(await this.composerVisible(page))) {
+        await this.openComposerViaProfile(page, url);
+        await sleep(rand(1500, 3000));
+      }
+      const sendWithout = find.sendWithoutNote(page).first();
+      const addNote = find.addNote(page).first();
       const hasSendWithout = await sendWithout.isVisible().catch(() => false);
       const hasAddNote = await addNote.isVisible().catch(() => false);
 
@@ -79,7 +84,7 @@ export class LinkedInDriver implements BrowserDriver {
         const note = applyFirstName(message, firstName ?? null);
         await page.locator(SEL.noteTextarea).fill(note);
         await sleep(rand(700, 1600));
-        await page.locator(SEL.sendInvitation).first().click();
+        await find.sendInvitation(page).first().click();
       } else {
         await sendWithout.click();
       }
@@ -90,7 +95,7 @@ export class LinkedInDriver implements BrowserDriver {
       //    of the click: the profile must now show a Pending badge.
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       try {
-        await page.waitForSelector(SEL.pendingBadge, { timeout: 9000 });
+        await find.pendingBadge(page).first().waitFor({ state: 'visible', timeout: 9000 });
         return { result: 'sent', firstName };
       } catch {
         if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
@@ -105,6 +110,40 @@ export class LinkedInDriver implements BrowserDriver {
   private async looksLikeCheckpoint(page: Page): Promise<boolean> {
     const body = (await page.content().catch(() => '')) || '';
     return /captcha|checkpoint|verify you|unusual activity|security check/i.test(body);
+  }
+
+  /** True if the invite composer (note or no-note path) is currently open. */
+  private async composerVisible(page: Page): Promise<boolean> {
+    if (await find.sendWithoutNote(page).first().isVisible().catch(() => false)) return true;
+    return find.addNote(page).first().isVisible().catch(() => false);
+  }
+
+  /**
+   * Fallback when the direct custom-invite route yields no composer: open the
+   * profile and click the Connect control. Tries the obfuscated custom-invite
+   * anchor first, then the "More" overflow menu's Connect item.
+   */
+  private async openComposerViaProfile(page: Page, url: string): Promise<void> {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await sleep(rand(1500, 3000));
+
+    const anchor = page.locator(SEL.connectAnchor).first();
+    if (await anchor.isVisible().catch(() => false)) {
+      await anchor.click().catch(() => {});
+      await sleep(rand(1500, 3000));
+      if (await this.composerVisible(page)) return;
+    }
+
+    const more = find.moreActions(page).first();
+    if (await more.isVisible().catch(() => false)) {
+      await more.click().catch(() => {});
+      await sleep(rand(800, 1600));
+      const item = find.connectMenuItem(page).first();
+      if (await item.isVisible().catch(() => false)) {
+        await item.click().catch(() => {});
+        await sleep(rand(1500, 3000));
+      }
+    }
   }
 
   // The new profile UI has no <h1>; the profile name is reliably in the document title.
