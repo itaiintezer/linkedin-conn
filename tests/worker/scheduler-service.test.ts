@@ -61,3 +61,44 @@ test('inside window with no future random slot: stays within the window, not off
   expect(t.getTime()).toBeGreaterThanOrEqual(now.getTime());
   expect(t.getHours()).toBeLessThan(20);
 });
+
+test('caps scheduling at batches_per_day * batch_size per day (default 20)', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 50; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  let i = 0; const seq = [0.1, 0.35, 0.6, 0.85]; // four distinct future slots
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => seq[(i++) % seq.length]);
+  expect(repos.profiles.byStatus('scheduled').length).toBe(20); // 4 batches * 5, not 50
+  expect(repos.profiles.byStatus('queued').length).toBe(30);
+});
+
+test('never puts more than batch_size profiles in a single time slot', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 50; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  let i = 0; const seq = [0.1, 0.35, 0.6, 0.85];
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => seq[(i++) % seq.length]);
+  const counts: Record<string, number> = {};
+  for (const p of repos.profiles.byStatus('scheduled')) {
+    counts[p.scheduled_for!] = (counts[p.scheduled_for!] ?? 0) + 1;
+  }
+  for (const k of Object.keys(counts)) expect(counts[k]).toBeLessThanOrEqual(5);
+});
+
+test('a late-day run never dumps the weekly remainder onto one slot', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 90; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  // 3pm with rng=0: every planned slot lands at 08:00 (past) -> single fallback future slot.
+  planAndAssignToday(repos, new Date('2026-06-29T15:00:00'), () => 0);
+  const scheduled = repos.profiles.byStatus('scheduled');
+  expect(scheduled.length).toBeLessThanOrEqual(5); // batch_size, not ~90
+});
+
+test('re-running the planner the same day does not exceed the daily cap', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 50; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  const run = () => {
+    let i = 0; const seq = [0.1, 0.35, 0.6, 0.85];
+    planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => seq[(i++) % seq.length]);
+  };
+  run(); run(); run();
+  expect(repos.profiles.byStatus('scheduled').length).toBe(20); // still 20, not 60
+});

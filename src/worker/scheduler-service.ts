@@ -2,6 +2,20 @@ import type { Repos } from '../db/repositories.js';
 import { planDailyBatches, assignSchedule } from '../core/schedule.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 
+/**
+ * How many sends today's quota has already committed: profiles still scheduled (for
+ * today) plus profiles already sent today. Subtracting this from the daily target keeps
+ * repeated planning runs (startup + hourly) from stacking past the daily cap.
+ */
+function committedToday(repos: Repos, now: Date): number {
+  const dayStart = new Date(now);
+  dayStart.setHours(0, 0, 0, 0);
+  const startIso = dayStart.toISOString();
+  const scheduled = repos.profiles.byStatus('scheduled').length;
+  const sentToday = repos.profiles.all().filter((p) => p.sent_at !== null && p.sent_at >= startIso).length;
+  return scheduled + sentToday;
+}
+
 export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = Math.random): void {
   const s = repos.settings.get();
   if (s.weekdays_only && (now.getDay() === 0 || now.getDay() === 6)) return;
@@ -15,11 +29,16 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   if (now.getTime() >= windowEnd.getTime()) return;
 
   const sentInWindow = repos.events.countSentSince(windowStartIso(now));
-  const remaining = remainingCapacity(s.weekly_cap, sentInWindow);
-  if (remaining <= 0) return;
+  const weeklyRemaining = remainingCapacity(s.weekly_cap, sentInWindow);
+  if (weeklyRemaining <= 0) return;
 
-  const queued = repos.profiles.byStatus('queued').slice(0, remaining);
-  if (queued.length === 0) return;
+  // Pace by day, not just by week: the weekly cap is a backstop, but the intended daily
+  // volume is batches_per_day * batch_size. Without this, a single day could spend the
+  // entire weekly allowance at once (and a late-day run would pile it onto one slot).
+  const batchSize = Math.max(1, s.batch_size);
+  const dailyTarget = Math.max(0, s.batches_per_day * batchSize);
+  const dailyBudget = Math.max(0, dailyTarget - committedToday(repos, now));
+  if (dailyBudget <= 0) return;
 
   const allTimes = planDailyBatches(now, {
     startHour: s.workday_start_hour, endHour: s.workday_end_hour, count: s.batches_per_day,
@@ -33,6 +52,15 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
     times = [at];
   }
 
-  const assignments = assignSchedule(queued.map((p) => p.id), times, Math.max(1, s.batch_size));
+  // Cap by (future slots * batch_size) so no single slot ever receives more than
+  // batch_size — the assigner would otherwise clamp the overflow onto the last slot.
+  const slotCapacity = times.length * batchSize;
+  const budget = Math.min(weeklyRemaining, dailyBudget, slotCapacity);
+  if (budget <= 0) return;
+
+  const queued = repos.profiles.byStatus('queued').slice(0, budget);
+  if (queued.length === 0) return;
+
+  const assignments = assignSchedule(queued.map((p) => p.id), times, batchSize);
   for (const a of assignments) repos.profiles.setScheduled(a.id, a.when.toISOString());
 }
