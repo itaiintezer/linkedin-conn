@@ -53,9 +53,11 @@ export const find = {
     s.locator(`[aria-label*="${name.replace(/["\\]/g, '')}"][aria-label*="to connect"]`),
   connectByHref: (s: Scope, slug: string): Locator =>
     s.locator(`a[href*="custom-invite"][href*="vanityName=${slug}"]`),
-  // Profile overflow button. MUST be scoped to <main> by the caller — an unscoped
-  // getByRole matches LinkedIn's global-nav "More" and misclicks.
-  moreButton: (s: Scope): Locator => s.getByRole('button', { name: /^more$/i }),
+  // Profile overflow button. Scoped to <main> by the caller (an unscoped getByRole
+  // matches LinkedIn's global-nav "More" and misclicks), AND required to be a real
+  // dropdown trigger via aria-expanded — distinguishes it from any stray "More" text
+  // toggle. Live-verified to resolve to exactly one button on the profile top card.
+  moreButton: (s: Scope): Locator => s.getByRole('button', { name: /^more$/i, expanded: false }),
 };
 
 export const URLS = {
