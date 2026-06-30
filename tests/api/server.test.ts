@@ -211,7 +211,7 @@ test('GET /api/status includes forecast and acceptance_checked_at', async () => 
   expect(body.acceptance_checked_at).toBe('2026-06-30T07:00:00.000Z');
   expect(body.forecast.queue_remaining).toBe(2); // 1 queued + 1 scheduled
   expect(body.forecast).toHaveProperty('eta');
-  expect(body.forecast.next_batch).toEqual({ at: '2099-01-01T10:00:00.000Z', count: 1 });
+  expect(body.forecast.next_batch).toEqual({ estimated: false, at: '2099-01-01T10:00:00.000Z', count: 1 });
 });
 
 test('GET /api/queue returns ordered upcoming work and total', async () => {
@@ -264,4 +264,29 @@ test('POST /api/profiles/:id/dismiss marks it skipped', async () => {
 test('POST /api/profiles/:id/retry 404s for an unknown id', async () => {
   const res = await app.inject({ method: 'POST', url: '/api/profiles/99999/retry' });
   expect(res.statusCode).toBe(404);
+});
+
+test('GET /api/status: next_batch predicts a window when queued but unscheduled', async () => {
+  const c = repos.cohorts.create('Pred', null, true);
+  for (let i = 0; i < 5; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  expect(res.statusCode).toBe(200);
+  const nb = JSON.parse(res.body).forecast.next_batch;
+  expect(nb.estimated).toBe(true);
+  expect(typeof nb.at).toBe('string');
+  expect(nb.count).toBeGreaterThan(0);
+});
+
+test('GET /api/status: next_batch is blocked when paused with a backlog', async () => {
+  const c = repos.cohorts.create('Blk', null, true);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/blocked', null);
+  repos.settings.update({ paused: 1, pause_reason: 'Manual pause' });
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  const nb = JSON.parse(res.body).forecast.next_batch;
+  expect(nb).toEqual({ blocked: true, reason: 'Paused' });
+});
+
+test('GET /api/status: next_batch is null when nothing is queued', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  expect(JSON.parse(res.body).forecast.next_batch).toBeNull();
 });
