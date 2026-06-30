@@ -1,5 +1,5 @@
 import type { DB } from './database.js';
-import type { Cohort, Profile, Settings, ProfileStatus, EventType } from '../types.js';
+import type { Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason } from '../types.js';
 
 const PROFILE_COLUMNS = new Set([
   'first_name', 'custom_message', 'attempts', 'last_error',
@@ -10,6 +10,7 @@ const SETTINGS_COLUMNS = new Set([
   'batch_size', 'batches_per_day', 'acceptance_checks_per_day', 'account_type',
   'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
   'onboarded',
+  'failure_threshold',
 ]);
 
 export class CohortRepo {
@@ -101,15 +102,53 @@ export class SettingsRepo {
   }
 }
 
+export class AppStateRepo {
+  constructor(private db: DB) {}
+
+  get(): AppState {
+    return this.db.prepare('SELECT * FROM app_state WHERE id = 1').get() as unknown as AppState;
+  }
+
+  setLogin(snap: { loggedIn: boolean; cookieExpiry: string | null }, confirmedAtIso: string): void {
+    this.db.prepare(
+      'UPDATE app_state SET login_logged_in = ?, login_cookie_expiry = ?, login_confirmed_at = ? WHERE id = 1',
+    ).run(snap.loggedIn ? 1 : 0, snap.cookieExpiry, confirmedAtIso);
+  }
+
+  trip(reason: GuardrailReason, detail: string, atIso: string): void {
+    this.db.prepare(
+      'UPDATE app_state SET guardrail_tripped = 1, guardrail_reason = ?, guardrail_detail = ?, guardrail_tripped_at = ? WHERE id = 1',
+    ).run(reason, detail, atIso);
+  }
+
+  clearGuardrail(): void {
+    this.db.prepare(
+      'UPDATE app_state SET guardrail_tripped = 0, guardrail_reason = NULL, guardrail_detail = NULL, guardrail_tripped_at = NULL WHERE id = 1',
+    ).run();
+  }
+
+  /** Increment the consecutive-failure counter and return the new value. */
+  incFailureStreak(): number {
+    this.db.prepare('UPDATE app_state SET failure_streak = failure_streak + 1 WHERE id = 1').run();
+    return this.get().failure_streak;
+  }
+
+  resetFailureStreak(): void {
+    this.db.prepare('UPDATE app_state SET failure_streak = 0 WHERE id = 1').run();
+  }
+}
+
 export class Repos {
   cohorts: CohortRepo;
   profiles: ProfileRepo;
   events: EventRepo;
   settings: SettingsRepo;
+  appState: AppStateRepo;
   constructor(public db: DB) {
     this.cohorts = new CohortRepo(db);
     this.profiles = new ProfileRepo(db);
     this.events = new EventRepo(db);
     this.settings = new SettingsRepo(db);
+    this.appState = new AppStateRepo(db);
   }
 }
