@@ -6,26 +6,46 @@
 // class names. Rather than click it, we navigate directly to that custom-invite route,
 // which opens a stable dialog with aria-labelled buttons.
 
+import type { Page, Locator } from 'playwright-core';
+
+type Scope = Page | Locator;
+
+// Non-role selectors (used via page.locator(...)). Stable enough; left as CSS.
 export const SEL = {
   feedMarker: 'main',
 
-  // Invite composer dialog (shown at the custom-invite route)
-  sendWithoutNote: 'button[aria-label="Send without a note"]',
-  addNoteButton: 'button[aria-label="Add a note"]',
+  // Note composer textarea (unchanged — kept specific on purpose).
   noteTextarea: 'textarea[name="message"]',
-  sendInvitation: 'button[aria-label="Send invitation"]',
-  dismissDialog: 'button[aria-label="Dismiss"]',
 
-  // Pending state (profile page)
-  pendingBadge: '[aria-label*="Pending" i]',
-
-  // Weekly invite-limit / quota wording (best-effort; wording varies)
+  // Weekly invite-limit / quota wording (best-effort; wording varies).
   noteQuotaDialog: 'text=/weekly invitation limit|reached the weekly|out of invitations|limit of invitations/i',
 
   // Acceptance reader (list pages). NOTE: unverified against the new UI — acceptance
   // tracking may need its own selector pass.
   invitationCardLink: 'a[href*="/in/"]',
   connectionCardLink: 'a[href*="/in/"]',
+
+  // Fallback path: the obfuscated Connect control on a profile is an anchor to the
+  // custom-invite route. Clicking it opens the composer in-page.
+  connectAnchor: 'a[href*="custom-invite"]',
+};
+
+// Role-based locator builders. getByRole matches the *accessible name*, so these
+// survive LinkedIn moving the label between aria-label and inner text. Forcing
+// en-US at launch (see cloak-session.ts) keeps these English names valid.
+export const find = {
+  // Invite composer dialog (shown at the custom-invite route or after a UI click)
+  sendWithoutNote: (s: Scope): Locator => s.getByRole('button', { name: 'Send without a note' }),
+  addNote: (s: Scope): Locator => s.getByRole('button', { name: 'Add a note' }),
+  sendInvitation: (s: Scope): Locator => s.getByRole('button', { name: 'Send invitation' }),
+  dismissDialog: (s: Scope): Locator => s.getByRole('button', { name: 'Dismiss' }),
+
+  // Pending state on the profile page (post-send confirmation / pre-send guard)
+  pendingBadge: (s: Scope): Locator => s.getByRole('button', { name: /pending/i }),
+
+  // Fallback path: Connect hidden behind the "More" overflow menu
+  moreActions: (s: Scope): Locator => s.getByRole('button', { name: /more actions/i }),
+  connectMenuItem: (s: Scope): Locator => s.getByRole('menuitem', { name: /^connect$/i }),
 };
 
 export const URLS = {
