@@ -143,7 +143,9 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     return { ok: true, retried: targets.length };
   });
 
-  app.post('/api/login', async () => { void driver.openLoginWindow(); return { ok: true }; });
+  // Opening the login window navigates the shared browser page, so it must queue behind
+  // any in-flight sender/acceptance batch (login must not be silently dropped → run, not tryRun).
+  app.post('/api/login', async () => { void browserLock.run(() => driver.openLoginWindow()); return { ok: true }; });
   app.get('/api/login-status', async () => {
     const a = repos.appState.get();
     return { loggedIn: a.login_logged_in === 1, asOf: a.login_confirmed_at };

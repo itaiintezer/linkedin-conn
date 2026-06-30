@@ -179,3 +179,23 @@ test('POST /api/run-now is skipped (no send) while the shared browser lock is he
   release();
   await held;
 });
+
+test('POST /api/login waits for the browser lock before navigating (no concurrent goto)', async () => {
+  const driver = new FakeDriver();
+  driver.loggedIn = false;
+  driver.open = false;
+  const lock = new Mutex();
+  const app2 = buildServer(repos, driver, lock);
+
+  // Simulate a sender/acceptance batch holding the lock (mid-navigation).
+  let release!: () => void;
+  const held = lock.run(() => new Promise<void>((r) => { release = r; }));
+
+  await app2.inject({ method: 'POST', url: '/api/login' });
+  expect(driver.open).toBe(false); // login navigation queued, not run while the lock is held
+
+  release();
+  await held;
+  await new Promise((r) => setTimeout(r, 0)); // let the queued login run
+  expect(driver.open).toBe(true); // login window opened once the lock was free
+});
