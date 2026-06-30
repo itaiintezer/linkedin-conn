@@ -26,4 +26,7 @@ export function runMigrations(db: DB): void {
     // Don't show the wizard to users who already configured an account type.
     db.exec("UPDATE settings SET onboarded = 1 WHERE account_type != 'unknown'");
   }
+  if (!cols.includes('failure_threshold')) {
+    db.exec('ALTER TABLE settings ADD COLUMN failure_threshold INTEGER NOT NULL DEFAULT 3');
+  }
 }

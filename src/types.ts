@@ -46,6 +46,7 @@ export interface Settings {
   paused: number;
   pause_reason: string | null;
   onboarded: number;
+  failure_threshold: number;
 }
 
 export type SendResult =
@@ -65,4 +66,24 @@ export interface BrowserDriver {
   readPendingInvites(): Promise<string[]>;     // normalized profile URLs
   readRecentConnections(): Promise<string[]>;  // normalized profile URLs
   close(): Promise<void>;
+}
+
+export type GuardrailReason = 'checkpoint' | 'login_lost' | 'repeated_failures';
+
+export interface AppState {
+  id: 1;
+  login_logged_in: number;        // 0 | 1
+  login_cookie_expiry: string | null;  // ISO
+  login_confirmed_at: string | null;   // ISO
+  guardrail_tripped: number;      // 0 | 1
+  guardrail_reason: GuardrailReason | null;
+  guardrail_detail: string | null;
+  guardrail_tripped_at: string | null; // ISO
+  failure_streak: number;
+}
+
+/** A point-in-time read of LinkedIn auth from the browser's li_at cookie. */
+export interface LoginSnapshot {
+  loggedIn: boolean;
+  cookieExpiry: string | null;    // ISO, or null for a session cookie / unknown
 }

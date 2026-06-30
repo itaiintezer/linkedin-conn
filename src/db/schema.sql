@@ -55,7 +55,22 @@ CREATE TABLE IF NOT EXISTS settings (
   max_delay_ms INTEGER NOT NULL DEFAULT 90000,
   paused INTEGER NOT NULL DEFAULT 0,
   pause_reason TEXT,
-  onboarded INTEGER NOT NULL DEFAULT 0
+  onboarded INTEGER NOT NULL DEFAULT 0,
+  failure_threshold INTEGER NOT NULL DEFAULT 3
 );
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS app_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  login_logged_in INTEGER NOT NULL DEFAULT 0,
+  login_cookie_expiry TEXT,
+  login_confirmed_at TEXT,
+  guardrail_tripped INTEGER NOT NULL DEFAULT 0,
+  guardrail_reason TEXT,
+  guardrail_detail TEXT,
+  guardrail_tripped_at TEXT,
+  failure_streak INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT OR IGNORE INTO app_state (id) VALUES (1);

@@ -45,3 +45,29 @@ test('seeds a single settings row with defaults', () => {
   expect(s.workday_start_hour).toBe(8);
   expect(s.workday_end_hour).toBe(20);
 });
+
+test('fresh db creates app_state with a seeded single row', () => {
+  const db = openDatabase(':memory:');
+  const row = db.prepare('SELECT * FROM app_state WHERE id = 1').get() as any;
+  expect(row).toBeDefined();
+  expect(row.login_logged_in).toBe(0);
+  expect(row.guardrail_tripped).toBe(0);
+  expect(row.failure_streak).toBe(0);
+  expect(row.login_cookie_expiry).toBeNull();
+});
+
+test('fresh db seeds settings.failure_threshold = 3', () => {
+  const db = openDatabase(':memory:');
+  const s = db.prepare('SELECT failure_threshold FROM settings WHERE id = 1').get() as any;
+  expect(s.failure_threshold).toBe(3);
+});
+
+test('runMigrations adds failure_threshold to a legacy settings table', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), account_type TEXT NOT NULL DEFAULT 'unknown');`);
+  db.exec(`INSERT INTO settings (id) VALUES (1);`);
+  runMigrations(db);
+  const cols = (db.prepare('PRAGMA table_info(settings)').all() as any[]).map((c) => c.name);
+  expect(cols).toContain('failure_threshold');
+  expect((db.prepare('SELECT failure_threshold FROM settings WHERE id = 1').get() as any).failure_threshold).toBe(3);
+});
