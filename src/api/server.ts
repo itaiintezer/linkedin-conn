@@ -6,8 +6,9 @@ import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
-import { estimateQueueCompletion, nextBatch, orderUpcoming } from '../core/forecast.js';
-import { windowStartIso } from '../core/rate-limit.js';
+import { estimateQueueCompletion, nextBatchForecast, orderUpcoming } from '../core/forecast.js';
+import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
+import { dailyRemainingFor } from '../core/daily-budget.js';
 import { Mutex } from '../core/mutex.js';
 import { runSenderOnce } from '../worker/sender.js';
 import { defaultCohortName } from '../core/cohort-name.js';
@@ -66,10 +67,12 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     const now = new Date();
     const queueRemaining = (counts.queued ?? 0) + (counts.scheduled ?? 0);
     const scheduledRows = repos.profiles.byStatus('scheduled');
+    const weekly_sent = repos.events.countSentSince(windowStartIso(now));
+    const weeklyRemaining = remainingCapacity(s.weekly_cap, weekly_sent);
     return {
       paused: s.paused,
       pause_reason: s.pause_reason,
-      weekly_sent: repos.events.countSentSince(windowStartIso(now)),
+      weekly_sent,
       weekly_cap: s.weekly_cap,
       counts,
       loggedIn: a.login_logged_in === 1,
@@ -78,7 +81,14 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
       forecast: {
         queue_remaining: queueRemaining,
         eta: estimateQueueCompletion(queueRemaining, s, now),
-        next_batch: nextBatch(scheduledRows, now),
+        next_batch: nextBatchForecast(scheduledRows, {
+          backlog: queueRemaining,
+          weeklyRemaining,
+          dailyRemaining: dailyRemainingFor(repos, s, now),
+          guardrailTripped: a.guardrail_tripped === 1,
+          paused: s.paused === 1,
+          settings: s,
+        }, now),
       },
       guardrail: {
         tripped: a.guardrail_tripped,
