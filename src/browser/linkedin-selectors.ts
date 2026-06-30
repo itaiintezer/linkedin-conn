@@ -24,10 +24,6 @@ export const SEL = {
   // tracking may need its own selector pass.
   invitationCardLink: 'a[href*="/in/"]',
   connectionCardLink: 'a[href*="/in/"]',
-
-  // Fallback path: the obfuscated Connect control on a profile is an anchor to the
-  // custom-invite route. Clicking it opens the composer in-page.
-  connectAnchor: 'a[href*="custom-invite"]',
 };
 
 // Role-based locator builders. getByRole matches the *accessible name*, so these
@@ -47,9 +43,19 @@ export const find = {
   // English "Pending" wording is safe.
   pendingBadge: (s: Scope): Locator => s.locator('[aria-label*="Pending" i]'),
 
-  // Fallback path: Connect hidden behind the "More" overflow menu
-  moreActions: (s: Scope): Locator => s.getByRole('button', { name: /more actions/i }),
-  connectMenuItem: (s: Scope): Locator => s.getByRole('menuitem', { name: /^connect$/i }),
+  // Fallback path (used only when the direct custom-invite route shows no composer).
+  // The Connect control has two shapes, so we match it two ways:
+  //  - top card: a button/anchor with aria-label "Invite <Name> to connect" — match by
+  //    NAME, scoped to <main> so it can't grab a "people also viewed" person.
+  //  - under "More": an <a href=...custom-invite...vanityName=<slug>> with NO aria-label
+  //    — match by the target's own slug in the href.
+  connectByName: (s: Scope, name: string): Locator =>
+    s.locator(`[aria-label*="${name.replace(/["\\]/g, '')}"][aria-label*="to connect"]`),
+  connectByHref: (s: Scope, slug: string): Locator =>
+    s.locator(`a[href*="custom-invite"][href*="vanityName=${slug}"]`),
+  // Profile overflow button. MUST be scoped to <main> by the caller — an unscoped
+  // getByRole matches LinkedIn's global-nav "More" and misclicks.
+  moreButton: (s: Scope): Locator => s.getByRole('button', { name: /^more$/i }),
 };
 
 export const URLS = {

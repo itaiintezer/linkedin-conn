@@ -120,38 +120,57 @@ export class LinkedInDriver implements BrowserDriver {
 
   /**
    * Fallback when the direct custom-invite route yields no composer: open the
-   * profile and click the Connect control. Tries the obfuscated custom-invite
-   * anchor first, then the "More" overflow menu's Connect item.
+   * profile and click the target's Connect control. The control has two shapes:
+   *  - top card: matched by the target's name (scoped to <main> to skip the
+   *    "people also viewed" sidebar, whose Connect links are also inside <main>);
+   *  - under the "More" overflow: a custom-invite anchor carrying the target's
+   *    own slug, so it can never resolve to a different person.
+   * Verified live against both layouts (top-card and Connect-under-More).
    */
   private async openComposerViaProfile(page: Page, url: string): Promise<void> {
+    const slug = profileSlug(url);
+    if (!slug) return;
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await sleep(rand(1500, 3000));
 
-    const anchor = page.locator(SEL.connectAnchor).first();
-    if (await anchor.isVisible().catch(() => false)) {
-      await anchor.click().catch(() => {});
-      await sleep(rand(1500, 3000));
-      if (await this.composerVisible(page)) return;
-    }
+    const name = await this.readFullName(page);
+    const main = page.locator('main');
+    const byName = name ? find.connectByName(main, name).first() : null;
+    const byHref = find.connectByHref(page, slug).first();
 
-    const more = find.moreActions(page).first();
+    const clickIfVisible = async (loc: typeof byHref | null): Promise<boolean> => {
+      if (!loc) return false;
+      if (!(await loc.isVisible().catch(() => false))) return false;
+      await loc.click().catch(() => {});
+      await sleep(rand(1500, 3000));
+      return this.composerVisible(page);
+    };
+
+    // a) Connect in the top card, then b) a direct custom-invite anchor for this target.
+    if (await clickIfVisible(byName)) return;
+    if (await clickIfVisible(byHref)) return;
+
+    // c) Connect tucked under the "More" overflow (scoped to <main> to avoid the
+    //    global-nav "More").
+    const more = find.moreButton(main).first();
     if (await more.isVisible().catch(() => false)) {
       await more.click().catch(() => {});
       await sleep(rand(800, 1600));
-      const item = find.connectMenuItem(page).first();
-      if (await item.isVisible().catch(() => false)) {
-        await item.click().catch(() => {});
-        await sleep(rand(1500, 3000));
-      }
+      if (await clickIfVisible(byHref)) return;
+      await clickIfVisible(byName);
     }
   }
 
   // The new profile UI has no <h1>; the profile name is reliably in the document title.
-  private async readFirstName(page: Page): Promise<string | undefined> {
+  private async readFullName(page: Page): Promise<string | undefined> {
     const title = (await page.title().catch(() => '')) || '';
     const name = title.replace(/^\(\d+\+?\)\s*/, '').replace(/\s*[|·].*$/, '').trim();
     if (!name || /linkedin/i.test(name)) return undefined;
-    return name.split(/\s+/)[0];
+    return name;
+  }
+
+  private async readFirstName(page: Page): Promise<string | undefined> {
+    return (await this.readFullName(page))?.split(/\s+/)[0];
   }
 
   async readPendingInvites(): Promise<string[]> {
