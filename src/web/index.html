@@ -118,7 +118,70 @@
         </div>
       </div>
 
-      <div class="cards" id="statCards"></div>
+      <!-- The "always-running queue engine": a live conveyor. Pace (fuel + ETA /
+           next batch) up top; profiles flow Queued → Scheduled → Pending → Accepted;
+           terminal outcomes drop out beneath. Numbers are updated in place by
+           renderEngine() so the conveyor animation never restarts on a poll. -->
+      <div class="engine" id="engine" aria-label="Outreach engine status">
+        <div class="engine-top">
+          <div class="engine-fuel">
+            <div class="fuel-meta">
+              <span class="label">This week</span>
+              <div class="fuel-val">
+                <span class="bignum" id="fuelSent">0</span>
+                <span class="fuel-cap">/ <span id="fuelCap">0</span> sends</span>
+              </div>
+            </div>
+            <div class="fuelbar" aria-hidden="true"><i id="fuelBar" style="width:0%"></i></div>
+          </div>
+          <div class="engine-pills">
+            <span class="epill">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span id="etaTxt">—</span>
+            </span>
+            <span class="epill">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+              <span id="nextTxt">—</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="track">
+          <div class="flowline" aria-hidden="true"></div>
+          <div class="dotflow" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <div class="station queued">
+            <div class="puck"><span class="n" id="stQueued">0</span></div>
+            <span class="nm">Queued<small>waiting</small></span>
+          </div>
+          <div class="station sched">
+            <div class="puck"><span class="n" id="stScheduled">0</span></div>
+            <span class="nm">Scheduled<small>has a slot</small></span>
+          </div>
+          <div class="station pending">
+            <div class="puck"><span class="n" id="stPending">0</span></div>
+            <span class="nm">Pending<small>request sent</small></span>
+          </div>
+          <div class="station accepted">
+            <div class="puck"><span class="n" id="stAccepted">0</span></div>
+            <span class="nm">Accepted<small id="acceptedFoot">checked never</small></span>
+          </div>
+        </div>
+
+        <div class="outcome">
+          <div class="o exp">
+            <span class="oi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg></span>
+            <div><div class="on" id="outExpired">0</div><div class="ol">Expired</div></div>
+          </div>
+          <div class="o alr">
+            <span class="oi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 15-6.7L21 8M21 3v5h-5" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16M3 21v-5h5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <div><div class="on" id="outAlready">0</div><div class="ol">Already connected</div></div>
+          </div>
+          <div class="o att" id="outAttnCard" title="View profiles that need attention">
+            <span class="oi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+            <div><div class="on" id="outAttn">0</div><div class="ol">Needs attention</div></div>
+          </div>
+        </div>
+      </div>
 
       <div class="panel-head sub">
         <div class="panel-title">

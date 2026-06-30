@@ -137,55 +137,71 @@ function fmtEta(eta) {
   return { value: `~${d}d`, foot: `by ${by}` };
 }
 
-function renderCards(status) {
+function setText(id, value) {
+  const node = document.getElementById(id);
+  if (node) node.textContent = String(value);
+}
+
+/* Fill an engine pill's text span: optional lead text, an emphasized value, and a tail. */
+function fillPill(id, lead, value, tail) {
+  const span = document.getElementById(id);
+  if (!span) return;
+  const kids = [];
+  if (lead) kids.push(document.createTextNode(lead + ' '));
+  if (value != null) kids.push(el('b', { text: String(value) }));
+  if (tail) kids.push(document.createTextNode((value != null ? ' ' : '') + tail));
+  span.replaceChildren(...kids);
+}
+
+// Render the live engine by updating numbers IN PLACE — never re-rendering the
+// DOM — so the conveyor animation runs continuously across 15s status polls.
+function renderEngine(status) {
   const c = status.counts || {};
   const f = status.forecast || {};
+
+  // --- Pace: weekly "fuel" ---
   const pct = status.weekly_cap ? Math.min(100, Math.round((status.weekly_sent / status.weekly_cap) * 100)) : 0;
+  setText('fuelSent', status.weekly_sent ?? 0);
+  setText('fuelCap', status.weekly_cap ?? 0);
+  const fuelBar = document.getElementById('fuelBar');
+  if (fuelBar) fuelBar.style.width = `${pct}%`;
+
+  // --- Pace: ETA pill ---
   const eta = fmtEta(f.eta);
+  if (eta.value === '—') fillPill('etaTxt', null, null, eta.foot);
+  else fillPill('etaTxt', 'finishes in', eta.value, eta.foot);
+
+  // --- Pace: next-batch pill ---
   const nb = f.next_batch;
+  if (!nb) fillPill('nextTxt', null, null, 'no batch queued');
+  else if (nb.blocked) fillPill('nextTxt', null, null, nb.reason);
+  else if (nb.estimated === false) fillPill('nextTxt', 'next batch', nb.count, `at ${fmtClock(nb.at)}`);
+  else fillPill('nextTxt', 'next batch', `~${nb.count}`, `${fmtRelDay(nb.at)} ~${fmtClock(nb.at)}`);
+
+  // --- Flow: conveyor stations ---
+  setText('stQueued', c.queued || 0);
+  setText('stScheduled', c.scheduled || 0);
+  setText('stPending', c.sent || 0);
+  setText('stAccepted', c.accepted || 0);
+  setText('acceptedFoot', `checked ${status.acceptance_checked_at ? fmtClock(status.acceptance_checked_at) : 'never'}`);
+
+  // --- Terminal outcomes ---
+  setText('outExpired', c.expired || 0);
+  setText('outAlready', c.already_connected || 0);
   const attention = (c.failed || 0) + (c.needs_attention || 0);
-  let nextVal = '—';
-  let nextFoot = 'none queued';
-  if (nb && nb.blocked) {
-    nextFoot = nb.reason;
-  } else if (nb && nb.estimated === false) {
-    nextVal = nb.count;
-    nextFoot = `at ${fmtClock(nb.at)}`;
-  } else if (nb && nb.estimated === true) {
-    nextVal = `~${nb.count}`;
-    nextFoot = `${fmtRelDay(nb.at)} ~${fmtClock(nb.at)}`;
+  setText('outAttn', attention);
+  const attnCard = document.getElementById('outAttnCard');
+  if (attnCard) {
+    attnCard.classList.toggle('has-attn', attention > 0);
+    attnCard.classList.toggle('is-clickable', attention > 0);
   }
-  const cards = [
-    { cls: 'accent-week', label: 'This week', value: `${status.weekly_sent}`, sub: ` / ${status.weekly_cap}`, meter: pct },
-    { cls: 'accent-queued', label: 'Queued', value: c.queued || 0 },
-    { cls: 'accent-sched', label: 'Scheduled', value: c.scheduled || 0 },
-    { cls: 'accent-eta', label: 'Time to finish', value: eta.value, foot: eta.foot },
-    { cls: 'accent-next', label: 'Next batch', value: nextVal, foot: nextFoot },
-    { cls: 'accent-pending', label: 'Pending', value: c.sent || 0 },
-    { cls: 'accent-accepted', label: 'Accepted', value: c.accepted || 0, foot: `checked ${status.acceptance_checked_at ? fmtClock(status.acceptance_checked_at) : 'never'}` },
-    { cls: 'accent-expired', label: 'Expired', value: c.expired || 0 },
-    { cls: 'accent-already', label: 'Already connected', value: c.already_connected || 0 },
-    { cls: 'accent-attn', label: 'Needs attention', value: attention, tab: attention > 0 ? 'attention' : null },
-  ];
+
   // Show the bulk Retry button only when there's something to retry.
   const retryBtn = $('#retryFailed');
   if (retryBtn) {
     retryBtn.hidden = attention === 0;
     retryBtn.textContent = attention ? `Retry failed (${attention})` : 'Retry failed';
   }
-  const wrap = $('#statCards');
-  wrap.replaceChildren(...cards.map((card) => {
-    const valNode = el('div', { class: 'value' }, String(card.value));
-    if (card.sub) valNode.appendChild(el('span', { class: 'sub', text: card.sub }));
-    const children = [el('div', { class: 'label', text: card.label }), valNode];
-    if (card.meter != null) {
-      children.push(el('div', { class: 'meter' }, el('i', { style: `width:${card.meter}%` })));
-    }
-    if (card.foot) children.push(el('div', { class: 'card-foot', text: card.foot }));
-    const node = el('div', { class: `card ${card.cls}${card.tab ? ' is-clickable' : ''}` }, ...children);
-    if (card.tab) node.addEventListener('click', () => switchTab(card.tab));
-    return node;
-  }));
 }
 
 function applyPauseUi(status) {
@@ -221,7 +237,7 @@ function applyGuardrailUi(status) {
 async function refreshStatus() {
   try {
     const status = await api('/api/status');
-    renderCards(status);
+    renderEngine(status);
     applyPauseUi(status);
     applyGuardrailUi(status);
   } catch (_) { /* transient; next tick retries */ }
@@ -292,6 +308,13 @@ function initAttention() {
 }
 
 function initDashboard() {
+  // The "Needs attention" outcome jumps to the Attention tab — but only when it
+  // carries a count (renderEngine toggles `is-clickable`).
+  const attnCard = $('#outAttnCard');
+  if (attnCard) attnCard.addEventListener('click', () => {
+    if (attnCard.classList.contains('is-clickable')) switchTab('attention');
+  });
+
   $('#pauseToggle').addEventListener('click', async () => {
     const btn = $('#pauseToggle');
     btn.disabled = true;
