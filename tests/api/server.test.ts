@@ -3,6 +3,7 @@ import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
+import { defaultCohortName } from '../../src/core/cohort-name.js';
 
 let app: ReturnType<typeof buildServer>;
 let repos: Repos;
@@ -82,4 +83,35 @@ test('POST /api/settings ignores unknown keys and applies known ones', async () 
   });
   expect(res.statusCode).toBe(200);
   expect(repos.settings.get().weekly_cap).toBe(42);
+});
+
+test('POST /api/lists defaults the cohort to the date when none is given', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { text: 'https://linkedin.com/in/no-cohort-1', message_template: 'Hi {firstName}' },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(repos.cohorts.findByName(defaultCohortName(new Date()))).toBeDefined();
+});
+
+test('POST /api/lists derives allow_no_note from template presence', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: { cohort: 'WithNote', text: 'https://linkedin.com/in/n1', message_template: 'Hi' } });
+  await app.inject({ method: 'POST', url: '/api/lists', payload: { cohort: 'NoNote', text: 'https://linkedin.com/in/n2' } });
+  expect(repos.cohorts.findByName('WithNote')!.allow_no_note).toBe(0);
+  expect(repos.cohorts.findByName('NoNote')!.allow_no_note).toBe(1);
+});
+
+test('POST /api/profiles defaults the cohort to the date when none is given', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://linkedin.com/in/solo-1', message: 'Hey {firstName}' },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(repos.cohorts.findByName(defaultCohortName(new Date()))).toBeDefined();
+  expect(repos.profiles.all()[0].custom_message).toBe('Hey {firstName}');
+});
+
+test('POST /api/settings accepts onboarded', async () => {
+  await app.inject({ method: 'POST', url: '/api/settings', payload: { onboarded: 1 } });
+  expect(repos.settings.get().onboarded).toBe(1);
 });
