@@ -1,5 +1,13 @@
 import { test, expect } from 'vitest';
-import { resolveMessage, selectNoteSource, applyFirstName } from '../../src/core/message.js';
+import { resolveMessage, selectNoteSource, applyFirstName, deriveAllowNoNote } from '../../src/core/message.js';
+
+test('deriveAllowNoNote: blank template allows bare requests, non-blank requires a note', () => {
+  expect(deriveAllowNoNote(undefined)).toBe(true);
+  expect(deriveAllowNoNote(null)).toBe(true);
+  expect(deriveAllowNoNote('')).toBe(true);
+  expect(deriveAllowNoNote('   ')).toBe(true);
+  expect(deriveAllowNoNote('Hi {firstName}')).toBe(false);
+});
 
 test('selectNoteSource picks custom over template, leaving {firstName} intact', () => {
   expect(selectNoteSource('Hey {firstName}', 'Hi {firstName}')).toBe('Hey {firstName}');

@@ -18,6 +18,15 @@ export function applyFirstName(text: string, firstName: string | null): string {
 }
 
 /**
+ * Derive the "send without a note" policy from the template alone: a blank template means
+ * bare requests are intended (allowed); a non-blank template means the note matters, so a
+ * bare fallback is NOT allowed (the sender routes to needs_attention on note-quota exhaustion).
+ */
+export function deriveAllowNoNote(template: string | null | undefined): boolean {
+  return !template || !template.trim();
+}
+
+/**
  * Select the note source then substitute {firstName} + truncate. Convenience composition
  * of selectNoteSource + applyFirstName (used where the name is already known).
  */
