@@ -1,5 +1,30 @@
 import { test, expect } from 'vitest';
-import { openDatabase } from '../../src/db/database.js';
+import { DatabaseSync } from 'node:sqlite';
+import { openDatabase, runMigrations } from '../../src/db/database.js';
+
+test('fresh db seeds onboarded = 0', () => {
+  const db = openDatabase(':memory:');
+  const s = db.prepare('SELECT onboarded FROM settings WHERE id = 1').get() as any;
+  expect(s.onboarded).toBe(0);
+});
+
+test('runMigrations adds onboarded to a legacy settings table and back-fills configured users', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), account_type TEXT NOT NULL DEFAULT 'unknown');`);
+  db.exec(`INSERT INTO settings (id, account_type) VALUES (1, 'premium');`);
+  runMigrations(db);
+  const cols = (db.prepare('PRAGMA table_info(settings)').all() as any[]).map((c) => c.name);
+  expect(cols).toContain('onboarded');
+  expect((db.prepare('SELECT onboarded FROM settings WHERE id = 1').get() as any).onboarded).toBe(1);
+});
+
+test('runMigrations leaves unknown-account users not onboarded', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), account_type TEXT NOT NULL DEFAULT 'unknown');`);
+  db.exec(`INSERT INTO settings (id, account_type) VALUES (1, 'unknown');`);
+  runMigrations(db);
+  expect((db.prepare('SELECT onboarded FROM settings WHERE id = 1').get() as any).onboarded).toBe(0);
+});
 
 test('opens in-memory db and creates all tables', () => {
   const db = openDatabase(':memory:');

@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS settings (
   min_delay_ms INTEGER NOT NULL DEFAULT 20000,
   max_delay_ms INTEGER NOT NULL DEFAULT 90000,
   paused INTEGER NOT NULL DEFAULT 0,
-  pause_reason TEXT
+  pause_reason TEXT,
+  onboarded INTEGER NOT NULL DEFAULT 0
 );
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);

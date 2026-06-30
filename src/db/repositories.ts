@@ -9,6 +9,7 @@ const SETTINGS_COLUMNS = new Set([
   'workday_start_hour', 'workday_end_hour', 'weekdays_only', 'weekly_cap',
   'batch_size', 'batches_per_day', 'acceptance_checks_per_day', 'account_type',
   'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
+  'onboarded',
 ]);
 
 export class CohortRepo {
