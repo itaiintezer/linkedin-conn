@@ -231,57 +231,80 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
   box-shadow: 0 0 0 4px var(--brand-glow); animation: pulse 1.8s infinite; margin-right: 4px;
 }
 
-/* ---------- Stat cards ---------- */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: 16px; }
-.card {
-  background: var(--panel);
-  border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 20px 20px 18px; position: relative; overflow: hidden;
-  box-shadow: var(--shadow-sm);
-  transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+/* ---------- Dashboard engine (always-running queue conveyor) ----------
+   Replaces the old flat stat-card grid. Two registers:
+   • Pace  — weekly "fuel" + ETA / next-batch pills (is it running, and when?)
+   • Flow  — a live conveyor: Queued → Scheduled → Pending → Accepted, with
+             terminal outcomes dropping out beneath.
+   The travelling dots are the "always-running" signal; they persist across the
+   15s status polls because renderEngine() updates numbers in place rather than
+   rebuilding the DOM. */
+@keyframes cardIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+.engine {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 24px 26px 22px; box-shadow: var(--shadow-sm);
   animation: cardIn .5s cubic-bezier(.2,.7,.3,1) both;
 }
-.card:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: #ded9cd; }
-.card:nth-child(1){animation-delay:.02s} .card:nth-child(2){animation-delay:.07s}
-.card:nth-child(3){animation-delay:.12s} .card:nth-child(4){animation-delay:.17s}
-.card:nth-child(5){animation-delay:.22s} .card:nth-child(6){animation-delay:.27s}
-.card:nth-child(7){animation-delay:.32s} .card:nth-child(8){animation-delay:.37s}
-.card:nth-child(9){animation-delay:.42s}
-@keyframes cardIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
-.card::before {
-  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
-  background: var(--accent, var(--ink-faint));
-}
-.card .label {
-  font-size: 11.5px; font-weight: 600; letter-spacing: 0.7px;
-  text-transform: uppercase; color: var(--ink-3);
-}
-.card .value {
-  font-family: var(--display); font-size: 42px; font-weight: 600;
-  margin-top: 8px; color: var(--ink); line-height: 1;
-  font-variant-numeric: tabular-nums; letter-spacing: -1px;
-}
-.card .value .sub { font-family: var(--sans); font-size: 17px; font-weight: 500; color: var(--ink-faint); letter-spacing: 0; }
-.card.accent-week    { --accent: var(--amber); }
-.card.accent-queued  { --accent: var(--slate); }
-.card.accent-sched   { --accent: var(--blue); }
-.card.accent-pending { --accent: var(--violet); }
-.card.accent-accepted{ --accent: var(--green); }
-.card.accent-expired { --accent: var(--neutral); }
-.card.accent-attn    { --accent: var(--red); }
-.card.accent-eta     { --accent: var(--blue); }
-.card.accent-next    { --accent: var(--teal); }
-.card.accent-already { --accent: var(--plum); }
-.card-foot { margin-top: 6px; font-size: 11.5px; font-weight: 500; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
-.card.is-clickable { cursor: pointer; }
-.card.is-clickable:hover { border-color: var(--red); }
+.engine .label { font-size: 11.5px; font-weight: 600; letter-spacing: 0.7px; text-transform: uppercase; color: var(--ink-3); }
+
+/* pace row */
+.engine-top { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; }
+.engine-fuel { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.fuel-val { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }
+.fuel-val .bignum { font-family: var(--display); font-size: 30px; font-weight: 600; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
+.fuel-cap { font-size: 14px; font-weight: 500; color: var(--ink-faint); }
+.fuelbar { width: 180px; height: 10px; border-radius: 100px; background: var(--line-soft); overflow: hidden; flex: none; }
+.fuelbar > i { display: block; height: 100%; border-radius: 100px; background: linear-gradient(90deg, var(--amber), #e2932f); transition: width .8s cubic-bezier(.2,.7,.3,1); }
+.engine-pills { display: flex; gap: 10px; flex-wrap: wrap; }
+.epill { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); background: var(--panel-2); border: 1px solid var(--line); border-radius: 100px; padding: 7px 14px; }
+.epill svg { color: var(--ink-3); flex: none; }
+.epill b { font-family: var(--mono); color: var(--ink); font-weight: 600; }
+
+/* conveyor */
+.track { position: relative; display: flex; align-items: flex-start; justify-content: space-between; padding: 16px 0 4px; }
+.flowline { position: absolute; left: 56px; right: 56px; top: 58px; height: 3px; z-index: 0;
+  background: repeating-linear-gradient(90deg, var(--brand-100) 0 9px, transparent 9px 20px); }
+.dotflow { position: absolute; left: 56px; right: 56px; top: 54px; height: 11px; z-index: 1; pointer-events: none; overflow: hidden; }
+.dotflow i { position: absolute; top: 0; width: 11px; height: 11px; border-radius: 50%;
+  background: var(--brand); box-shadow: 0 0 0 4px var(--brand-glow); animation: travel 4.6s linear infinite; }
+.dotflow i:nth-child(2) { animation-delay: 1.55s; } .dotflow i:nth-child(3) { animation-delay: 3.1s; } .dotflow i:nth-child(4) { animation-delay: 0.8s; }
+@keyframes travel { from { left: -2%; opacity: 0; } 8% { opacity: 1; } 92% { opacity: 1; } to { left: 102%; opacity: 0; } }
+
+.station { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 11px; flex: 1; text-align: center; }
+.station .puck { width: 86px; height: 86px; border-radius: 22px; display: grid; place-items: center;
+  background: var(--panel); border: 1.5px solid var(--line); box-shadow: var(--shadow);
+  transition: transform .18s ease, box-shadow .18s ease; }
+.station .puck:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.station .puck .n { font-family: var(--display); font-size: 32px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.station.queued   .puck { border-color: #cdd4dc; } .station.queued   .n { color: var(--slate); }
+.station.sched    .puck { border-color: #c3d4f7; } .station.sched    .n { color: var(--blue); }
+.station.pending  .puck { border-color: #ddccf3; } .station.pending  .n { color: var(--violet); }
+.station.accepted .puck { border-color: var(--brand-100); background: var(--brand-50); } .station.accepted .n { color: var(--brand-700); }
+.station .nm { font-size: 11.5px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--ink-3); }
+.station .nm small { display: block; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--ink-faint); font-size: 11px; margin-top: 3px; }
+
+/* terminal outcomes */
+.outcome { display: flex; gap: 12px; margin-top: 26px; padding-top: 20px; border-top: 1px dashed var(--line); }
+.outcome .o { flex: 1; display: flex; align-items: center; gap: 13px; padding: 13px 16px; border-radius: 12px;
+  background: var(--panel-2); border: 1px solid var(--line); transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
+.outcome .oi { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; flex: none; }
+.outcome .oi svg { width: 18px; height: 18px; }
+.outcome .on { font-family: var(--display); font-size: 24px; font-weight: 600; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
+.outcome .ol { font-size: 11.5px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.4px; margin-top: 2px; }
+.o.exp .oi { background: var(--neutral-bg); color: var(--neutral); }
+.o.alr .oi { background: var(--violet-bg); color: var(--plum); }
+.o.att .oi { background: var(--red-bg); color: var(--red); }
+.o.att.is-clickable { cursor: pointer; }
+.o.att.is-clickable:hover { transform: translateY(-2px); box-shadow: var(--shadow); border-color: #f1b6ae; }
+.o.att.has-attn { border-color: #f3c5be; background: var(--red-bg); }
+.o.att.has-attn .on { color: var(--red); }
+
 .row-actions { display: flex; gap: 6px; }
 .row-actions .btn { padding: 3px 12px; font-size: 12.5px; }
-.card .meter { margin-top: 14px; height: 6px; border-radius: 100px; background: var(--line-soft); overflow: hidden; }
-.card .meter > i {
-  display: block; height: 100%; border-radius: 100px;
-  background: linear-gradient(90deg, var(--amber), #e2932f);
-  transition: width .8s cubic-bezier(.2,.7,.3,1);
+
+@media (prefers-reduced-motion: reduce) {
+  .dotflow i { animation: none; opacity: 0; }
 }
 
 /* ---------- Tables ---------- */
@@ -511,6 +534,14 @@ input:disabled { color: var(--ink-3); cursor: not-allowed; background: var(--lin
   .settings-grid { grid-template-columns: 1fr; }
   .add-layout { grid-template-columns: 1fr; }
   .add-main textarea { min-height: 220px; }
+}
+@media (max-width: 760px) {
+  /* The horizontal conveyor doesn't fit narrow screens: drop the flow line and
+     wrap the stations into a 2×2 grid. Counts stay; only the motion is dropped. */
+  .track { flex-wrap: wrap; gap: 22px 0; }
+  .station { flex-basis: 50%; }
+  .flowline, .dotflow { display: none; }
+  .outcome { flex-direction: column; }
 }
 @media (max-width: 640px) {
   .topbar { flex-wrap: wrap; padding: 16px 20px; }
