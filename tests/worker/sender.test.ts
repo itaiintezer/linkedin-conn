@@ -5,7 +5,11 @@ import { FakeDriver } from '../../src/browser/driver.js';
 import { runSenderOnce } from '../../src/worker/sender.js';
 
 let repos: Repos; let driver: FakeDriver;
-beforeEach(() => { repos = new Repos(openDatabase(':memory:')); driver = new FakeDriver(); });
+beforeEach(() => {
+  repos = new Repos(openDatabase(':memory:'));
+  driver = new FakeDriver();
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
+});
 
 function seedScheduled(url: string, whenIso: string, cohortId: number) {
   const p = repos.profiles.add(cohortId, url, null);
@@ -36,13 +40,15 @@ test('already-connected -> skipped, not counted as sent', async () => {
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(0);
 });
 
-test('checkpoint -> pauses queue and flags needs_attention', async () => {
+test('checkpoint -> trips guardrail and flags needs_attention', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
   driver.scripted.set('https://www.linkedin.com/in/a', 'checkpoint');
   await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
-  expect(repos.settings.get().paused).toBe(1);
+  expect(repos.appState.get().guardrail_tripped).toBe(1);
+  expect(repos.appState.get().guardrail_reason).toBe('checkpoint');
   expect(repos.profiles.byStatus('needs_attention')).toHaveLength(1);
+  expect(repos.settings.get().paused).toBe(0); // manual pause untouched
 });
 
 test('note_quota with allow_no_note retries bare and sends', async () => {
@@ -68,11 +74,66 @@ test('does nothing when paused', async () => {
   expect(driver.sentLog).toHaveLength(0);
 });
 
-test('not logged in: skips without sending and without hard-pausing', async () => {
+test('not logged in (cache): skips without sending and without tripping', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
-  driver.loggedIn = false;
+  repos.appState.setLogin({ loggedIn: false, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
   await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
   expect(driver.sentLog).toHaveLength(0);
-  expect(repos.settings.get().paused).toBe(0); // transient, not a hard pause
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+  expect(repos.settings.get().paused).toBe(0);
+});
+
+test('does nothing and never opens the browser when no profile is due', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  // scheduled in the future -> not due yet
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T23:00:00.000Z', c.id);
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(driver.sentLog).toHaveLength(0);
+  expect(driver.open).toBe(false); // lazy: browser never opened
+});
+
+test('skips and trips login_lost when the live check fails despite a stale cache', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.loggedIn = false; // cache says logged-in (from beforeEach), live read disagrees
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(driver.sentLog).toHaveLength(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(1);
+  expect(repos.appState.get().guardrail_reason).toBe('login_lost');
+  expect(repos.appState.get().login_logged_in).toBe(0); // cache corrected
+});
+
+test('does nothing when guardrail is already tripped', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  repos.appState.trip('checkpoint', 'x', '2026-06-29T00:00:00.000Z');
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(driver.sentLog).toHaveLength(0);
+});
+
+test('three consecutive errors trip repeated_failures and stop the batch', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (const slug of ['a', 'b', 'c', 'd']) {
+    seedScheduled(`https://www.linkedin.com/in/${slug}`, '2026-06-29T09:00:00.000Z', c.id);
+    driver.scripted.set(`https://www.linkedin.com/in/${slug}`, 'error');
+  }
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(repos.appState.get().guardrail_tripped).toBe(1);
+  expect(repos.appState.get().guardrail_reason).toBe('repeated_failures');
+  // tripped on the 3rd error -> 4th profile never attempted
+  expect(driver.sentLog).toHaveLength(3);
+});
+
+test('a success between failures resets the streak (no trip)', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  seedScheduled('https://www.linkedin.com/in/b', '2026-06-29T09:00:00.000Z', c.id);
+  seedScheduled('https://www.linkedin.com/in/c', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'error');
+  driver.scripted.set('https://www.linkedin.com/in/b', 'sent');
+  driver.scripted.set('https://www.linkedin.com/in/c', 'error');
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+  expect(repos.appState.get().failure_streak).toBe(1);
 });

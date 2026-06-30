@@ -19,6 +19,7 @@ beforeEach(() => {
   repos = new Repos(openDatabase(':memory:'));
   driver = new FakeDriver();
   app = buildServer(repos, driver);
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
 });
 
 test('happy path: list -> schedule -> send -> accept -> metrics', async () => {

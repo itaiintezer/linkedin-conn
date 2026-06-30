@@ -10,6 +10,7 @@ let repos: Repos;
 beforeEach(() => {
   repos = new Repos(openDatabase(':memory:'));
   app = buildServer(repos, new FakeDriver());
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
 });
 
 test('POST /api/run-now promotes queued profiles and sends a batch immediately', async () => {
