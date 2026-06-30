@@ -14,6 +14,8 @@ npm start
 ```
 Open http://localhost:4400.
 
+Non-technical operators: see [RUNBOOK.md](RUNBOOK.md).
+
 ## First run
 1. Click **Connect LinkedIn** — a browser window opens; log in manually. Your session
    persists in `.linkedin-profile/`.
