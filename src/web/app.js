@@ -61,6 +61,11 @@ function toast(node, msg, isError = false) {
 }
 
 /* ---------- tab navigation ---------- */
+function switchTab(name) {
+  const tab = $$('.tab').find((t) => t.dataset.tab === name);
+  if (tab) tab.click();
+}
+
 function initTabs() {
   $$('.tab').forEach((tab) => {
     tab.addEventListener('click', () => {
@@ -71,6 +76,7 @@ function initTabs() {
       if (name === 'cohorts') loadCohorts();
       if (name === 'metrics') loadMetrics();
       if (name === 'settings') loadSettings();
+      if (name === 'attention') loadAttention();
     });
   });
 }
@@ -105,23 +111,45 @@ function initLogin() {
 /* ---------- dashboard ---------- */
 let lastPaused = null;
 
+function fmtClock(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtEta(eta) {
+  if (!eta || eta.finishDate == null) {
+    return { value: '—', foot: eta && eta.sendingDays === 0 ? 'queue empty' : 'no capacity' };
+  }
+  const d = eta.sendingDays;
+  const by = new Date(eta.finishDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return { value: `~${d}d`, foot: `by ${by}` };
+}
+
 function renderCards(status) {
   const c = status.counts || {};
+  const f = status.forecast || {};
   const pct = status.weekly_cap ? Math.min(100, Math.round((status.weekly_sent / status.weekly_cap) * 100)) : 0;
+  const eta = fmtEta(f.eta);
+  const nb = f.next_batch;
+  const attention = (c.failed || 0) + (c.needs_attention || 0);
   const cards = [
     { cls: 'accent-week', label: 'This week', value: `${status.weekly_sent}`, sub: ` / ${status.weekly_cap}`, meter: pct },
     { cls: 'accent-queued', label: 'Queued', value: c.queued || 0 },
     { cls: 'accent-sched', label: 'Scheduled', value: c.scheduled || 0 },
+    { cls: 'accent-eta', label: 'Time to finish', value: eta.value, foot: eta.foot },
+    { cls: 'accent-next', label: 'Next batch', value: nb ? nb.count : '—', foot: nb ? `at ${fmtClock(nb.at)}` : 'none scheduled' },
     { cls: 'accent-sent', label: 'Sent', value: c.sent || 0 },
-    { cls: 'accent-accepted', label: 'Accepted', value: c.accepted || 0 },
-    { cls: 'accent-attn', label: 'Needs attention', value: c.needs_attention || 0 },
+    { cls: 'accent-accepted', label: 'Accepted', value: c.accepted || 0, foot: `checked ${status.acceptance_checked_at ? fmtClock(status.acceptance_checked_at) : 'never'}` },
+    { cls: 'accent-already', label: 'Already connected', value: c.already_connected || 0 },
+    { cls: 'accent-attn', label: 'Needs attention', value: attention, tab: attention > 0 ? 'attention' : null },
   ];
-  // Show the Retry button only when there's something to retry.
-  const retryable = (c.failed || 0) + (c.needs_attention || 0);
+  // Show the bulk Retry button only when there's something to retry.
   const retryBtn = $('#retryFailed');
   if (retryBtn) {
-    retryBtn.hidden = retryable === 0;
-    retryBtn.textContent = retryable ? `Retry failed (${retryable})` : 'Retry failed';
+    retryBtn.hidden = attention === 0;
+    retryBtn.textContent = attention ? `Retry failed (${attention})` : 'Retry failed';
   }
   const wrap = $('#statCards');
   wrap.replaceChildren(...cards.map((card) => {
@@ -131,7 +159,10 @@ function renderCards(status) {
     if (card.meter != null) {
       children.push(el('div', { class: 'meter' }, el('i', { style: `width:${card.meter}%` })));
     }
-    return el('div', { class: `card ${card.cls}` }, ...children);
+    if (card.foot) children.push(el('div', { class: 'card-foot', text: card.foot }));
+    const node = el('div', { class: `card ${card.cls}${card.tab ? ' is-clickable' : ''}` }, ...children);
+    if (card.tab) node.addEventListener('click', () => switchTab(card.tab));
+    return node;
   }));
 }
 
@@ -174,21 +205,68 @@ async function refreshStatus() {
   } catch (_) { /* transient; next tick retries */ }
 }
 
+let queueLimit = 10;
+
 async function refreshQueue() {
-  const body = $('#queueBody'), empty = $('#queueEmpty'), count = $('#queueCount');
+  const body = $('#queueBody'), empty = $('#queueEmpty'), count = $('#queueCount'), more = $('#queueMore');
   try {
-    const rows = await api('/api/profiles');
-    count.textContent = `${rows.length} record${rows.length === 1 ? '' : 's'}`;
+    const { upcoming, total_remaining } = await api(`/api/queue?limit=${queueLimit}`);
+    count.textContent = `${total_remaining} up for processing`;
+    if (more) more.hidden = total_remaining <= upcoming.length;
+    if (!upcoming.length) { body.replaceChildren(); empty.hidden = false; return; }
+    empty.hidden = true;
+    body.replaceChildren(...upcoming.map((p) => el('tr', {},
+      el('td', {}, el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) })),
+      el('td', { class: 'mono' }, p.cohort_name || '—'),
+      el('td', {}, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
+      el('td', { class: 'mono' }, fmtTime(p.scheduled_for)),
+      el('td', { class: 'mono' }, '—'),
+    )));
+  } catch (_) { /* transient */ }
+}
+
+async function loadAttention() {
+  const body = $('#attentionBody'), empty = $('#attentionEmpty');
+  try {
+    const rows = await api('/api/attention');
     if (!rows.length) { body.replaceChildren(); empty.hidden = false; return; }
     empty.hidden = true;
     body.replaceChildren(...rows.map((p) => el('tr', {},
       el('td', {}, el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) })),
       el('td', { class: 'mono' }, p.cohort_name || '—'),
       el('td', {}, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
-      el('td', { class: 'mono' }, fmtTime(p.scheduled_for)),
-      el('td', { class: p.last_error ? 'err' : 'mono', title: p.last_error || '' }, p.last_error || '—'),
+      el('td', { class: 'num mono' }, String(p.attempts ?? 0)),
+      el('td', { class: 'err', title: p.last_error || '' }, p.last_error || '—'),
+      el('td', { class: 'row-actions' },
+        el('button', { class: 'btn btn-ghost', onclick: () => actOnProfile(p.id, 'retry') }, 'Retry'),
+        el('button', { class: 'btn btn-ghost', onclick: () => actOnProfile(p.id, 'dismiss') }, 'Dismiss'),
+      ),
     )));
-  } catch (_) { /* transient */ }
+  } catch (_) { empty.hidden = false; }
+}
+
+async function actOnProfile(id, action) {
+  try {
+    await api(`/api/profiles/${id}/${action}`, { method: 'POST' });
+    await loadAttention();
+    await refreshStatus();
+  } catch (_) { /* ignore */ }
+}
+
+function initAttention() {
+  const more = $('#queueMore');
+  if (more) more.addEventListener('click', () => {
+    queueLimit = queueLimit >= 1000 ? 10 : 1000;
+    more.textContent = queueLimit >= 1000 ? 'Show less' : 'View more';
+    refreshQueue();
+  });
+  const retryAll = $('#attentionRetryAll');
+  if (retryAll) retryAll.addEventListener('click', async () => {
+    retryAll.disabled = true;
+    try { await api('/api/retry', { method: 'POST' }); await loadAttention(); await refreshStatus(); }
+    catch (_) { /* ignore */ }
+    retryAll.disabled = false;
+  });
 }
 
 function initDashboard() {
@@ -333,6 +411,7 @@ function initAddList() {
     try {
       const r = await api('/api/lists', { method: 'POST', body: payload });
       toast(result, `Added ${r.added} of ${r.found} found.`);
+      result.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       area.value = '';
       updateCount();
       loadCohortOptions();
@@ -497,6 +576,7 @@ function init() {
   initAddList();
   initCohorts();
   initSettings();
+  initAttention();
   initWizard();
 
   refreshLogin();

@@ -36,6 +36,7 @@
   --violet:     #7338d4;   --violet-bg: #f0e9fd;
   --green:      #07875a;   --green-bg:  #e2f4ea;
   --red:        #d63a3a;   --red-bg:    #fce9e7;
+  --teal:       #0d9488;   --plum:      #9d4edd;
   --neutral:    #6c7670;   --neutral-bg:#f0efe9;
 
   /* --- type --- */
@@ -244,6 +245,8 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .card:nth-child(1){animation-delay:.02s} .card:nth-child(2){animation-delay:.07s}
 .card:nth-child(3){animation-delay:.12s} .card:nth-child(4){animation-delay:.17s}
 .card:nth-child(5){animation-delay:.22s} .card:nth-child(6){animation-delay:.27s}
+.card:nth-child(7){animation-delay:.32s} .card:nth-child(8){animation-delay:.37s}
+.card:nth-child(9){animation-delay:.42s}
 @keyframes cardIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 .card::before {
   content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
@@ -265,6 +268,14 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .card.accent-sent    { --accent: var(--violet); }
 .card.accent-accepted{ --accent: var(--green); }
 .card.accent-attn    { --accent: var(--red); }
+.card.accent-eta     { --accent: var(--blue); }
+.card.accent-next    { --accent: var(--teal); }
+.card.accent-already { --accent: var(--plum); }
+.card-foot { margin-top: 6px; font-size: 11.5px; font-weight: 500; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+.card.is-clickable { cursor: pointer; }
+.card.is-clickable:hover { border-color: var(--red); }
+.row-actions { display: flex; gap: 6px; }
+.row-actions .btn { padding: 3px 12px; font-size: 12.5px; }
 .card .meter { margin-top: 14px; height: 6px; border-radius: 100px; background: var(--line-soft); overflow: hidden; }
 .card .meter > i {
   display: block; height: 100%; border-radius: 100px;
