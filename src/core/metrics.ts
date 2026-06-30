@@ -14,6 +14,7 @@ export interface CohortMetrics {
   pending: number;
   accepted: number;
   expired: number;
+  already_connected: number;
   acceptance_rate: number;
   median_time_to_accept_days: number | null;
 }
@@ -36,6 +37,7 @@ export function computeCohortMetrics(rows: MetricRow[]): CohortMetrics[] {
     const accepted = grp.filter((r) => r.status === 'accepted').length;
     const pending = grp.filter((r) => r.status === 'sent').length;
     const expired = grp.filter((r) => r.status === 'expired').length;
+    const alreadyConnected = grp.filter((r) => r.status === 'already_connected').length;
     const attempted = accepted + pending + expired;
     const ttaDays = grp
       .filter((r) => r.status === 'accepted' && r.sent_at && r.accepted_at)
@@ -48,6 +50,7 @@ export function computeCohortMetrics(rows: MetricRow[]): CohortMetrics[] {
       pending,
       accepted,
       expired,
+      already_connected: alreadyConnected,
       acceptance_rate: attempted > 0 ? accepted / attempted : 0,
       median_time_to_accept_days: median(ttaDays),
     });
