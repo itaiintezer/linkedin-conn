@@ -16,7 +16,6 @@ export class FakeDriver implements BrowserDriver {
   /** Records the note as actually sent (after {firstName} substitution). */
   sentLog: { url: string; message: string | null }[] = [];
 
-  async isLoggedIn() { return this.loggedIn; }
   browserOpen() { return this.open; }
   async readLoginState(): Promise<LoginSnapshot> {
     this.open = true;

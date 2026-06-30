@@ -59,7 +59,6 @@ export interface SendOutcome {
 }
 
 export interface BrowserDriver {
-  isLoggedIn(): Promise<boolean>;
   /** No side effects: whether the browser context is currently open. */
   browserOpen(): boolean;
   /** Read the li_at cookie. Opens the context if needed (callers that must not

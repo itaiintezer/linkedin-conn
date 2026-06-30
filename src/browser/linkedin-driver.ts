@@ -11,16 +11,6 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export class LinkedInDriver implements BrowserDriver {
   constructor(private session = new CloakSession()) {}
 
-  async isLoggedIn(): Promise<boolean> {
-    // Non-disruptive: never auto-launch a window just to poll, and never navigate
-    // (a navigation here would interrupt a manual login in progress). We detect the
-    // session purely from LinkedIn's auth cookie (`li_at`) in the persistent context.
-    if (!this.session.launched) return false;
-    const ctx = await this.session.context();
-    const cookies = await ctx.cookies('https://www.linkedin.com');
-    return cookies.some((c) => c.name === 'li_at' && !!c.value);
-  }
-
   browserOpen(): boolean {
     return this.session.launched;
   }
