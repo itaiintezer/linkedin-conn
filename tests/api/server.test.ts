@@ -4,6 +4,7 @@ import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
 import { defaultCohortName } from '../../src/core/cohort-name.js';
+import { Mutex } from '../../src/core/mutex.js';
 
 let app: ReturnType<typeof buildServer>;
 let repos: Repos;
@@ -155,4 +156,26 @@ test('POST /api/guardrail/acknowledge stays tripped when still unhealthy', async
   expect(body.resumed).toBe(false);
   expect(body.reason).toBe('login_lost');
   expect(repos.appState.get().guardrail_tripped).toBe(1);
+});
+
+test('POST /api/run-now is skipped (no send) while the shared browser lock is held', async () => {
+  const driver = new FakeDriver();
+  const lock = new Mutex();
+  const app2 = buildServer(repos, driver, lock);
+  await app2.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Locked', text: 'https://linkedin.com/in/locked-1', message_template: 'Hi' },
+  });
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
+
+  // Hold the lock as if a sender batch were already running.
+  let release!: () => void;
+  const held = lock.run(() => new Promise<void>((r) => { release = r; }));
+
+  const res = await app2.inject({ method: 'POST', url: '/api/run-now' });
+  expect(res.statusCode).toBe(200);
+  expect(driver.sentLog).toHaveLength(0); // skipped because the lock was held
+
+  release();
+  await held;
 });

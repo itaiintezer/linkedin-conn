@@ -3,12 +3,16 @@ import { Repos } from './db/repositories.js';
 import { LinkedInDriver } from './browser/linkedin-driver.js';
 import { Orchestrator } from './worker/orchestrator.js';
 import { buildServer } from './api/server.js';
+import { Mutex } from './core/mutex.js';
 import { DB_PATH, PORT } from './config.js';
 
 const repos = new Repos(openDatabase(DB_PATH));
 const driver = new LinkedInDriver();
-const orchestrator = new Orchestrator(repos, driver);
-const app = buildServer(repos, driver);
+// One lock shared between the scheduler and the API so the periodic sender, the daily
+// acceptance reader and the manual "run now" trigger never drive the browser at once.
+const browserLock = new Mutex();
+const orchestrator = new Orchestrator(repos, driver, browserLock);
+const app = buildServer(repos, driver, browserLock);
 
 orchestrator.start();
 app

@@ -7,6 +7,7 @@ import type { BrowserDriver } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
 import { windowStartIso } from '../core/rate-limit.js';
+import { Mutex } from '../core/mutex.js';
 import { runSenderOnce } from '../worker/sender.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote } from '../core/message.js';
@@ -20,7 +21,7 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'onboarded',
 ]);
 
-export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstance {
+export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mutex = new Mutex()): FastifyInstance {
   const app = Fastify({ logger: false });
 
   app.setErrorHandler((err, _req, reply) => {
@@ -120,8 +121,9 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
   app.post('/api/resume', async () => { repos.settings.update({ paused: 0, pause_reason: null }); return { ok: true }; });
 
   // Manual trigger: promote up to batch_size queued profiles to due-now and run one
-  // sender batch immediately. Respects pause/login (runSenderOnce returns early if paused
-  // or not logged in). Useful for testing and for sending on demand.
+  // sender batch immediately. Respects pause/login/guardrail (runSenderOnce returns early).
+  // Guarded by the shared browser lock so it can't drive the page while the periodic
+  // sender or the acceptance reader is already running. Useful for sending on demand.
   app.post('/api/run-now', async () => {
     const now = new Date();
     const dueIso = new Date(now.getTime() - 1000).toISOString();
@@ -130,7 +132,7 @@ export function buildServer(repos: Repos, driver: BrowserDriver): FastifyInstanc
     // scheduled (future) profiles, so "Run now" always sends something if work exists.
     const candidates = [...repos.profiles.byStatus('queued'), ...repos.profiles.byStatus('scheduled')].slice(0, batch);
     for (const p of candidates) repos.profiles.setScheduled(p.id, dueIso);
-    await runSenderOnce(repos, driver, now);
+    await browserLock.tryRun(() => runSenderOnce(repos, driver, now));
     return { ok: true, promoted: candidates.length };
   });
 
