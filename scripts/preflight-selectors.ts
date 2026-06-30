@@ -34,8 +34,11 @@ try {
   await check('sendInvitation', find.sendInvitation(page));
   await check('dismissDialog', find.dismissDialog(page), false);
 
-  // Non-critical: pending may not be present unless an invite is already out.
-  await check('pendingBadge (informational)', find.pendingBadge(page), false);
+  // Pending lives on the PROFILE page (the driver's send-confirmation reads it
+  // there), not the composer route. Informational: only present if already invited.
+  await page.goto(`https://www.linkedin.com/in/${slug}`, { waitUntil: 'domcontentloaded' });
+  await sleep(4000);
+  await check('pendingBadge (informational; only if already invited)', find.pendingBadge(page), false);
 
   console.log('\nSELECTOR HEALTH:');
   for (const r of results) {
