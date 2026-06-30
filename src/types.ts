@@ -1,8 +1,9 @@
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
-  | 'accepted' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
+  | 'accepted' | 'expired' | 'skipped' | 'failed' | 'needs_attention'
+  | 'already_connected';
 
-export type EventType = 'sent' | 'accepted' | 'expired' | 'skipped' | 'failed';
+export type EventType = 'sent' | 'accepted' | 'expired' | 'skipped' | 'failed' | 'already_connected';
 
 export type AccountType = 'unknown' | 'free' | 'premium' | 'salesnav';
 

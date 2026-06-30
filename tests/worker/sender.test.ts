@@ -31,12 +31,13 @@ test('sends due profiles, records sent status + event, respects remaining cap', 
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(2);
 });
 
-test('already-connected -> skipped, not counted as sent', async () => {
+test('already-connected -> already_connected status + event, not counted as sent', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
   driver.scripted.set('https://www.linkedin.com/in/a', 'already');
   await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
-  expect(repos.profiles.byStatus('skipped')).toHaveLength(1);
+  expect(repos.profiles.byStatus('already_connected')).toHaveLength(1);
+  expect(repos.profiles.byStatus('skipped')).toHaveLength(0);
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(0);
 });
 

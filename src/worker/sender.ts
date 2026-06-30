@@ -58,8 +58,8 @@ export async function runSenderOnce(repos: Repos, driver: BrowserDriver, now: Da
         remaining--;
         break;
       case 'already':
-        repos.profiles.setStatus(p.id, 'skipped', { last_error: outcome.result });
-        repos.events.recordEvent(p.id, 'skipped');
+        repos.profiles.setStatus(p.id, 'already_connected', { last_error: null });
+        repos.events.recordEvent(p.id, 'already_connected');
         break;
       case 'unavailable':
         repos.profiles.setStatus(p.id, 'skipped', { last_error: outcome.result });
