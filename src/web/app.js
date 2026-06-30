@@ -118,6 +118,16 @@ function fmtClock(iso) {
   return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
+function fmtRelDay(iso, now = new Date()) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const startOf = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((startOf(d) - startOf(now)) / 86400000);
+  if (days <= 0) return 'today';
+  if (days === 1) return 'tomorrow';
+  return d.toLocaleDateString(undefined, { weekday: 'short' });
+}
+
 function fmtEta(eta) {
   if (!eta || eta.finishDate == null) {
     return { value: '—', foot: eta && eta.sendingDays === 0 ? 'queue empty' : 'no capacity' };
@@ -134,12 +144,23 @@ function renderCards(status) {
   const eta = fmtEta(f.eta);
   const nb = f.next_batch;
   const attention = (c.failed || 0) + (c.needs_attention || 0);
+  let nextVal = '—';
+  let nextFoot = 'none queued';
+  if (nb && nb.blocked) {
+    nextFoot = nb.reason;
+  } else if (nb && nb.estimated === false) {
+    nextVal = nb.count;
+    nextFoot = `at ${fmtClock(nb.at)}`;
+  } else if (nb && nb.estimated === true) {
+    nextVal = `~${nb.count}`;
+    nextFoot = `${fmtRelDay(nb.at)} ~${fmtClock(nb.at)}`;
+  }
   const cards = [
     { cls: 'accent-week', label: 'This week', value: `${status.weekly_sent}`, sub: ` / ${status.weekly_cap}`, meter: pct },
     { cls: 'accent-queued', label: 'Queued', value: c.queued || 0 },
     { cls: 'accent-sched', label: 'Scheduled', value: c.scheduled || 0 },
     { cls: 'accent-eta', label: 'Time to finish', value: eta.value, foot: eta.foot },
-    { cls: 'accent-next', label: 'Next batch', value: nb ? nb.count : '—', foot: nb ? `at ${fmtClock(nb.at)}` : 'none scheduled' },
+    { cls: 'accent-next', label: 'Next batch', value: nextVal, foot: nextFoot },
     { cls: 'accent-sent', label: 'Sent', value: c.sent || 0 },
     { cls: 'accent-accepted', label: 'Accepted', value: c.accepted || 0, foot: `checked ${status.acceptance_checked_at ? fmtClock(status.acceptance_checked_at) : 'never'}` },
     { cls: 'accent-already', label: 'Already connected', value: c.already_connected || 0 },
