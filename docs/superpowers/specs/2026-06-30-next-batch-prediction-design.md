@@ -38,17 +38,18 @@ Only return `null` when there is genuinely nothing to send (empty backlog).
 
 ```ts
 type NextBatch =
-  | null                                                  // nothing queued
-  | { estimated: false; at: string; count: number }       // exact future slot(s)
-  | { estimated: true;  at: string; until: string; count: number } // predicted window
-  | { blocked: true; reason: string };                    // sending prevented
+  | null                                              // nothing queued
+  | { estimated: false; at: string; count: number }   // exact future slot(s)
+  | { estimated: true;  at: string; count: number }    // predicted next window
+  | { blocked: true; reason: string };                // sending prevented
 ```
 
 - `estimated: false` — `at` is the earliest future `scheduled_for`; `count` is
   how many profiles share that exact slot (unchanged from today's behavior, plus
   the explicit flag).
-- `estimated: true` — `at`/`until` are ISO bounds of the predicted working-hours
-  window; `count = min(batch_size, backlog)` (one batch).
+- `estimated: true` — `at` is the ISO **start** of the next sending-day
+  working-hours window (the soonest a batch could run); `count = min(batch_size,
+  backlog)` (one batch). No end bound is carried — the UI shows only the start.
 - `blocked` — `reason` is a short human string (see priority chain).
 
 ## Decision logic (priority chain)
@@ -81,10 +82,9 @@ nextBatch(scheduledRows, ctx, now) where ctx = {
    `{ estimated: false, at, count }`.
 7. Predicted window (the fallback that fixes the reported bug):
    - **Today** if today is a sending day, `now` is before `workday_end_hour`,
-     **and** `dailyRemaining > 0`: window = `[max(now, workday_start), workday_end]`
-     for today.
-   - **Otherwise** the next sending day's full `[workday_start, workday_end]`
-     window (honoring `weekdays_only`).
+     **and** `dailyRemaining > 0`: `at = max(now, workday_start)` today.
+   - **Otherwise** the next sending day's `workday_start` (honoring
+     `weekdays_only`).
    - `count = min(batch_size, backlog)`.
 
 The "today vs next day" branch is what correctly handles the two reported
@@ -111,9 +111,10 @@ after hours / weekend → predicts the next weekday.
   - `null` → value `—`, foot `none queued`.
   - `blocked` → value `—`, foot `reason`.
   - `estimated: false` → value `count`, foot `at HH:MM` (unchanged).
-  - `estimated: true` → value `~count`, foot like `Tue 09:00–17:00`
-    (weekday + window). A small date/clock formatting helper alongside the
-    existing `fmtClock`.
+  - `estimated: true` → value `~count`, foot like `tomorrow ~09:00` — a
+    relative day word (`today` / `tomorrow` / weekday name like `Mon`) plus
+    `~HH:MM`. A small helper alongside the existing `fmtClock` derives the
+    relative-day label from `at` vs `now`.
 
 ## Testing (TDD — tests first)
 
@@ -136,6 +137,6 @@ for at least one predicted and one blocked scenario.
 ## Out of scope (YAGNI)
 
 - Pre-rolling/committing tomorrow's random times (the rejected alternative).
-- Predicting exact times in the future window (we show the window, preserving
-  jitter).
+- Predicting exact times in the future window (we show the window start,
+  preserving jitter).
 - Multi-day "next N batches" forecast.
