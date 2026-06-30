@@ -265,8 +265,9 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .card.accent-week    { --accent: var(--amber); }
 .card.accent-queued  { --accent: var(--slate); }
 .card.accent-sched   { --accent: var(--blue); }
-.card.accent-sent    { --accent: var(--violet); }
+.card.accent-pending { --accent: var(--violet); }
 .card.accent-accepted{ --accent: var(--green); }
+.card.accent-expired { --accent: var(--neutral); }
 .card.accent-attn    { --accent: var(--red); }
 .card.accent-eta     { --accent: var(--blue); }
 .card.accent-next    { --accent: var(--teal); }

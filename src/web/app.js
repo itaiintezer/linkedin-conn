@@ -161,8 +161,9 @@ function renderCards(status) {
     { cls: 'accent-sched', label: 'Scheduled', value: c.scheduled || 0 },
     { cls: 'accent-eta', label: 'Time to finish', value: eta.value, foot: eta.foot },
     { cls: 'accent-next', label: 'Next batch', value: nextVal, foot: nextFoot },
-    { cls: 'accent-sent', label: 'Sent', value: c.sent || 0 },
+    { cls: 'accent-pending', label: 'Pending', value: c.sent || 0 },
     { cls: 'accent-accepted', label: 'Accepted', value: c.accepted || 0, foot: `checked ${status.acceptance_checked_at ? fmtClock(status.acceptance_checked_at) : 'never'}` },
+    { cls: 'accent-expired', label: 'Expired', value: c.expired || 0 },
     { cls: 'accent-already', label: 'Already connected', value: c.already_connected || 0 },
     { cls: 'accent-attn', label: 'Needs attention', value: attention, tab: attention > 0 ? 'attention' : null },
   ];
