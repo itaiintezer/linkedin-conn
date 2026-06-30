@@ -239,7 +239,7 @@ test('GET /api/attention lists failed and needs_attention with errors', async ()
   const res = await app.inject({ method: 'GET', url: '/api/attention' });
   const body = JSON.parse(res.body);
   expect(body).toHaveLength(2);
-  expect(body.map((r) => r.last_error).sort()).toEqual(['boom', 'note quota']);
+  expect(body.map((r: { last_error: string }) => r.last_error).sort()).toEqual(['boom', 'note quota']);
 });
 
 test('POST /api/profiles/:id/retry requeues a single profile', async () => {
@@ -248,8 +248,8 @@ test('POST /api/profiles/:id/retry requeues a single profile', async () => {
   repos.profiles.setStatus(a.id, 'failed', { last_error: 'boom' });
   const res = await app.inject({ method: 'POST', url: `/api/profiles/${a.id}/retry` });
   expect(res.statusCode).toBe(200);
-  expect(repos.profiles.findById(a.id).status).toBe('queued');
-  expect(repos.profiles.findById(a.id).last_error).toBeNull();
+  expect(repos.profiles.findById(a.id)!.status).toBe('queued');
+  expect(repos.profiles.findById(a.id)!.last_error).toBeNull();
 });
 
 test('POST /api/profiles/:id/dismiss marks it skipped', async () => {
@@ -258,7 +258,7 @@ test('POST /api/profiles/:id/dismiss marks it skipped', async () => {
   repos.profiles.setStatus(a.id, 'needs_attention', { last_error: 'x' });
   const res = await app.inject({ method: 'POST', url: `/api/profiles/${a.id}/dismiss` });
   expect(res.statusCode).toBe(200);
-  expect(repos.profiles.findById(a.id).status).toBe('skipped');
+  expect(repos.profiles.findById(a.id)!.status).toBe('skipped');
 });
 
 test('POST /api/profiles/:id/retry 404s for an unknown id', async () => {

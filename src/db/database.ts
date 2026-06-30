@@ -32,8 +32,11 @@ export function runMigrations(db: DB): void {
   if (!cols.includes('failure_threshold')) {
     db.exec('ALTER TABLE settings ADD COLUMN failure_threshold INTEGER NOT NULL DEFAULT 3');
   }
+  // Guard on table presence: openDatabase runs schema.sql (which creates app_state) first,
+  // but isolated migration tests may operate on a settings-only DB. table_info returns []
+  // for a missing table.
   const appCols = (db.prepare('PRAGMA table_info(app_state)').all() as { name: string }[]).map((c) => c.name);
-  if (!appCols.includes('acceptance_checked_at')) {
+  if (appCols.length > 0 && !appCols.includes('acceptance_checked_at')) {
     db.exec('ALTER TABLE app_state ADD COLUMN acceptance_checked_at TEXT');
   }
 }
