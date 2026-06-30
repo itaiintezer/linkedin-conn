@@ -40,8 +40,12 @@ export const find = {
   sendInvitation: (s: Scope): Locator => s.getByRole('button', { name: 'Send invitation' }),
   dismissDialog: (s: Scope): Locator => s.getByRole('button', { name: 'Dismiss' }),
 
-  // Pending state on the profile page (post-send confirmation / pre-send guard)
-  pendingBadge: (s: Scope): Locator => s.getByRole('button', { name: /pending/i }),
+  // Pending state on the profile page (post-send confirmation / pre-send guard).
+  // Keyed on the rich aria-label ("Pending, click to withdraw invitation sent to
+  // <name>") rather than getByRole: this badge is NOT exposed as a button role, so
+  // getByRole('button') misses it. en-US is forced at launch, so matching the
+  // English "Pending" wording is safe.
+  pendingBadge: (s: Scope): Locator => s.locator('[aria-label*="Pending" i]'),
 
   // Fallback path: Connect hidden behind the "More" overflow menu
   moreActions: (s: Scope): Locator => s.getByRole('button', { name: /more actions/i }),
