@@ -137,6 +137,56 @@ body > *:not(.atmosphere) { position: relative; z-index: 1; }
 .pause-banner svg { flex: none; color: var(--amber); }
 .pause-banner strong { color: #6f4406; font-weight: 700; }
 
+/* ---------- guardrail alert ---------- */
+/* The red "everything halted" state. Deliberately escalated above the amber
+   pause-banner: deeper saturated ground, a left severity rail, a pulsing alert
+   chip, and a solid-red action button — so it reads as more severe at a glance. */
+.guardrail-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 34px 14px 30px;
+  background: linear-gradient(90deg, #fbe4e1 0%, var(--red-bg) 58%, #fdeeec 100%);
+  border-bottom: 1px solid #f1b6ae;
+  border-left: 4px solid var(--red);
+  color: #8e2424; font-size: 14.5px;
+  box-shadow: inset 0 -1px 0 rgba(214,58,58,0.06), var(--shadow-sm);
+}
+.guardrail-icon {
+  display: grid; place-items: center; flex: none;
+  width: 30px; height: 30px; border-radius: 9px;
+  color: #fff; background: linear-gradient(150deg, #e3493f 0%, var(--red) 100%);
+  box-shadow: 0 4px 12px -4px rgba(214,58,58,0.5), inset 0 1px 0 rgba(255,255,255,0.25);
+  animation: guardPulse 1.8s ease-in-out infinite;
+}
+.guardrail-icon svg { flex: none; }
+@keyframes guardPulse {
+  0%, 100% { box-shadow: 0 4px 12px -4px rgba(214,58,58,0.5), 0 0 0 0 rgba(214,58,58,0.32), inset 0 1px 0 rgba(255,255,255,0.25); }
+  50%      { box-shadow: 0 4px 12px -4px rgba(214,58,58,0.5), 0 0 0 7px rgba(214,58,58,0), inset 0 1px 0 rgba(255,255,255,0.25); }
+}
+.guardrail-body { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 9px; flex: 1; min-width: 0; line-height: 1.45; }
+.guardrail-body strong { color: #7a1d1d; font-weight: 700; letter-spacing: 0.1px; }
+.guardrail-body #guardrailReason { color: #8e2424; }
+.guardrail-time {
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  color: #b0524c; letter-spacing: 0.1px; flex: none;
+}
+.guardrail-time:empty { display: none; }
+#guardrailRecheck {
+  flex: none;
+  background: linear-gradient(180deg, #e3493f 0%, var(--red) 100%);
+  color: #fff; border-color: #c0312f;
+  box-shadow: 0 6px 16px -6px rgba(214,58,58,0.45), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+#guardrailRecheck:hover {
+  background: linear-gradient(180deg, #ea5249 0%, #d63a3a 100%);
+  color: #fff; border-color: #c0312f;
+  box-shadow: 0 10px 22px -8px rgba(214,58,58,0.5), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+#guardrailRecheck:disabled { opacity: 0.72; }
+@media (max-width: 640px) {
+  .guardrail-banner { flex-wrap: wrap; padding: 13px 20px; }
+  #guardrailRecheck { width: 100%; justify-content: center; }
+}
+
 /* ---------- Tabs ---------- */
 .tabs {
   display: flex; gap: 4px; padding: 0 30px;

@@ -79,13 +79,15 @@ function initTabs() {
 async function refreshLogin() {
   const led = $('#loginLed'), label = $('#loginLabel'), btn = $('#connectBtn');
   try {
-    const { loggedIn } = await api('/api/login-status');
+    const { loggedIn, asOf } = await api('/api/login-status');
     led.className = 'led ' + (loggedIn ? 'on' : 'off');
     label.textContent = loggedIn ? 'linked' : 'not logged in';
+    label.title = asOf ? `as of ${fmtTime(asOf)}` : '';
     btn.hidden = loggedIn;
   } catch (_) {
     led.className = 'led off';
     label.textContent = 'link error';
+    label.title = '';
     btn.hidden = false;
   }
 }
@@ -146,11 +148,29 @@ function applyPauseUi(status) {
   }
 }
 
+const GUARDRAIL_TEXT = {
+  checkpoint: 'LinkedIn showed a captcha or security check. Solve it in the browser window, then re-check.',
+  login_lost: 'Your LinkedIn session was lost. Log back in via the browser window, then re-check.',
+  repeated_failures: 'Several actions failed in a row (LinkedIn may have changed its UI or is blocking us). Check the browser window, then re-check.',
+};
+
+function applyGuardrailUi(status) {
+  const banner = $('#guardrailBanner');
+  const g = (status && status.guardrail) || {};
+  const tripped = !!g.tripped;
+  banner.hidden = !tripped;
+  if (tripped) {
+    $('#guardrailReason').textContent = GUARDRAIL_TEXT[g.reason] || g.detail || 'Automation was halted.';
+    $('#guardrailTime').textContent = g.trippedAt ? `Halted ${fmtTime(g.trippedAt)}` : '';
+  }
+}
+
 async function refreshStatus() {
   try {
     const status = await api('/api/status');
     renderCards(status);
     applyPauseUi(status);
+    applyGuardrailUi(status);
   } catch (_) { /* transient; next tick retries */ }
 }
 
@@ -208,6 +228,21 @@ function initDashboard() {
       await refreshQueue();
     } catch (_) { /* ignore */ }
     btn.disabled = false;
+  });
+
+  $('#guardrailRecheck').addEventListener('click', async () => {
+    const btn = $('#guardrailRecheck');
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = 'Re-checking…';
+    try {
+      const res = await api('/api/guardrail/acknowledge', { method: 'POST' });
+      btn.textContent = res && res.resumed ? 'Resumed' : 'Still blocked';
+      await refreshStatus();
+    } catch (_) {
+      btn.textContent = 'Failed';
+    }
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
   });
 }
 
