@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { estimateQueueCompletion, nextBatch, orderUpcoming } from '../../src/core/forecast.js';
+import { estimateQueueCompletion, nextBatch, nextBatchForecast, orderUpcoming } from '../../src/core/forecast.js';
 import type { Settings } from '../../src/types.js';
 
 function settings(over: Partial<Settings> = {}): Settings {
@@ -63,4 +63,80 @@ test('orderUpcoming: scheduled (by time) before queued (by id)', () => {
     { id: 5, status: 'sent', scheduled_for: null },
   ];
   expect(orderUpcoming(rows).map((r) => r.id)).toEqual([2, 1, 3, 4]);
+});
+
+const baseCtx = {
+  backlog: 30, weeklyRemaining: 100, dailyRemaining: 20,
+  guardrailTripped: false, paused: false, settings: settings(),
+};
+
+test('nextBatchForecast: empty backlog => null', () => {
+  expect(nextBatchForecast([], { ...baseCtx, backlog: 0 }, new Date(2026, 6, 1, 12, 0))).toBeNull();
+});
+
+test('nextBatchForecast: guardrail beats paused beats weekly-cap', () => {
+  const now = new Date(2026, 6, 1, 12, 0);
+  expect(nextBatchForecast([], { ...baseCtx, guardrailTripped: true, paused: true, weeklyRemaining: 0 }, now))
+    .toEqual({ blocked: true, reason: 'Guardrail tripped' });
+  expect(nextBatchForecast([], { ...baseCtx, paused: true, weeklyRemaining: 0 }, now))
+    .toEqual({ blocked: true, reason: 'Paused' });
+});
+
+test('nextBatchForecast: paused overrides an existing exact slot', () => {
+  const rows = [{ scheduled_for: new Date(2026, 6, 1, 15, 0).toISOString() }];
+  const now = new Date(2026, 6, 1, 12, 0);
+  expect(nextBatchForecast(rows, { ...baseCtx, paused: true }, now))
+    .toEqual({ blocked: true, reason: 'Paused' });
+});
+
+test('nextBatchForecast: zero send rate => Sending disabled', () => {
+  const now = new Date(2026, 6, 1, 12, 0);
+  expect(nextBatchForecast([], { ...baseCtx, settings: settings({ batches_per_day: 0 }) }, now))
+    .toEqual({ blocked: true, reason: 'Sending disabled' });
+});
+
+test('nextBatchForecast: weekly cap reached => Weekly cap reached', () => {
+  const now = new Date(2026, 6, 1, 12, 0);
+  expect(nextBatchForecast([], { ...baseCtx, weeklyRemaining: 0 }, now))
+    .toEqual({ blocked: true, reason: 'Weekly cap reached' });
+});
+
+test('nextBatchForecast: exact future slot => estimated false', () => {
+  const at = new Date(2026, 6, 1, 15, 0).toISOString();
+  const rows = [{ scheduled_for: at }, { scheduled_for: at }];
+  const now = new Date(2026, 6, 1, 12, 0);
+  expect(nextBatchForecast(rows, baseCtx, now)).toEqual({ estimated: false, at, count: 2 });
+});
+
+test('nextBatchForecast: backlog + budget left today => predict today window', () => {
+  const now = new Date(2026, 6, 1, 10, 0); // Wed, before end hour 20
+  const r = nextBatchForecast([], baseCtx, now);
+  expect(r).toMatchObject({ estimated: true, count: 5 }); // min(batch_size 5, backlog 30)
+  const at = new Date((r as { at: string }).at);
+  expect(at.getDay()).toBe(3);     // same day (Wed)
+  expect(at.getHours()).toBe(10);  // max(now, workday_start 8) => now
+});
+
+test('nextBatchForecast: today budget spent => predict next sending day start', () => {
+  const now = new Date(2026, 6, 1, 10, 0); // Wed
+  const r = nextBatchForecast([], { ...baseCtx, dailyRemaining: 0 }, now);
+  const at = new Date((r as { at: string }).at);
+  expect(at.getDay()).toBe(4);    // Thursday
+  expect(at.getHours()).toBe(8);  // workday_start_hour
+});
+
+test('nextBatchForecast: after hours => next sending day start', () => {
+  const now = new Date(2026, 6, 1, 21, 0); // Wed 21:00, past end hour 20
+  const r = nextBatchForecast([], baseCtx, now);
+  const at = new Date((r as { at: string }).at);
+  expect(at.getDay()).toBe(4);    // Thursday
+  expect(at.getHours()).toBe(8);
+});
+
+test('nextBatchForecast: weekend + weekdays_only => predict Monday', () => {
+  const now = new Date(2026, 6, 4, 10, 0); // Saturday 2026-07-04
+  const r = nextBatchForecast([], baseCtx, now);
+  const at = new Date((r as { at: string }).at);
+  expect(at.getDay()).toBe(1);    // Monday
+  expect(at.getHours()).toBe(8);
 });
