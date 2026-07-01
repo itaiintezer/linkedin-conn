@@ -136,7 +136,7 @@ export function buildServer(
     const limitRaw = Number((req.query as { limit?: string }).limit);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 10;
     const rows = repos.db.prepare(`
-      SELECT p.id, p.profile_url, p.status, p.scheduled_for, c.name AS cohort_name,
+      SELECT p.id, p.profile_url, p.status, p.scheduled_for, p.priority, c.name AS cohort_name,
              COALESCE(NULLIF(p.custom_message, ''), NULLIF(c.message_template, '')) AS note
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       WHERE p.status IN ('queued','scheduled')
