@@ -62,3 +62,40 @@ test('overlapping sender ticks never run two batches against the browser at once
   expect(max).toBe(1); // never two concurrent sends across overlapping batches
   expect(driver.sentLog).toHaveLength(2); // each profile sent exactly once (no double-processing)
 });
+
+// A browser error in a periodic tick must be caught — an unhandled rejection here
+// crashes the whole Node process (this happened live: launchPersistentContext failed
+// because the profile was in use, and the rejection took down the app).
+function seedDue(): void {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/x', null);
+  repos.profiles.setScheduled(p.id, '2020-01-01T00:00:00.000Z'); // always due
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2020-01-01T00:00:00.000Z');
+}
+
+test('a sender-tick browser error is caught and never rejects the tick', async () => {
+  seedDue();
+  driver.readLoginState = async () => { throw new Error('some transient browser failure'); };
+  const orch = new Orchestrator(repos, driver);
+  await expect(orch.runSenderTick()).resolves.toBeUndefined();
+});
+
+test('a "profile in use" launch failure pauses the engine with a clear reason', async () => {
+  seedDue();
+  driver.readLoginState = async () => {
+    throw new Error('browserType.launchPersistentContext: Opening in existing browser session.');
+  };
+  const orch = new Orchestrator(repos, driver);
+  await orch.runSenderTick();
+  const s = repos.settings.get();
+  expect(s.paused).toBe(1);
+  expect(s.pause_reason).toMatch(/another browser|profile/i);
+});
+
+test('an ordinary browser error does not pause the engine (only logs)', async () => {
+  seedDue();
+  driver.readLoginState = async () => { throw new Error('net::ERR_TIMED_OUT'); };
+  const orch = new Orchestrator(repos, driver);
+  await orch.runSenderTick();
+  expect(repos.settings.get().paused).toBe(0);
+});
