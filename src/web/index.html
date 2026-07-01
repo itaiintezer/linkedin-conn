@@ -98,7 +98,6 @@
     <button class="tab" data-tab="attention">Attention</button>
     <button class="tab" data-tab="add">Add List</button>
     <button class="tab" data-tab="cohorts">Cohorts</button>
-    <button class="tab" data-tab="metrics">Metrics</button>
     <button class="tab" data-tab="settings">Settings</button>
   </nav>
 
@@ -269,35 +268,6 @@
           <p class="panel-sub">Reusable audiences and their message templates</p>
         </div>
       </div>
-      <div class="cohorts-layout">
-        <div class="cohort-list-wrap">
-          <h3>Existing</h3>
-          <div id="cohortList" class="cohort-list"></div>
-          <div class="empty" id="cohortEmpty" hidden>No cohorts yet.</div>
-        </div>
-        <form id="cohortForm" class="form-grid card-form">
-          <h3>Create / update</h3>
-          <div class="field">
-            <label for="cohortName">Name</label>
-            <input id="cohortName" type="text" required placeholder="cohort name" autocomplete="off" />
-          </div>
-          <div class="field">
-            <label for="cohortTemplate">Message template <span class="hint">blank = bare request, no note</span></label>
-            <textarea id="cohortTemplate" maxlength="300" rows="4" placeholder="Hi {firstName}, …"></textarea>
-          </div>
-          <button class="btn btn-green" type="submit">Save cohort</button>
-        </form>
-      </div>
-    </section>
-
-    <!-- METRICS -->
-    <section class="panel" id="tab-metrics" hidden>
-      <div class="panel-head">
-        <div class="panel-title">
-          <h2>Metrics</h2>
-          <p class="panel-sub">Acceptance performance by cohort</p>
-        </div>
-      </div>
       <div class="table-wrap">
         <table class="data-table">
           <thead>
@@ -307,6 +277,25 @@
         </table>
         <div class="empty" id="metricsEmpty" hidden>No metrics yet — send some requests first.</div>
       </div>
+
+      <div class="section-divider"><span>Manage cohorts</span></div>
+
+      <div id="cohortList" class="cohort-list"></div>
+      <div class="empty" id="cohortEmpty" hidden>No cohorts yet.</div>
+      <button class="btn btn-ghost" id="cohortNewBtn" type="button">+ New cohort</button>
+
+      <form id="cohortForm" class="form-grid card-form" hidden>
+        <h3 id="cohortFormTitle">New cohort</h3>
+        <div class="field">
+          <label for="cohortName">Name</label>
+          <input id="cohortName" type="text" required placeholder="cohort name" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="cohortTemplate">Message template <span class="hint">blank = bare request, no note</span></label>
+          <textarea id="cohortTemplate" maxlength="300" rows="4" placeholder="Hi {firstName}, …"></textarea>
+        </div>
+        <div class="field span-all"><button class="btn btn-green" type="submit">Save cohort</button></div>
+      </form>
     </section>
 
     <!-- SETTINGS -->
