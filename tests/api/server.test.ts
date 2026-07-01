@@ -331,3 +331,21 @@ test('GET /api/logs/download streams the log as an attachment', async () => {
   expect(res.headers['content-disposition']).toContain('relay.log');
   expect(res.body).toContain('downloadable');
 });
+
+test('GET /api/docs lists the api doc', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/docs' });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  expect(body.some((d: { slug: string }) => d.slug === 'api')).toBe(true);
+});
+
+test('GET /api/docs/api returns markdown', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/docs/api' });
+  expect(res.statusCode).toBe(200);
+  expect(JSON.parse(res.body).markdown).toContain('# Relay API');
+});
+
+test('GET /api/docs/unknown 404s', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/docs/unknown' });
+  expect(res.statusCode).toBe(404);
+});

@@ -16,6 +16,7 @@ import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote } from '../core/message.js';
 import type { Logger } from '../core/logger.js';
 import { log as defaultLog } from '../core/log.js';
+import { listDocs, readDoc } from '../core/docs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -245,6 +246,14 @@ export function buildServer(
     reply.header('Content-Type', 'text/plain; charset=utf-8');
     reply.header('Content-Disposition', 'attachment; filename="relay.log"');
     return body;
+  });
+
+  app.get('/api/docs', async () => listDocs());
+  app.get('/api/docs/:slug', async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const doc = readDoc(slug);
+    if (!doc) return reply.code(404).send({ error: 'doc not found' });
+    return doc;
   });
 
   return app;
