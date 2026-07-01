@@ -73,8 +73,7 @@ function initTabs() {
       const name = tab.dataset.tab;
       $$('main > .panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
       if (name === 'add') loadCohortOptions();
-      if (name === 'cohorts') loadCohorts();
-      if (name === 'metrics') loadMetrics();
+      if (name === 'cohorts') loadCohortsScreen();
       if (name === 'settings') loadSettings();
       if (name === 'attention') loadAttention();
     });
@@ -515,32 +514,74 @@ function initAddList() {
   });
 }
 
-/* ---------- cohorts ---------- */
-async function loadCohorts() {
-  const list = $('#cohortList'), empty = $('#cohortEmpty');
-  try {
-    const cohorts = await api('/api/cohorts');
-    if (!cohorts.length) { list.replaceChildren(); empty.hidden = false; return; }
-    empty.hidden = true;
-    list.replaceChildren(...cohorts.map((c) => {
-      const tplText = (c.message_template && c.message_template.trim())
-        ? el('div', { class: 'tpl', text: c.message_template })
-        : el('div', { class: 'tpl none', text: 'No template (bare request)' });
-      return el('div', { class: 'cohort-card', onclick: () => fillCohortForm(c) },
-        el('div', { class: 'name' }, el('span', { text: c.name })),
-        tplText,
-      );
-    }));
-  } catch (_) { empty.hidden = false; }
+/* ---------- cohorts + metrics (merged screen) ---------- */
+async function loadCohortsScreen() {
+  const [cohorts, metrics] = await Promise.all([
+    api('/api/cohorts').catch(() => []),
+    api('/api/metrics').catch(() => []),
+  ]);
+  renderMetricsTable(metrics);
+  renderCohortList(cohorts, metrics);
 }
 
-function fillCohortForm(c) {
-  $('#cohortName').value = c.name || '';
-  $('#cohortTemplate').value = c.message_template || '';
+function renderMetricsTable(rows) {
+  const body = $('#metricsBody'), empty = $('#metricsEmpty');
+  if (!rows.length) { body.replaceChildren(); empty.hidden = false; return; }
+  empty.hidden = true;
+  body.replaceChildren(...rows.map((m) => {
+    const pct = Math.round((m.acceptance_rate || 0) * 100);
+    const rateCell = el('div', { class: 'rate-cell' },
+      el('div', { class: 'rate-bar' }, el('i', { style: `width:${pct}%` })),
+      el('span', { class: 'rate-val', text: `${pct}%` }),
+    );
+    const median = (m.median_time_to_accept_days == null) ? '—' : String(m.median_time_to_accept_days);
+    return el('tr', {},
+      el('td', { class: 'mono' }, m.cohort_name || '—'),
+      el('td', { class: 'num mono' }, String(m.sent)),
+      el('td', { class: 'num mono' }, String(m.accepted)),
+      el('td', { class: 'num mono' }, String(m.pending)),
+      el('td', { class: 'num mono' }, String(m.expired)),
+      el('td', {}, rateCell),
+      el('td', { class: 'num mono' }, median),
+    );
+  }));
+}
+
+function renderCohortList(cohorts, metrics) {
+  const list = $('#cohortList'), empty = $('#cohortEmpty');
+  const byName = Object.fromEntries(metrics.map((m) => [m.cohort_name, m]));
+  if (!cohorts.length) { list.replaceChildren(); empty.hidden = false; return; }
+  empty.hidden = true;
+  list.replaceChildren(...cohorts.map((c) => {
+    const m = byName[c.name];
+    const stat = m
+      ? `${m.sent} sent · ${Math.round((m.acceptance_rate || 0) * 100)}% accepted`
+      : 'no sends yet';
+    const tplText = (c.message_template && c.message_template.trim())
+      ? el('div', { class: 'tpl', text: c.message_template })
+      : el('div', { class: 'tpl none', text: 'No template (bare request)' });
+    return el('div', { class: 'cohort-card', onclick: () => openCohortEditor(c) },
+      el('div', { class: 'name' }, el('span', { text: c.name })),
+      el('div', { class: 'cohort-stat', text: stat }),
+      tplText,
+    );
+  }));
+}
+
+function openCohortEditor(c) {
+  const form = $('#cohortForm');
+  form.hidden = false;
+  $('#cohortFormTitle').textContent = c ? `Edit “${c.name}”` : 'New cohort';
+  $('#cohortName').value = c ? (c.name || '') : '';
+  $('#cohortName').disabled = !!c; // name is the key; edit templates, not names
+  $('#cohortTemplate').value = c ? (c.message_template || '') : '';
   $('#cohortName').focus();
+  form.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function initCohorts() {
+  const newBtn = $('#cohortNewBtn');
+  if (newBtn) newBtn.addEventListener('click', () => openCohortEditor(null));
   $('#cohortForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {
@@ -551,36 +592,11 @@ function initCohorts() {
     try {
       await api('/api/cohorts', { method: 'POST', body: payload });
       $('#cohortForm').reset();
-      loadCohorts();
+      $('#cohortForm').hidden = true;
+      $('#cohortName').disabled = false;
+      loadCohortsScreen();
     } catch (_) { /* ignore */ }
   });
-}
-
-/* ---------- metrics ---------- */
-async function loadMetrics() {
-  const body = $('#metricsBody'), empty = $('#metricsEmpty');
-  try {
-    const rows = await api('/api/metrics');
-    if (!rows.length) { body.replaceChildren(); empty.hidden = false; return; }
-    empty.hidden = true;
-    body.replaceChildren(...rows.map((m) => {
-      const pct = Math.round((m.acceptance_rate || 0) * 100);
-      const rateCell = el('div', { class: 'rate-cell' },
-        el('div', { class: 'rate-bar' }, el('i', { style: `width:${pct}%` })),
-        el('span', { class: 'rate-val', text: `${pct}%` }),
-      );
-      const median = (m.median_time_to_accept_days == null) ? '—' : String(m.median_time_to_accept_days);
-      return el('tr', {},
-        el('td', { class: 'mono' }, m.cohort_name || '—'),
-        el('td', { class: 'num mono' }, String(m.sent)),
-        el('td', { class: 'num mono' }, String(m.accepted)),
-        el('td', { class: 'num mono' }, String(m.pending)),
-        el('td', { class: 'num mono' }, String(m.expired)),
-        el('td', {}, rateCell),
-        el('td', { class: 'num mono' }, median),
-      );
-    }));
-  } catch (_) { empty.hidden = false; }
 }
 
 /* ---------- settings ---------- */

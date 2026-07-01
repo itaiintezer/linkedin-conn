@@ -584,3 +584,7 @@ input:disabled { color: var(--ink-3); cursor: not-allowed; background: var(--lin
   main { padding: 26px 18px 56px; }
   .panel-title h2 { font-size: 24px; }
 }
+
+.section-divider { display:flex; align-items:center; gap:12px; margin:26px 0 16px; color:var(--ink-3); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; }
+.section-divider::before, .section-divider::after { content:""; height:1px; background:var(--line); flex:1; }
+.cohort-stat { font-size:12px; color:var(--ink-3); margin:2px 0 6px; font-family:var(--mono); }
