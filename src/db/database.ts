@@ -34,6 +34,9 @@ export function runMigrations(db: DB): void {
   if (cols.length > 0 && !cols.includes('failure_threshold')) {
     db.exec('ALTER TABLE settings ADD COLUMN failure_threshold INTEGER NOT NULL DEFAULT 3');
   }
+  if (cols.length > 0 && !cols.includes('expiry_days')) {
+    db.exec('ALTER TABLE settings ADD COLUMN expiry_days INTEGER NOT NULL DEFAULT 0');
+  }
   // Guard on table presence: openDatabase runs schema.sql (which creates app_state) first,
   // but isolated migration tests may operate on a settings-only DB. table_info returns []
   // for a missing table.

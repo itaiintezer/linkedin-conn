@@ -11,6 +11,7 @@ const SETTINGS_COLUMNS = new Set([
   'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
   'onboarded',
   'failure_threshold',
+  'expiry_days',
 ]);
 
 export class CohortRepo {

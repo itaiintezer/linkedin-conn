@@ -57,7 +57,10 @@ CREATE TABLE IF NOT EXISTS settings (
   paused INTEGER NOT NULL DEFAULT 0,
   pause_reason TEXT,
   onboarded INTEGER NOT NULL DEFAULT 0,
-  failure_threshold INTEGER NOT NULL DEFAULT 3
+  failure_threshold INTEGER NOT NULL DEFAULT 3,
+  -- Age-based expiry backstop (days). 0 = disabled: invites are never expired by age.
+  -- Expiry is NEVER inferred from list scrapes; only this deterministic age check.
+  expiry_days INTEGER NOT NULL DEFAULT 0
 );
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);

@@ -20,10 +20,16 @@ export const SEL = {
   // Weekly invite-limit / quota wording (best-effort; wording varies).
   noteQuotaDialog: 'text=/weekly invitation limit|reached the weekly|out of invitations|limit of invitations/i',
 
-  // Acceptance reader (list pages). NOTE: unverified against the new UI — acceptance
-  // tracking may need its own selector pass.
+  // Acceptance reader. `invitationCardLink` is DEPRECATED: the sent-invitations list is
+  // huge and only its newest page loads, so scraping it to infer expiry produced false
+  // expiries — acceptance no longer reads it (see core/acceptance.ts). Kept only for the
+  // manual scripts/verify-readers diagnostic.
   invitationCardLink: 'a[href*="/in/"]',
-  connectionCardLink: 'a[href*="/in/"]',
+  // Connections list. Scoped to <main> so it excludes the global-nav "Me" (your own
+  // profile) and any sidebar links — only real connection-card profile links match.
+  // Verified live (2026-07): connection cards expose /in/ anchors inside <main>, default
+  // sort is "Recently added", so the top slice is where fresh acceptances appear.
+  connectionCardLink: 'main a[href*="/in/"]',
 };
 
 // Role-based locator builders. getByRole matches the *accessible name*, so these

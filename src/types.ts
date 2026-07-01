@@ -49,6 +49,7 @@ export interface Settings {
   pause_reason: string | null;
   onboarded: number;
   failure_threshold: number;
+  expiry_days: number;
 }
 
 export type SendResult =

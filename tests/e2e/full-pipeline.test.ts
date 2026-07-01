@@ -52,15 +52,16 @@ test('happy path: list -> schedule -> send -> accept -> metrics', async () => {
   expect(driver.sentLog.every((s) => s.message === 'Hi Test')).toBe(true);
   expect(repos.profiles.byStatus('sent')).toHaveLength(3);
 
-  // 4. Acceptance check: 2 became connections, the third never resolves (expired).
+  // 4. Acceptance check: 2 became connections; the third simply isn't a connection yet,
+  //    so it stays pending. Absence from the connections list is NEVER treated as expiry.
   driver.connections = [
     'https://www.linkedin.com/in/qa-alice',
     'https://www.linkedin.com/in/qa-bob',
   ];
-  driver.pending = []; // none still outstanding
   await runAcceptanceCheck(repos, driver, new Date('2026-06-30T09:00:00Z'));
   expect(repos.profiles.byStatus('accepted')).toHaveLength(2);
-  expect(repos.profiles.byStatus('expired')).toHaveLength(1);
+  expect(repos.profiles.byStatus('sent')).toHaveLength(1);   // qa-carol still pending
+  expect(repos.profiles.byStatus('expired')).toHaveLength(0); // never false-expired
 
   // 5. Metrics API reflects the funnel.
   const metricsRes = await app.inject({ method: 'GET', url: '/api/metrics' });
@@ -70,8 +71,8 @@ test('happy path: list -> schedule -> send -> accept -> metrics', async () => {
     cohort_name: 'QA',
     sent: 3, // attempted = accepted + pending + expired
     accepted: 2,
-    pending: 0,
-    expired: 1,
+    pending: 1,
+    expired: 0,
   });
   expect(metrics[0].acceptance_rate).toBeCloseTo(2 / 3);
 
@@ -79,7 +80,8 @@ test('happy path: list -> schedule -> send -> accept -> metrics', async () => {
   const statusRes = await app.inject({ method: 'GET', url: '/api/status' });
   const status = JSON.parse(statusRes.body);
   expect(status.counts.accepted).toBe(2);
-  expect(status.counts.expired).toBe(1);
+  expect(status.counts.sent).toBe(1);       // qa-carol pending
+  expect(status.counts.expired ?? 0).toBe(0);
   expect(status.weekly_sent).toBe(3); // 3 sends recorded in send_log within the rolling window
 });
 

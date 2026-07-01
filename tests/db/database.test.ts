@@ -72,6 +72,22 @@ test('fresh db seeds settings.failure_threshold = 3', () => {
   expect(s.failure_threshold).toBe(3);
 });
 
+test('fresh db seeds settings.expiry_days = 0 (age-based expiry disabled by default)', () => {
+  const db = openDatabase(':memory:');
+  const s = db.prepare('SELECT expiry_days FROM settings WHERE id = 1').get() as any;
+  expect(s.expiry_days).toBe(0);
+});
+
+test('runMigrations adds expiry_days to a legacy settings table (default 0)', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), account_type TEXT NOT NULL DEFAULT 'unknown');`);
+  db.exec(`INSERT INTO settings (id) VALUES (1);`);
+  runMigrations(db);
+  const cols = (db.prepare('PRAGMA table_info(settings)').all() as any[]).map((c) => c.name);
+  expect(cols).toContain('expiry_days');
+  expect((db.prepare('SELECT expiry_days FROM settings WHERE id = 1').get() as any).expiry_days).toBe(0);
+});
+
 test('runMigrations adds failure_threshold to a legacy settings table', () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), account_type TEXT NOT NULL DEFAULT 'unknown');`);
