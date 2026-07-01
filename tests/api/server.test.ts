@@ -229,6 +229,19 @@ test('GET /api/queue returns ordered upcoming work and total', async () => {
   expect(body.upcoming[1].profile_url).toBe('https://www.linkedin.com/in/sched-late');
 });
 
+test('GET /api/queue resolves note: profile override, else cohort template, else null', async () => {
+  const withTpl = repos.cohorts.create('Tpl', 'Hi {firstName}', false);
+  const bare = repos.cohorts.create('Bare', null, true);
+  repos.profiles.add(withTpl.id, 'https://www.linkedin.com/in/inherits', null);     // inherits template
+  repos.profiles.add(withTpl.id, 'https://www.linkedin.com/in/override', 'Custom hello'); // own message
+  repos.profiles.add(bare.id, 'https://www.linkedin.com/in/nonote', null);          // bare request
+  const res = await app.inject({ method: 'GET', url: '/api/queue?limit=10' });
+  const byUrl = Object.fromEntries(JSON.parse(res.body).upcoming.map((r: { profile_url: string; note: string | null }) => [r.profile_url, r.note]));
+  expect(byUrl['https://www.linkedin.com/in/inherits']).toBe('Hi {firstName}');
+  expect(byUrl['https://www.linkedin.com/in/override']).toBe('Custom hello');
+  expect(byUrl['https://www.linkedin.com/in/nonote']).toBeNull();
+});
+
 test('GET /api/attention lists failed and needs_attention with errors', async () => {
   const c = repos.cohorts.create('At', null, true);
   const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fail', null);
