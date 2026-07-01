@@ -29,6 +29,16 @@ export class CloakSession {
       locale: 'en-US',
       viewport: { width: 1280, height: 900 },
     });
+    // Pin LinkedIn's UI language to English. `locale: 'en-US'` only sets Accept-Language,
+    // which LinkedIn ignores for logged-in members — it uses the member's account language
+    // (Hebrew here). Without this, the COLD first navigation of a session renders in Hebrew
+    // (verified: <html lang="he" dir="rtl">), breaking every English selector (Pending
+    // badge, composer buttons) so the send can't be confirmed and is mis-marked `failed`.
+    // The `lang` cookie forces English from the very first request.
+    await this.ctx.addCookies([
+      { name: 'lang', value: 'v=2&lang=en-US', domain: '.linkedin.com', path: '/' },
+      { name: 'lang', value: 'v=2&lang=en-US', domain: '.www.linkedin.com', path: '/' },
+    ]);
     return this.ctx;
   }
 
