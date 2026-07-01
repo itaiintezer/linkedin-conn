@@ -86,34 +86,31 @@ body > *:not(.atmosphere) { position: relative; z-index: 1; }
 
 /* ---------- Top bar ---------- */
 .topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 16px;
-  padding: 18px 34px;
+  display: flex; align-items: center;
+  gap: 20px;
+  padding: 12px 28px;
   background: rgba(251, 250, 246, 0.82);
   backdrop-filter: saturate(1.4) blur(10px);
   border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 50;
 }
-.brand { display: flex; align-items: center; gap: 14px; }
+.brand { display: flex; align-items: center; gap: 11px; flex: none; }
 .brand-mark {
   display: grid; place-items: center;
-  width: 42px; height: 42px; border-radius: 12px;
+  width: 34px; height: 34px; border-radius: 12px;
   color: #fff;
   background: linear-gradient(150deg, var(--brand) 0%, var(--brand-700) 100%);
   box-shadow: 0 6px 16px -4px var(--brand-glow), inset 0 1px 0 rgba(255,255,255,0.25);
 }
 .brand-text h1 {
   margin: 0; font-family: var(--display);
-  font-size: 26px; font-weight: 600; line-height: 1;
+  font-size: 22px; font-weight: 600; line-height: 1;
   letter-spacing: -0.5px; color: var(--ink);
 }
-.brand-text p {
-  margin: 3px 0 0; font-size: 11.5px; font-weight: 600; letter-spacing: 0.6px;
-  text-transform: uppercase; color: var(--ink-3);
-}
+.brand-text p { display: none; }  /* subtitle removed in the one-line bar */
 
 .login-status {
-  display: flex; align-items: center; gap: 11px;
+  display: flex; align-items: center; gap: 11px; flex: none;
   font-size: 13.5px; font-weight: 500;
   background: var(--panel); border: 1px solid var(--line);
   padding: 8px 14px; border-radius: 100px; box-shadow: var(--shadow-sm);
@@ -190,15 +187,15 @@ body > *:not(.atmosphere) { position: relative; z-index: 1; }
 
 /* ---------- Tabs ---------- */
 .tabs {
-  display: flex; gap: 4px; padding: 0 30px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(251, 250, 246, 0.6);
+  display: flex; align-items: center; gap: 4px;
+  flex: 1 1 auto; min-width: 0; overflow-x: auto; flex-wrap: nowrap;
+  scrollbar-width: thin;
 }
 .tab {
   appearance: none; border: none; background: none; cursor: pointer;
   font-family: var(--sans); font-size: 14.5px; font-weight: 600;
-  color: var(--ink-3); padding: 16px 16px 14px;
-  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  color: var(--ink-3); padding: 8px 14px; white-space: nowrap; flex: none;
+  border-bottom: 2px solid transparent;
   transition: color .16s ease, border-color .16s ease;
 }
 .tab:hover { color: var(--ink); }
@@ -579,8 +576,7 @@ input:disabled { color: var(--ink-3); cursor: not-allowed; background: var(--lin
   .outcome { flex-direction: column; }
 }
 @media (max-width: 640px) {
-  .topbar { flex-wrap: wrap; padding: 16px 20px; }
-  .tabs { padding: 0 14px; overflow-x: auto; }
+  .topbar { padding: 12px 16px; gap: 12px; }
   main { padding: 26px 18px 56px; }
   .panel-title h2 { font-size: 24px; }
 }
