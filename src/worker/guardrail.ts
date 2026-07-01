@@ -1,4 +1,5 @@
 import type { Repos } from '../db/repositories.js';
+import { log } from '../core/log.js';
 
 const CHECKPOINT_RE = /captcha|checkpoint|verify you|unusual activity|security check/i;
 
@@ -7,10 +8,12 @@ export function isTripped(repos: Repos): boolean {
 }
 
 export function tripCheckpoint(repos: Repos, now: Date): void {
+  log.warn('guardrail', 'tripped checkpoint');
   repos.appState.trip('checkpoint', 'Captcha/checkpoint detected', now.toISOString());
 }
 
 export function tripLoginLost(repos: Repos, now: Date): void {
+  log.warn('guardrail', 'tripped login_lost');
   repos.appState.trip('login_lost', 'LinkedIn session lost (li_at cookie missing)', now.toISOString());
 }
 
@@ -23,6 +26,7 @@ export function recordFailure(repos: Repos, detail: string, now: Date): boolean 
   const streak = repos.appState.incFailureStreak();
   const threshold = repos.settings.get().failure_threshold;
   if (streak >= threshold) {
+    log.warn('guardrail', 'tripped repeated_failures', { detail, streak });
     repos.appState.trip('repeated_failures', detail, now.toISOString());
     return true;
   }

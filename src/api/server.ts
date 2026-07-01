@@ -155,8 +155,8 @@ export function buildServer(
     return repos.settings.get();
   });
 
-  app.post('/api/pause', async () => { repos.settings.update({ paused: 1, pause_reason: 'Manual pause' }); return { ok: true }; });
-  app.post('/api/resume', async () => { repos.settings.update({ paused: 0, pause_reason: null }); return { ok: true }; });
+  app.post('/api/pause', async () => { defaultLog.info('api', 'pause'); repos.settings.update({ paused: 1, pause_reason: 'Manual pause' }); return { ok: true }; });
+  app.post('/api/resume', async () => { defaultLog.info('api', 'resume'); repos.settings.update({ paused: 0, pause_reason: null }); return { ok: true }; });
 
   // Manual trigger: promote up to batch_size queued profiles to due-now and run one
   // sender batch immediately. Respects pause/login/guardrail (runSenderOnce returns early).
@@ -169,6 +169,7 @@ export function buildServer(
     // Make the next batch due immediately, pulling from queued first, then already-
     // scheduled (future) profiles, so "Run now" always sends something if work exists.
     const candidates = [...repos.profiles.byStatus('queued'), ...repos.profiles.byStatus('scheduled')].slice(0, batch);
+    defaultLog.info('api', 'run-now', { promoted: candidates.length });
     for (const p of candidates) repos.profiles.setScheduled(p.id, dueIso);
     await browserLock.tryRun(() => runSenderOnce(repos, driver, now));
     return { ok: true, promoted: candidates.length };
@@ -177,6 +178,7 @@ export function buildServer(
   // Reset failed / needs-attention profiles back to queued so they get retried.
   app.post('/api/retry', async () => {
     const targets = [...repos.profiles.byStatus('failed'), ...repos.profiles.byStatus('needs_attention')];
+    defaultLog.info('api', 'retry', { count: targets.length });
     for (const p of targets) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null, last_error: null });
     return { ok: true, retried: targets.length };
   });
@@ -207,7 +209,7 @@ export function buildServer(
 
   // Opening the login window navigates the shared browser page, so it must queue behind
   // any in-flight sender/acceptance batch (login must not be silently dropped → run, not tryRun).
-  app.post('/api/login', async () => { void browserLock.run(() => driver.openLoginWindow()); return { ok: true }; });
+  app.post('/api/login', async () => { defaultLog.info('api', 'open login window'); void browserLock.run(() => driver.openLoginWindow()); return { ok: true }; });
   app.get('/api/login-status', async () => {
     const a = repos.appState.get();
     return { loggedIn: a.login_logged_in === 1, asOf: a.login_confirmed_at };
@@ -220,6 +222,7 @@ export function buildServer(
     const snap = await driver.readLoginState();
     repos.appState.setLogin(snap, now.toISOString());
     const checkpoint = await driver.checkpointPresent();
+    defaultLog.info('api', 'guardrail acknowledge', { resumed: snap.loggedIn && !checkpoint });
     if (snap.loggedIn && !checkpoint) {
       repos.appState.clearGuardrail();
       repos.appState.resetFailureStreak();

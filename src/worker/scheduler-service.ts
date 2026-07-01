@@ -2,6 +2,7 @@ import type { Repos } from '../db/repositories.js';
 import { planDailyBatches, assignSchedule } from '../core/schedule.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
+import { log } from '../core/log.js';
 
 export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = Math.random): void {
   const s = repos.settings.get();
@@ -49,4 +50,6 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
 
   const assignments = assignSchedule(queued.map((p) => p.id), times, batchSize);
   for (const a of assignments) repos.profiles.setScheduled(a.id, a.when.toISOString());
+
+  log.debug('scheduler', 'assigned slots', { count: assignments.length, slots: times.length, budget });
 }

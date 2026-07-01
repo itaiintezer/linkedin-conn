@@ -2,6 +2,7 @@ import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { computeAcceptanceTransitions } from '../core/acceptance.js';
 import { isTripped, tripLoginLost, recordReadError, recordSuccess } from './guardrail.js';
+import { log } from '../core/log.js';
 
 export async function runAcceptanceCheck(repos: Repos, driver: BrowserDriver, now: Date): Promise<void> {
   if (repos.settings.get().paused) return;
@@ -40,5 +41,6 @@ export async function runAcceptanceCheck(repos: Repos, driver: BrowserDriver, no
     repos.events.recordEvent(id, 'expired');
   }
   repos.appState.setAcceptanceChecked(iso);
+  log.info('acceptance', 'checked', { accepted: accepted.length, expired: expired.length });
   recordSuccess(repos); // a clean read clears any accumulated streak
 }
