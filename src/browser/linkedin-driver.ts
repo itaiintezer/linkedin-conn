@@ -50,6 +50,10 @@ export class LinkedInDriver implements BrowserDriver {
       await sleep(rand(1500, 3500));
       const firstName = await this.readFirstName(page);
       if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
+      // Already connected or an invite already pending — either way there's nothing to send.
+      // Catch the connected case FIRST: a 1st-degree connection has no Pending badge, so
+      // without this we'd fall through, open the composer, and mis-record `failed`.
+      if (await this.isConnected(page)) return { result: 'already', firstName };
       if (await find.pendingBadge(page).first().isVisible().catch(() => false)) {
         return { result: 'already', firstName };
       }
@@ -99,6 +103,10 @@ export class LinkedInDriver implements BrowserDriver {
         return { result: 'sent', firstName };
       } catch {
         if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
+        // No Pending badge, but if the profile now shows as a 1st-degree connection the
+        // request landed on someone we're already connected to — treat it as such, not a
+        // failure (which would keep getting retried against LinkedIn).
+        if (await this.isConnected(page)) return { result: 'already', firstName };
         return { result: 'error', error: 'send not confirmed: no Pending state after submit', firstName };
       }
     } catch (e) {
@@ -110,6 +118,11 @@ export class LinkedInDriver implements BrowserDriver {
   private async looksLikeCheckpoint(page: Page): Promise<boolean> {
     const body = (await page.content().catch(() => '')) || '';
     return /captcha|checkpoint|verify you|unusual activity|security check/i.test(body);
+  }
+
+  /** True if the profile's top card shows the target is already a 1st-degree connection. */
+  private async isConnected(page: Page): Promise<boolean> {
+    return find.connectedBadge(page).first().isVisible().catch(() => false);
   }
 
   /** True if the invite composer (note or no-note path) is currently open. */
