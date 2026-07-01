@@ -2,6 +2,16 @@ import { test, expect } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { openDatabase, runMigrations } from '../../src/db/database.js';
 
+import { test as mtest, expect as mexpect } from 'vitest';
+
+mtest('runMigrations adds profiles.priority to a pre-existing profiles table', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE profiles (id INTEGER PRIMARY KEY, cohort_id INTEGER, profile_url TEXT, status TEXT DEFAULT 'queued');`);
+  runMigrations(db);
+  const cols = (db.prepare('PRAGMA table_info(profiles)').all() as { name: string }[]).map((c) => c.name);
+  mexpect(cols).toContain('priority');
+});
+
 test('fresh db seeds onboarded = 0', () => {
   const db = openDatabase(':memory:');
   const s = db.prepare('SELECT onboarded FROM settings WHERE id = 1').get() as any;
