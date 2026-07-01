@@ -276,7 +276,7 @@ function showNotePop(anchor, text) {
 }
 function hideNotePop() { if (notePop) notePop.hidden = true; }
 
-function noteCell(note) {
+function noteButton(note) {
   const has = !!(note && note.trim());
   const text = has ? note : 'No note — bare request';
   const btn = el('button', {
@@ -289,32 +289,21 @@ function noteCell(note) {
     onblur: hideNotePop,
   });
   btn.innerHTML = has ? ICON_NOTE : ICON_NONOTE;
-  return el('td', { class: 'note-col' }, btn);
+  return btn;
 }
 
-let queueLimit = 10;
 let queueDragging = false;
 
 async function refreshQueue() {
   if (queueDragging) return; // don't clobber an in-progress drag / action
-  const body = $('#queueBody'), empty = $('#queueEmpty'), count = $('#queueCount'), more = $('#queueMore');
-  // Hide the old flat <table> but keep its wrapper (which also holds #queueEmpty) visible,
-  // then render the grouped view as a sibling inside the same wrapper.
-  const tbl = body ? body.closest('table') : null;
+  const container = $('#queueGroups'), empty = $('#queueEmpty'), count = $('#queueCount');
   try {
     const { cohorts } = await api('/api/queue/grouped');
     const total = cohorts.reduce((n, c) => n + c.count, 0);
     count.textContent = `${total} up for processing`;
-    if (more) more.hidden = true; // grouped view shows all cohorts
-    if (tbl) tbl.hidden = true;
-    let container = $('#queueGroups');
-    if (!container && tbl) {
-      container = el('div', { id: 'queueGroups', class: 'queue-groups' });
-      tbl.parentNode.insertBefore(container, tbl.nextSibling);
-    }
-    if (!cohorts.length) { if (container) container.replaceChildren(); empty.hidden = false; return; }
+    if (!cohorts.length) { container.replaceChildren(); empty.hidden = false; return; }
     empty.hidden = true;
-    if (container) container.replaceChildren(...cohorts.map(renderCohortGroup));
+    container.replaceChildren(...cohorts.map(renderCohortGroup));
   } catch (_) { /* transient */ }
 }
 
@@ -340,6 +329,7 @@ function renderCohortGroup(c) {
     el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') }),
     el('span', { class: 'qg-time mono', text: fmtTime(p.scheduled_for) }),
     el('span', { class: 'qg-actions' },
+      noteButton(p.note),
       el('button', { class: 'qg-ico', title: 'Send next', onclick: () => queueAction(`/api/queue/profile/${p.id}/move`, { to: 'top' }) }, '⤒'),
       el('button', { class: 'qg-ico rm', title: 'Remove', onclick: () => queueAction(`/api/queue/profile/${p.id}/remove`) }, '✕'),
     ),
@@ -394,12 +384,6 @@ async function actOnProfile(id, action) {
 }
 
 function initAttention() {
-  const more = $('#queueMore');
-  if (more) more.addEventListener('click', () => {
-    queueLimit = queueLimit >= 1000 ? 10 : 1000;
-    more.textContent = queueLimit >= 1000 ? 'Show less' : 'View more';
-    refreshQueue();
-  });
   const retryAll = $('#attentionRetryAll');
   if (retryAll) retryAll.addEventListener('click', async () => {
     retryAll.disabled = true;

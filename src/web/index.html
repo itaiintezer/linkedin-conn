@@ -186,16 +186,10 @@
         </div>
         <div class="panel-actions">
           <span class="muted" id="queueCount"></span>
-          <button class="btn btn-ghost" id="queueMore" hidden>View more</button>
         </div>
       </div>
       <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr><th>Profile</th><th>Cohort</th><th>Status</th><th>Scheduled</th><th class="note-col">Note</th></tr>
-          </thead>
-          <tbody id="queueBody"></tbody>
-        </table>
+        <div class="queue-groups" id="queueGroups"></div>
         <div class="empty" id="queueEmpty" hidden>No profiles queued yet.</div>
       </div>
     </section>
