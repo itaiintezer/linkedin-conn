@@ -256,5 +256,72 @@ export function buildServer(
     return doc;
   });
 
+  app.get('/api/queue/grouped', async () => {
+    const rows = repos.db.prepare(`
+      SELECT p.id, p.profile_url, p.status, p.scheduled_for, p.priority, p.cohort_id,
+             c.name AS cohort_name,
+             COALESCE(NULLIF(p.custom_message, ''), NULLIF(c.message_template, '')) AS note
+      FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
+      WHERE p.status IN ('queued','scheduled')
+    `).all() as unknown as {
+      id: number; profile_url: string; status: string; scheduled_for: string | null;
+      priority: number; cohort_id: number; cohort_name: string; note: string | null;
+    }[];
+
+    const groups = new Map<number, { id: number; name: string; count: number; minPriority: number; profiles: typeof rows }>();
+    for (const r of rows) {
+      let g = groups.get(r.cohort_id);
+      if (!g) { g = { id: r.cohort_id, name: r.cohort_name, count: 0, minPriority: Infinity, profiles: [] }; groups.set(r.cohort_id, g); }
+      g.count++;
+      if (r.status === 'queued') g.minPriority = Math.min(g.minPriority, r.priority);
+      g.profiles.push(r);
+    }
+    const cohorts = [...groups.values()]
+      .sort((a, b) => a.minPriority - b.minPriority || a.id - b.id)
+      .map((g) => ({
+        id: g.id, name: g.name, count: g.count,
+        profiles: orderUpcoming(g.profiles).map((p) => ({
+          id: p.id, profile_url: p.profile_url, status: p.status, scheduled_for: p.scheduled_for, note: p.note,
+        })),
+      }));
+    return { cohorts };
+  });
+
+  app.post('/api/queue/profile/:id/move', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const { to } = (req.body ?? {}) as { to?: 'top' | 'bottom' };
+    if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
+    repos.profiles.moveProfile(id, to === 'bottom' ? 'bottom' : 'top');
+    return { ok: true };
+  });
+
+  app.post('/api/queue/profile/:id/remove', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
+    repos.profiles.setStatus(id, 'skipped', { last_error: null });
+    return { ok: true };
+  });
+
+  app.post('/api/queue/cohort/:id/move', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const { to } = (req.body ?? {}) as { to?: 'top' | 'bottom' };
+    if (!repos.cohorts.findById(id)) return reply.code(404).send({ error: 'cohort not found' });
+    repos.profiles.prioritizeCohort(id, to === 'bottom' ? 'bottom' : 'top');
+    return { ok: true };
+  });
+
+  app.post('/api/queue/cohort/:id/remove', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!repos.cohorts.findById(id)) return reply.code(404).send({ error: 'cohort not found' });
+    repos.profiles.skipCohortQueue(id);
+    return { ok: true };
+  });
+
+  app.post('/api/queue/cohorts/reorder', async (req) => {
+    const { order } = (req.body ?? {}) as { order?: number[] };
+    repos.profiles.reorderCohorts(Array.isArray(order) ? order.map(Number) : []);
+    return { ok: true };
+  });
+
   return app;
 }

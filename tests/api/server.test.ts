@@ -349,3 +349,58 @@ test('GET /api/docs/unknown 404s', async () => {
   const res = await app.inject({ method: 'GET', url: '/api/docs/unknown' });
   expect(res.statusCode).toBe(404);
 });
+
+test('GET /api/queue/grouped groups queued+scheduled by cohort', async () => {
+  const c1 = repos.cohorts.create('G1', null, true);
+  const c2 = repos.cohorts.create('G2', null, true);
+  repos.profiles.add(c1.id, 'https://www.linkedin.com/in/g1a', null);
+  repos.profiles.add(c2.id, 'https://www.linkedin.com/in/g2a', null);
+  const res = await app.inject({ method: 'GET', url: '/api/queue/grouped' });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  const names = body.cohorts.map((c: { name: string }) => c.name).sort();
+  expect(names).toEqual(['G1', 'G2']);
+  expect(body.cohorts[0].profiles.length).toBeGreaterThan(0);
+});
+
+test('POST /api/queue/profile/:id/move top reprioritizes', async () => {
+  const c = repos.cohorts.create('Mv', null, true);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/first', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/second', null);
+  const res = await app.inject({ method: 'POST', url: `/api/queue/profile/${b.id}/move`, payload: { to: 'top' } });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.queuedByPriority()[0].id).toBe(b.id);
+});
+
+test('POST /api/queue/profile/:id/remove soft-removes (skipped)', async () => {
+  const c = repos.cohorts.create('Rm', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/rm', null);
+  const res = await app.inject({ method: 'POST', url: `/api/queue/profile/${a.id}/remove` });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.findById(a.id)!.status).toBe('skipped');
+});
+
+test('POST /api/queue/cohort/:id/remove skips the whole cohort queue', async () => {
+  const c = repos.cohorts.create('CR', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/cr1', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/cr2', null);
+  const res = await app.inject({ method: 'POST', url: `/api/queue/cohort/${c.id}/remove` });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.findById(a.id)!.status).toBe('skipped');
+  expect(repos.profiles.findById(b.id)!.status).toBe('skipped');
+});
+
+test('POST /api/queue/cohorts/reorder applies the given order', async () => {
+  const c1 = repos.cohorts.create('O1', null, true);
+  const c2 = repos.cohorts.create('O2', null, true);
+  const a = repos.profiles.add(c1.id, 'https://www.linkedin.com/in/o1', null);
+  const b = repos.profiles.add(c2.id, 'https://www.linkedin.com/in/o2', null);
+  const res = await app.inject({ method: 'POST', url: '/api/queue/cohorts/reorder', payload: { order: [c2.id, c1.id] } });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.queuedByPriority().map((p) => p.id)).toEqual([b.id, a.id]);
+});
+
+test('POST /api/queue/profile/:id/move 404s for unknown id', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/queue/profile/99999/move', payload: { to: 'top' } });
+  expect(res.statusCode).toBe(404);
+});
