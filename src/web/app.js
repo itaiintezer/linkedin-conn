@@ -74,6 +74,7 @@ function initTabs() {
       $$('main > .panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
       if (name === 'add') loadCohortOptions();
       if (name === 'cohorts') loadCohortsScreen();
+      if (name === 'docs') loadDocs();
       if (name === 'settings') loadSettings();
       if (name === 'attention') loadAttention();
     });
@@ -635,6 +636,29 @@ function initLogViewer() {
   const refresh = $('#logRefresh'), filter = $('#logFilter');
   if (refresh) refresh.addEventListener('click', loadLogs);
   if (filter) filter.addEventListener('input', renderLogView);
+}
+
+/* ---------- docs ---------- */
+let docsLoaded = false;
+async function loadDocs() {
+  const nav = $('#docsNav');
+  try {
+    const docs = await api('/api/docs');
+    nav.replaceChildren(...docs.map((d, idx) =>
+      el('button', {
+        class: 'docs-nav-item' + (idx === 0 ? ' is-active' : ''),
+        type: 'button', 'data-slug': d.slug,
+        onclick: (e) => selectDoc(d.slug, e.currentTarget),
+      }, d.title)));
+    if (!docsLoaded && docs.length) { await selectDoc(docs[0].slug, nav.firstChild); docsLoaded = true; }
+  } catch (_) { $('#docsContent').textContent = 'Failed to load docs.'; }
+}
+async function selectDoc(slug, btn) {
+  $$('.docs-nav-item').forEach((b) => b.classList.toggle('is-active', b === btn));
+  try {
+    const doc = await api(`/api/docs/${slug}`);
+    $('#docsContent').innerHTML = window.renderMarkdown(doc.markdown);
+  } catch (_) { $('#docsContent').textContent = 'Failed to load document.'; }
 }
 
 function initSettings() {
