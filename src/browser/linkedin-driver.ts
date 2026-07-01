@@ -173,13 +173,18 @@ export class LinkedInDriver implements BrowserDriver {
     return (await this.readFullName(page))?.split(/\s+/)[0];
   }
 
+  /**
+   * DEPRECATED / diagnostic-only. The sent-invitations list is very large and only its
+   * newest page renders (scroll does not lazy-load more), so this returns just the top
+   * slice — NOT all outstanding invites. Acceptance tracking no longer calls this (it
+   * would false-expire everything below the top slice); expiry is now age-based
+   * (see core/acceptance.ts). Kept for scripts/verify-readers.
+   */
   async readPendingInvites(): Promise<string[]> {
     const page = await this.session.page();
     await page.goto(URLS.sentInvitations, { waitUntil: 'domcontentloaded' });
     await sleep(rand(2000, 4000));
     if (await this.looksLikeCheckpoint(page)) throw new Error('checkpoint detected during invitations read');
-    // The list lazy-loads; load it all so we never falsely "expire" a pending invite
-    // that simply hadn't scrolled into view.
     await this.autoScroll(page);
     return this.collectProfileLinks(page, SEL.invitationCardLink);
   }

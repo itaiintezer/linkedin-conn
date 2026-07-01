@@ -11,29 +11,64 @@ beforeEach(() => {
   repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
 });
 
-function seedSent(url: string, cohortId: number) {
+function seedSent(url: string, cohortId: number, sentAt = '2026-06-20T00:00:00Z') {
   const p = repos.profiles.add(cohortId, url, null);
-  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-06-20T00:00:00Z' });
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: sentAt });
   return p;
 }
 
-test('marks accepted and expired based on driver pages', async () => {
+test('promotes only profiles found in the connections list; absence never expires', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const a = seedSent('https://www.linkedin.com/in/a', c.id);
   const b = seedSent('https://www.linkedin.com/in/b', c.id);
   const cc = seedSent('https://www.linkedin.com/in/c', c.id);
 
-  driver.pending = ['https://www.linkedin.com/in/a'];
   driver.connections = ['https://www.linkedin.com/in/b'];
 
   const now = new Date('2026-06-29T12:00:00Z');
   await runAcceptanceCheck(repos, driver, now);
 
-  expect(repos.profiles.byStatus('sent').map((p) => p.id)).toEqual([a.id]);
   const accepted = repos.profiles.byStatus('accepted');
   expect(accepted.map((p) => p.id)).toEqual([b.id]);
   expect(accepted[0].accepted_at).toBe(now.toISOString());
-  expect(repos.profiles.byStatus('expired').map((p) => p.id)).toEqual([cc.id]);
+  // a and c are simply not in connections -> they stay pending, NOT expired.
+  expect(repos.profiles.byStatus('sent').map((p) => p.id).sort()).toEqual([a.id, cc.id].sort());
+  expect(repos.profiles.byStatus('expired')).toHaveLength(0);
+});
+
+test('an empty connections read changes nothing (fail-safe) and does not stamp checked_at', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const a = seedSent('https://www.linkedin.com/in/a', c.id);
+  driver.connections = []; // suspiciously empty read
+  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+  expect(repos.profiles.byStatus('sent').map((p) => p.id)).toEqual([a.id]);
+  expect(repos.profiles.byStatus('expired')).toHaveLength(0);
+  expect(repos.appState.get().acceptance_checked_at).toBeNull();
+});
+
+test('age-based expiry backstop: expires unaccepted invites older than expiry_days', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const old = seedSent('https://www.linkedin.com/in/old', c.id, '2026-05-01T00:00:00Z'); // 59d
+  const fresh = seedSent('https://www.linkedin.com/in/fresh', c.id, '2026-06-27T00:00:00Z'); // 2d
+  repos.settings.update({ expiry_days: 42 });
+  driver.connections = ['https://www.linkedin.com/in/someone-else']; // non-empty read
+
+  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+
+  expect(repos.profiles.byStatus('expired').map((p) => p.id)).toEqual([old.id]);
+  expect(repos.profiles.byStatus('sent').map((p) => p.id)).toEqual([fresh.id]);
+});
+
+test('acceptance wins over age expiry for the same profile', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const old = seedSent('https://www.linkedin.com/in/old', c.id, '2026-05-01T00:00:00Z');
+  repos.settings.update({ expiry_days: 42 });
+  driver.connections = ['https://www.linkedin.com/in/old']; // they accepted, even though old
+
+  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+
+  expect(repos.profiles.findById(old.id)!.status).toBe('accepted');
+  expect(repos.profiles.byStatus('expired')).toHaveLength(0);
 });
 
 test('skips when paused', async () => {
@@ -59,10 +94,10 @@ test('skips when guardrail tripped', async () => {
   expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
 });
 
-test('a checkpoint thrown during a read trips the guardrail', async () => {
+test('a checkpoint thrown during the connections read trips the guardrail', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   seedSent('https://www.linkedin.com/in/a', c.id);
-  driver.readPendingInvites = async () => { throw new Error('checkpoint detected during invitations read'); };
+  driver.readRecentConnections = async () => { throw new Error('checkpoint detected during connections read'); };
   await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
   expect(repos.appState.get().guardrail_tripped).toBe(1);
   expect(repos.appState.get().guardrail_reason).toBe('checkpoint');
@@ -78,7 +113,7 @@ test('login lost on the live check trips login_lost and reads nothing', async ()
   expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
 });
 
-test('stamps acceptance_checked_at after a clean read', async () => {
+test('stamps acceptance_checked_at after a clean, non-empty read', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   seedSent('https://www.linkedin.com/in/a', c.id);
   driver.connections = ['https://www.linkedin.com/in/a'];
