@@ -5,6 +5,10 @@ import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
 import { defaultCohortName } from '../../src/core/cohort-name.js';
 import { Mutex } from '../../src/core/mutex.js';
+import { createLogger } from '../../src/core/logger.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as pathJoin } from 'node:path';
 
 let app: ReturnType<typeof buildServer>;
 let repos: Repos;
@@ -302,4 +306,28 @@ test('GET /api/status: next_batch is blocked when paused with a backlog', async 
 test('GET /api/status: next_batch is null when nothing is queued', async () => {
   const res = await app.inject({ method: 'GET', url: '/api/status' });
   expect(JSON.parse(res.body).forecast.next_batch).toBeNull();
+});
+
+test('GET /api/logs returns the last N lines', async () => {
+  const path = pathJoin(mkdtempSync(pathJoin(tmpdir(), 'srvlog-')), 'relay.log');
+  const logger = createLogger(path, { echo: false });
+  logger.info('test', 'alpha');
+  logger.info('test', 'bravo');
+  const a = buildServer(repos, new FakeDriver(), new Mutex(), logger);
+  const res = await a.inject({ method: 'GET', url: '/api/logs?tail=1' });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  expect(body.lines).toHaveLength(1);
+  expect(body.lines[0]).toContain('bravo');
+});
+
+test('GET /api/logs/download streams the log as an attachment', async () => {
+  const path = pathJoin(mkdtempSync(pathJoin(tmpdir(), 'srvlog-')), 'relay.log');
+  const logger = createLogger(path, { echo: false });
+  logger.info('test', 'downloadable');
+  const a = buildServer(repos, new FakeDriver(), new Mutex(), logger);
+  const res = await a.inject({ method: 'GET', url: '/api/logs/download' });
+  expect(res.statusCode).toBe(200);
+  expect(res.headers['content-disposition']).toContain('relay.log');
+  expect(res.body).toContain('downloadable');
 });

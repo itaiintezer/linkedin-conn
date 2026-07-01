@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync, existsSync } from 'node:fs';
 import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
@@ -13,6 +14,8 @@ import { Mutex } from '../core/mutex.js';
 import { runSenderOnce } from '../worker/sender.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote } from '../core/message.js';
+import type { Logger } from '../core/logger.js';
+import { log as defaultLog } from '../core/log.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -23,7 +26,9 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'onboarded',
 ]);
 
-export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mutex = new Mutex()): FastifyInstance {
+export function buildServer(
+  repos: Repos, driver: BrowserDriver, browserLock: Mutex = new Mutex(), logger: Logger = defaultLog,
+): FastifyInstance {
   const app = Fastify({ logger: false });
 
   app.setErrorHandler((err, _req, reply) => {
@@ -224,6 +229,19 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     const detail = !snap.loggedIn ? 'Still not logged in' : 'Checkpoint still present';
     repos.appState.trip(reason, detail, now.toISOString());
     return { ok: true, resumed: false, reason };
+  });
+
+  app.get('/api/logs', async (req) => {
+    const tailRaw = Number((req.query as { tail?: string }).tail);
+    const tail = Number.isFinite(tailRaw) && tailRaw > 0 ? Math.min(Math.floor(tailRaw), 5000) : 500;
+    return { lines: logger.tail(tail) };
+  });
+
+  app.get('/api/logs/download', async (_req, reply) => {
+    const body = existsSync(logger.path) ? readFileSync(logger.path, 'utf8') : '';
+    reply.header('Content-Type', 'text/plain; charset=utf-8');
+    reply.header('Content-Disposition', 'attachment; filename="relay.log"');
+    return body;
   });
 
   return app;
