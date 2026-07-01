@@ -45,7 +45,7 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   const budget = Math.min(weeklyRemaining, dailyBudget, slotCapacity);
   if (budget <= 0) return;
 
-  const queued = repos.profiles.byStatus('queued').slice(0, budget);
+  const queued = repos.profiles.queuedByPriority().slice(0, budget);
   if (queued.length === 0) return;
 
   const assignments = assignSchedule(queued.map((p) => p.id), times, batchSize);
