@@ -293,23 +293,76 @@ function noteCell(note) {
 }
 
 let queueLimit = 10;
+let queueDragging = false;
 
 async function refreshQueue() {
+  if (queueDragging) return; // don't clobber an in-progress drag / action
   const body = $('#queueBody'), empty = $('#queueEmpty'), count = $('#queueCount'), more = $('#queueMore');
+  // Hide the old flat <table> but keep its wrapper (which also holds #queueEmpty) visible,
+  // then render the grouped view as a sibling inside the same wrapper.
+  const tbl = body ? body.closest('table') : null;
   try {
-    const { upcoming, total_remaining } = await api(`/api/queue?limit=${queueLimit}`);
-    count.textContent = `${total_remaining} up for processing`;
-    if (more) more.hidden = total_remaining <= upcoming.length;
-    if (!upcoming.length) { body.replaceChildren(); empty.hidden = false; return; }
+    const { cohorts } = await api('/api/queue/grouped');
+    const total = cohorts.reduce((n, c) => n + c.count, 0);
+    count.textContent = `${total} up for processing`;
+    if (more) more.hidden = true; // grouped view shows all cohorts
+    if (tbl) tbl.hidden = true;
+    let container = $('#queueGroups');
+    if (!container && tbl) {
+      container = el('div', { id: 'queueGroups', class: 'queue-groups' });
+      tbl.parentNode.insertBefore(container, tbl.nextSibling);
+    }
+    if (!cohorts.length) { if (container) container.replaceChildren(); empty.hidden = false; return; }
     empty.hidden = true;
-    body.replaceChildren(...upcoming.map((p) => el('tr', {},
-      el('td', {}, el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) })),
-      el('td', { class: 'mono' }, p.cohort_name || '—'),
-      el('td', {}, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
-      el('td', { class: 'mono' }, fmtTime(p.scheduled_for)),
-      noteCell(p.note),
-    )));
+    if (container) container.replaceChildren(...cohorts.map(renderCohortGroup));
   } catch (_) { /* transient */ }
+}
+
+function renderCohortGroup(c) {
+  const header = el('div', {
+    class: 'qg-head', draggable: 'true', 'data-cohort': String(c.id),
+    ondragstart: (e) => { queueDragging = true; e.dataTransfer.setData('text/plain', String(c.id)); e.dataTransfer.effectAllowed = 'move'; },
+    ondragend: () => { queueDragging = false; },
+    ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hint'); },
+    ondragleave: (e) => e.currentTarget.classList.remove('drop-hint'),
+    ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hint'); onCohortDrop(Number(e.dataTransfer.getData('text/plain')), c.id); },
+  },
+    el('span', { class: 'qg-drag', 'aria-hidden': 'true' }, '⋮⋮'),
+    el('span', { class: 'qg-name' }, c.name || '—'),
+    el('span', { class: 'qg-count' }, `${c.count} in queue`),
+    el('span', { class: 'qg-actions' },
+      el('button', { class: 'qg-ico', title: 'Prioritize cohort', onclick: () => queueAction(`/api/queue/cohort/${c.id}/move`, { to: 'top' }) }, '⤒'),
+      el('button', { class: 'qg-ico rm', title: 'Remove cohort from queue', onclick: () => queueAction(`/api/queue/cohort/${c.id}/remove`) }, '✕'),
+    ),
+  );
+  const rows = c.profiles.map((p) => el('div', { class: 'qg-row' },
+    el('a', { class: 'qg-slug', href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) }),
+    el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') }),
+    el('span', { class: 'qg-time mono', text: fmtTime(p.scheduled_for) }),
+    el('span', { class: 'qg-actions' },
+      el('button', { class: 'qg-ico', title: 'Send next', onclick: () => queueAction(`/api/queue/profile/${p.id}/move`, { to: 'top' }) }, '⤒'),
+      el('button', { class: 'qg-ico rm', title: 'Remove', onclick: () => queueAction(`/api/queue/profile/${p.id}/remove`) }, '✕'),
+    ),
+  ));
+  return el('div', { class: 'qg' }, header, el('div', { class: 'qg-body' }, ...rows));
+}
+
+async function onCohortDrop(draggedId, targetId) {
+  if (!draggedId || draggedId === targetId) { queueDragging = false; return; }
+  const order = $$('#queueGroups .qg-head').map((h) => Number(h.dataset.cohort));
+  const from = order.indexOf(draggedId), to = order.indexOf(targetId);
+  if (from === -1 || to === -1) { queueDragging = false; return; }
+  order.splice(to, 0, order.splice(from, 1)[0]);
+  queueDragging = false;
+  await queueAction('/api/queue/cohorts/reorder', { order });
+}
+
+async function queueAction(path, body) {
+  try {
+    await api(path, { method: 'POST', body: body ?? {} });
+    await refreshQueue();
+    await refreshStatus();
+  } catch (_) { /* ignore */ }
 }
 
 async function loadAttention() {
