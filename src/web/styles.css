@@ -520,6 +520,14 @@ input:disabled { color: var(--ink-3); cursor: not-allowed; background: var(--lin
 .settings-grid .span-all { grid-column: 1 / -1; }
 .settings-grid .span-all .btn { width: fit-content; }
 
+/* ---------- Run log ---------- */
+.log-filter { border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:13px; background:var(--panel); }
+.log-view {
+  margin-top:12px; max-height:420px; overflow:auto; padding:14px 16px;
+  background:#0f1512; color:#c7d2cc; border-radius:var(--radius-sm);
+  font-family:var(--mono); font-size:12px; line-height:1.6; white-space:pre-wrap; word-break:break-word;
+}
+
 /* ---------- First-run wizard ---------- */
 .wizard-overlay {
   position: fixed; inset: 0; z-index: 200;

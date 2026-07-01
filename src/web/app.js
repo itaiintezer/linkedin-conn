@@ -593,7 +593,32 @@ async function loadSettings() {
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
     $('#setAccountType').value = s.account_type || 'unknown';
+    loadLogs();
   } catch (_) { /* ignore */ }
+}
+
+/* ---------- run log viewer ---------- */
+let logLines = [];
+async function loadLogs() {
+  const view = $('#logView');
+  try {
+    const { lines } = await api('/api/logs?tail=1000');
+    logLines = lines;
+    renderLogView();
+  } catch (_) { if (view) view.textContent = 'failed to load log'; }
+}
+function renderLogView() {
+  const view = $('#logView');
+  if (!view) return;
+  const q = ($('#logFilter').value || '').toLowerCase();
+  const shown = q ? logLines.filter((l) => l.toLowerCase().includes(q)) : logLines;
+  view.textContent = shown.length ? shown.join('\n') : '(no matching lines)';
+  view.scrollTop = view.scrollHeight;
+}
+function initLogViewer() {
+  const refresh = $('#logRefresh'), filter = $('#logFilter');
+  if (refresh) refresh.addEventListener('click', loadLogs);
+  if (filter) filter.addEventListener('input', renderLogView);
 }
 
 function initSettings() {
@@ -671,6 +696,7 @@ function init() {
   initCohorts();
   initSettings();
   initAttention();
+  initLogViewer();
   initWizard();
 
   refreshLogin();

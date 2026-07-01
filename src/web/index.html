@@ -337,6 +337,16 @@
         </div>
       </form>
       <div class="toast" id="settingsResult" hidden></div>
+
+      <div class="panel-head sub">
+        <div class="panel-title"><h3>Run log</h3><p class="panel-sub">Full debug log for audit &amp; troubleshooting</p></div>
+        <div class="panel-actions">
+          <input id="logFilter" class="log-filter" type="text" placeholder="filter…" autocomplete="off" />
+          <button class="btn" id="logRefresh" type="button">Refresh</button>
+          <a class="btn btn-ghost" id="logDownload" href="/api/logs/download" download>Download</a>
+        </div>
+      </div>
+      <pre class="log-view" id="logView" aria-label="Run log">loading…</pre>
     </section>
   </main>
 
