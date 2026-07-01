@@ -7,6 +7,17 @@ import { Mutex } from './core/mutex.js';
 import { DB_PATH, PORT } from './config.js';
 import { log } from './core/log.js';
 
+// Last-resort safety net: a stray rejection/exception (e.g. a browser launch failing in a
+// background task) must be logged, not crash the whole server. The real handling lives at
+// each periodic tick (see Orchestrator.handleTickError); this keeps the daemon alive if
+// something slips through. Node's default for an unhandled rejection is to terminate.
+process.on('unhandledRejection', (reason) => {
+  log.error('app', 'unhandledRejection', { error: reason instanceof Error ? reason.message : String(reason) });
+});
+process.on('uncaughtException', (err) => {
+  log.error('app', 'uncaughtException', { error: err instanceof Error ? err.message : String(err) });
+});
+
 const repos = new Repos(openDatabase(DB_PATH));
 const driver = new LinkedInDriver();
 // One lock shared between the scheduler and the API so the periodic sender, the daily
