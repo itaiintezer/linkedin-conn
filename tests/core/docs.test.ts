@@ -18,8 +18,8 @@ test('listDocs returns known docs that exist, with titles from the first heading
 test('readDoc returns markdown for a known slug', () => {
   const doc = readDoc('api', fixture());
   expect(doc).not.toBeNull();
-  expect(doc.markdown).toContain('Hello.');
-  expect(doc.title).toBe('Relay API');
+  expect(doc!.markdown).toContain('Hello.');
+  expect(doc!.title).toBe('Relay API');
 });
 
 test('readDoc returns null for an unknown slug', () => {
