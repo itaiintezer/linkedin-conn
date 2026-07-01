@@ -72,6 +72,35 @@ export class ProfileRepo {
   all(): Profile[] {
     return this.db.prepare('SELECT * FROM profiles ORDER BY id').all() as unknown as Profile[];
   }
+  queuedByPriority(): Profile[] {
+    return this.db.prepare("SELECT * FROM profiles WHERE status='queued' ORDER BY priority, id").all() as unknown as Profile[];
+  }
+  setPriority(id: number, priority: number): void {
+    this.db.prepare('UPDATE profiles SET priority = ? WHERE id = ?').run(priority, id);
+  }
+  private queuedBound(kind: 'MIN' | 'MAX'): number {
+    const row = this.db.prepare(`SELECT ${kind}(priority) v FROM profiles WHERE status='queued'`).get() as unknown as { v: number | null };
+    return row.v ?? 0;
+  }
+  moveProfile(id: number, to: 'top' | 'bottom'): void {
+    const priority = to === 'top' ? this.queuedBound('MIN') - 1 : this.queuedBound('MAX') + 1;
+    this.setPriority(id, priority);
+  }
+  prioritizeCohort(cohortId: number, to: 'top' | 'bottom'): void {
+    const priority = to === 'top' ? this.queuedBound('MIN') - 1 : this.queuedBound('MAX') + 1;
+    this.db.prepare("UPDATE profiles SET priority = ? WHERE cohort_id = ? AND status = 'queued'").run(priority, cohortId);
+  }
+  reorderCohorts(orderedCohortIds: number[]): void {
+    let p = 0;
+    const upd = this.db.prepare('UPDATE profiles SET priority = ? WHERE id = ?');
+    for (const cid of orderedCohortIds) {
+      const rows = this.db.prepare("SELECT id FROM profiles WHERE status='queued' AND cohort_id = ? ORDER BY id").all(cid) as unknown as { id: number }[];
+      for (const r of rows) upd.run(p++, r.id);
+    }
+  }
+  skipCohortQueue(cohortId: number): void {
+    this.db.prepare("UPDATE profiles SET status='skipped' WHERE cohort_id = ? AND status IN ('queued','scheduled')").run(cohortId);
+  }
 }
 
 export class EventRepo {
