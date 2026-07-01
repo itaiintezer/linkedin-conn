@@ -50,13 +50,13 @@ export class LinkedInDriver implements BrowserDriver {
       await sleep(rand(1500, 3500));
       const firstName = await this.readFirstName(page);
       if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
-      // Already connected or an invite already pending — either way there's nothing to send.
-      // Catch the connected case FIRST: a 1st-degree connection has no Pending badge, so
-      // without this we'd fall through, open the composer, and mis-record `failed`.
-      if (await this.isConnected(page)) return { result: 'already', firstName };
       if (await find.pendingBadge(page).first().isVisible().catch(() => false)) {
-        return { result: 'already', firstName };
+        return { result: 'already', firstName }; // an invite is already pending
       }
+      // Already a 1st-degree connection? There's no Pending badge and no Connect control for
+      // them — but LinkedIn STILL opens the custom-invite composer for connections, so without
+      // this guard we'd "send", find no Pending on re-visit, and mis-record `failed`.
+      if (await this.isAlreadyConnected(page, url)) return { result: 'already', firstName };
 
       // 2) Open the invite composer: direct custom-invite route first, then
       //    fall back to clicking the Connect control on the profile UI.
@@ -103,10 +103,10 @@ export class LinkedInDriver implements BrowserDriver {
         return { result: 'sent', firstName };
       } catch {
         if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
-        // No Pending badge, but if the profile now shows as a 1st-degree connection the
-        // request landed on someone we're already connected to — treat it as such, not a
-        // failure (which would keep getting retried against LinkedIn).
-        if (await this.isConnected(page)) return { result: 'already', firstName };
+        // No Pending badge. If there's no longer any Connect control for this person, the
+        // request had nowhere to land — they're already connected, not a failure (which would
+        // keep getting retried against LinkedIn).
+        if (await this.isAlreadyConnected(page, url)) return { result: 'already', firstName };
         return { result: 'error', error: 'send not confirmed: no Pending state after submit', firstName };
       }
     } catch (e) {
@@ -120,9 +120,36 @@ export class LinkedInDriver implements BrowserDriver {
     return /captcha|checkpoint|verify you|unusual activity|security check/i.test(body);
   }
 
-  /** True if the profile's top card shows the target is already a 1st-degree connection. */
-  private async isConnected(page: Page): Promise<boolean> {
-    return find.connectedBadge(page).first().isVisible().catch(() => false);
+  /**
+   * True if the profile is an existing 1st-degree connection: the page actually loaded (we
+   * can read the name), there's no Pending badge, and there is NO Connect control for this
+   * person anywhere (top card, direct custom-invite anchor, or under "More"). Verified live:
+   * a connection exposes none of those; a sendable profile exposes the custom-invite anchor
+   * at the top level. Degree text ("· 1st"/"· 2nd") is NOT usable — it appears on every page
+   * (sidebar recommendations) and even shows both tokens for the owner.
+   */
+  private async isAlreadyConnected(page: Page, url: string): Promise<boolean> {
+    const name = await this.readFullName(page);
+    if (!name) return false; // no profile rendered — don't infer "connected" from a blank page
+    if (await find.pendingBadge(page).first().isVisible().catch(() => false)) return false;
+    return !(await this.hasConnectAffordance(page, url, name));
+  }
+
+  /** Whether a Connect/Invite control for THIS person exists (top card, direct anchor, or under "More"). */
+  private async hasConnectAffordance(page: Page, url: string, name: string): Promise<boolean> {
+    const slug = profileSlug(url);
+    const main = page.locator('main');
+    if (await find.connectByName(main, name).first().isVisible().catch(() => false)) return true;
+    if (slug && (await find.connectByHref(page, slug).first().isVisible().catch(() => false))) return true;
+    // Connect is sometimes tucked under the "More" overflow — expand once and re-check.
+    const more = find.moreButton(main).first();
+    if (await more.isVisible().catch(() => false)) {
+      await more.click().catch(() => {});
+      await sleep(rand(600, 1200));
+      if (slug && (await find.connectByHref(page, slug).first().isVisible().catch(() => false))) return true;
+      if (await find.connectByName(main, name).first().isVisible().catch(() => false)) return true;
+    }
+    return false;
   }
 
   /** True if the invite composer (note or no-note path) is currently open. */

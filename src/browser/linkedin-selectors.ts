@@ -49,16 +49,6 @@ export const find = {
   // English "Pending" wording is safe.
   pendingBadge: (s: Scope): Locator => s.locator('[aria-label*="Pending" i]'),
 
-  // First-degree-connection badge on the profile top card. The distance is rendered as a
-  // visually-hidden span ("1st degree connection") next to the name — there is no Pending
-  // badge for someone you're already connected to, so without this the send-confirm step
-  // reads "no Pending" as a failure and mis-marks connections as `failed`. Callers use
-  // `.first()` to take the top-card badge (the profile owner's) rather than any 1st-degree
-  // person in the "People also viewed" sidebar, mirroring how pendingBadge is used.
-  // NOTE: verify this wording against live LinkedIn — the hidden-text phrasing is the one
-  // brittle assumption here (en-US forced at launch keeps the English wording valid).
-  connectedBadge: (s: Scope): Locator => s.getByText(/1st degree connection/i),
-
   // Fallback path (used only when the direct custom-invite route shows no composer).
   // The Connect control has two shapes, so we match it two ways:
   //  - top card: a button/anchor with aria-label "Invite <Name> to connect" — match by
