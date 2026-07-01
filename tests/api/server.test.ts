@@ -5,6 +5,10 @@ import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
 import { defaultCohortName } from '../../src/core/cohort-name.js';
 import { Mutex } from '../../src/core/mutex.js';
+import { createLogger } from '../../src/core/logger.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as pathJoin } from 'node:path';
 
 let app: ReturnType<typeof buildServer>;
 let repos: Repos;
@@ -302,4 +306,101 @@ test('GET /api/status: next_batch is blocked when paused with a backlog', async 
 test('GET /api/status: next_batch is null when nothing is queued', async () => {
   const res = await app.inject({ method: 'GET', url: '/api/status' });
   expect(JSON.parse(res.body).forecast.next_batch).toBeNull();
+});
+
+test('GET /api/logs returns the last N lines', async () => {
+  const path = pathJoin(mkdtempSync(pathJoin(tmpdir(), 'srvlog-')), 'relay.log');
+  const logger = createLogger(path, { echo: false });
+  logger.info('test', 'alpha');
+  logger.info('test', 'bravo');
+  const a = buildServer(repos, new FakeDriver(), new Mutex(), logger);
+  const res = await a.inject({ method: 'GET', url: '/api/logs?tail=1' });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  expect(body.lines).toHaveLength(1);
+  expect(body.lines[0]).toContain('bravo');
+});
+
+test('GET /api/logs/download streams the log as an attachment', async () => {
+  const path = pathJoin(mkdtempSync(pathJoin(tmpdir(), 'srvlog-')), 'relay.log');
+  const logger = createLogger(path, { echo: false });
+  logger.info('test', 'downloadable');
+  const a = buildServer(repos, new FakeDriver(), new Mutex(), logger);
+  const res = await a.inject({ method: 'GET', url: '/api/logs/download' });
+  expect(res.statusCode).toBe(200);
+  expect(res.headers['content-disposition']).toContain('relay.log');
+  expect(res.body).toContain('downloadable');
+});
+
+test('GET /api/docs lists the api doc', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/docs' });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  expect(body.some((d: { slug: string }) => d.slug === 'api')).toBe(true);
+});
+
+test('GET /api/docs/api returns markdown', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/docs/api' });
+  expect(res.statusCode).toBe(200);
+  expect(JSON.parse(res.body).markdown).toContain('# Relay API');
+});
+
+test('GET /api/docs/unknown 404s', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/docs/unknown' });
+  expect(res.statusCode).toBe(404);
+});
+
+test('GET /api/queue/grouped groups queued+scheduled by cohort', async () => {
+  const c1 = repos.cohorts.create('G1', null, true);
+  const c2 = repos.cohorts.create('G2', null, true);
+  repos.profiles.add(c1.id, 'https://www.linkedin.com/in/g1a', null);
+  repos.profiles.add(c2.id, 'https://www.linkedin.com/in/g2a', null);
+  const res = await app.inject({ method: 'GET', url: '/api/queue/grouped' });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  const names = body.cohorts.map((c: { name: string }) => c.name).sort();
+  expect(names).toEqual(['G1', 'G2']);
+  expect(body.cohorts[0].profiles.length).toBeGreaterThan(0);
+});
+
+test('POST /api/queue/profile/:id/move top reprioritizes', async () => {
+  const c = repos.cohorts.create('Mv', null, true);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/first', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/second', null);
+  const res = await app.inject({ method: 'POST', url: `/api/queue/profile/${b.id}/move`, payload: { to: 'top' } });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.queuedByPriority()[0].id).toBe(b.id);
+});
+
+test('POST /api/queue/profile/:id/remove soft-removes (skipped)', async () => {
+  const c = repos.cohorts.create('Rm', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/rm', null);
+  const res = await app.inject({ method: 'POST', url: `/api/queue/profile/${a.id}/remove` });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.findById(a.id)!.status).toBe('skipped');
+});
+
+test('POST /api/queue/cohort/:id/remove skips the whole cohort queue', async () => {
+  const c = repos.cohorts.create('CR', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/cr1', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/cr2', null);
+  const res = await app.inject({ method: 'POST', url: `/api/queue/cohort/${c.id}/remove` });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.findById(a.id)!.status).toBe('skipped');
+  expect(repos.profiles.findById(b.id)!.status).toBe('skipped');
+});
+
+test('POST /api/queue/cohorts/reorder applies the given order', async () => {
+  const c1 = repos.cohorts.create('O1', null, true);
+  const c2 = repos.cohorts.create('O2', null, true);
+  const a = repos.profiles.add(c1.id, 'https://www.linkedin.com/in/o1', null);
+  const b = repos.profiles.add(c2.id, 'https://www.linkedin.com/in/o2', null);
+  const res = await app.inject({ method: 'POST', url: '/api/queue/cohorts/reorder', payload: { order: [c2.id, c1.id] } });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.queuedByPriority().map((p) => p.id)).toEqual([b.id, a.id]);
+});
+
+test('POST /api/queue/profile/:id/move 404s for unknown id', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/queue/profile/99999/move', payload: { to: 'top' } });
+  expect(res.statusCode).toBe(404);
 });

@@ -5,6 +5,7 @@ import { Orchestrator } from './worker/orchestrator.js';
 import { buildServer } from './api/server.js';
 import { Mutex } from './core/mutex.js';
 import { DB_PATH, PORT } from './config.js';
+import { log } from './core/log.js';
 
 const repos = new Repos(openDatabase(DB_PATH));
 const driver = new LinkedInDriver();
@@ -18,6 +19,7 @@ orchestrator.start();
 app
   .listen({ port: PORT, host: '127.0.0.1' })
   .then(() => {
+    log.info('app', 'started', { port: PORT });
     console.log(`LinkedIn Connector running at http://localhost:${PORT}`);
   })
   .catch((e) => {
@@ -26,6 +28,7 @@ app
   });
 
 const shutdown = async (): Promise<void> => {
+  log.info('app', 'shutting down');
   orchestrator.stop();
   await driver.close();
   await app.close();

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   sent_at TEXT,
   accepted_at TEXT,
   resolved_at TEXT,
+  priority INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_status ON profiles(status);

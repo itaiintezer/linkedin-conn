@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync, existsSync } from 'node:fs';
 import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
@@ -13,6 +14,9 @@ import { Mutex } from '../core/mutex.js';
 import { runSenderOnce } from '../worker/sender.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote } from '../core/message.js';
+import type { Logger } from '../core/logger.js';
+import { log as defaultLog } from '../core/log.js';
+import { listDocs, readDoc } from '../core/docs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -23,7 +27,9 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'onboarded',
 ]);
 
-export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mutex = new Mutex()): FastifyInstance {
+export function buildServer(
+  repos: Repos, driver: BrowserDriver, browserLock: Mutex = new Mutex(), logger: Logger = defaultLog,
+): FastifyInstance {
   const app = Fastify({ logger: false });
 
   app.setErrorHandler((err, _req, reply) => {
@@ -130,7 +136,7 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     const limitRaw = Number((req.query as { limit?: string }).limit);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 10;
     const rows = repos.db.prepare(`
-      SELECT p.id, p.profile_url, p.status, p.scheduled_for, c.name AS cohort_name,
+      SELECT p.id, p.profile_url, p.status, p.scheduled_for, p.priority, c.name AS cohort_name,
              COALESCE(NULLIF(p.custom_message, ''), NULLIF(c.message_template, '')) AS note
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       WHERE p.status IN ('queued','scheduled')
@@ -150,8 +156,8 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     return repos.settings.get();
   });
 
-  app.post('/api/pause', async () => { repos.settings.update({ paused: 1, pause_reason: 'Manual pause' }); return { ok: true }; });
-  app.post('/api/resume', async () => { repos.settings.update({ paused: 0, pause_reason: null }); return { ok: true }; });
+  app.post('/api/pause', async () => { defaultLog.info('api', 'pause'); repos.settings.update({ paused: 1, pause_reason: 'Manual pause' }); return { ok: true }; });
+  app.post('/api/resume', async () => { defaultLog.info('api', 'resume'); repos.settings.update({ paused: 0, pause_reason: null }); return { ok: true }; });
 
   // Manual trigger: promote up to batch_size queued profiles to due-now and run one
   // sender batch immediately. Respects pause/login/guardrail (runSenderOnce returns early).
@@ -164,6 +170,7 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     // Make the next batch due immediately, pulling from queued first, then already-
     // scheduled (future) profiles, so "Run now" always sends something if work exists.
     const candidates = [...repos.profiles.byStatus('queued'), ...repos.profiles.byStatus('scheduled')].slice(0, batch);
+    defaultLog.info('api', 'run-now', { promoted: candidates.length });
     for (const p of candidates) repos.profiles.setScheduled(p.id, dueIso);
     await browserLock.tryRun(() => runSenderOnce(repos, driver, now));
     return { ok: true, promoted: candidates.length };
@@ -172,6 +179,7 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
   // Reset failed / needs-attention profiles back to queued so they get retried.
   app.post('/api/retry', async () => {
     const targets = [...repos.profiles.byStatus('failed'), ...repos.profiles.byStatus('needs_attention')];
+    defaultLog.info('api', 'retry', { count: targets.length });
     for (const p of targets) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null, last_error: null });
     return { ok: true, retried: targets.length };
   });
@@ -202,7 +210,7 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
 
   // Opening the login window navigates the shared browser page, so it must queue behind
   // any in-flight sender/acceptance batch (login must not be silently dropped → run, not tryRun).
-  app.post('/api/login', async () => { void browserLock.run(() => driver.openLoginWindow()); return { ok: true }; });
+  app.post('/api/login', async () => { defaultLog.info('api', 'open login window'); void browserLock.run(() => driver.openLoginWindow()); return { ok: true }; });
   app.get('/api/login-status', async () => {
     const a = repos.appState.get();
     return { loggedIn: a.login_logged_in === 1, asOf: a.login_confirmed_at };
@@ -215,6 +223,7 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     const snap = await driver.readLoginState();
     repos.appState.setLogin(snap, now.toISOString());
     const checkpoint = await driver.checkpointPresent();
+    defaultLog.info('api', 'guardrail acknowledge', { resumed: snap.loggedIn && !checkpoint });
     if (snap.loggedIn && !checkpoint) {
       repos.appState.clearGuardrail();
       repos.appState.resetFailureStreak();
@@ -224,6 +233,94 @@ export function buildServer(repos: Repos, driver: BrowserDriver, browserLock: Mu
     const detail = !snap.loggedIn ? 'Still not logged in' : 'Checkpoint still present';
     repos.appState.trip(reason, detail, now.toISOString());
     return { ok: true, resumed: false, reason };
+  });
+
+  app.get('/api/logs', async (req) => {
+    const tailRaw = Number((req.query as { tail?: string }).tail);
+    const tail = Number.isFinite(tailRaw) && tailRaw > 0 ? Math.min(Math.floor(tailRaw), 5000) : 500;
+    return { lines: logger.tail(tail) };
+  });
+
+  app.get('/api/logs/download', async (_req, reply) => {
+    const body = existsSync(logger.path) ? readFileSync(logger.path, 'utf8') : '';
+    reply.header('Content-Type', 'text/plain; charset=utf-8');
+    reply.header('Content-Disposition', 'attachment; filename="relay.log"');
+    return body;
+  });
+
+  app.get('/api/docs', async () => listDocs());
+  app.get('/api/docs/:slug', async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const doc = readDoc(slug);
+    if (!doc) return reply.code(404).send({ error: 'doc not found' });
+    return doc;
+  });
+
+  app.get('/api/queue/grouped', async () => {
+    const rows = repos.db.prepare(`
+      SELECT p.id, p.profile_url, p.status, p.scheduled_for, p.priority, p.cohort_id,
+             c.name AS cohort_name,
+             COALESCE(NULLIF(p.custom_message, ''), NULLIF(c.message_template, '')) AS note
+      FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
+      WHERE p.status IN ('queued','scheduled')
+    `).all() as unknown as {
+      id: number; profile_url: string; status: string; scheduled_for: string | null;
+      priority: number; cohort_id: number; cohort_name: string; note: string | null;
+    }[];
+
+    const groups = new Map<number, { id: number; name: string; count: number; minPriority: number; profiles: typeof rows }>();
+    for (const r of rows) {
+      let g = groups.get(r.cohort_id);
+      if (!g) { g = { id: r.cohort_id, name: r.cohort_name, count: 0, minPriority: Infinity, profiles: [] }; groups.set(r.cohort_id, g); }
+      g.count++;
+      if (r.status === 'queued') g.minPriority = Math.min(g.minPriority, r.priority);
+      g.profiles.push(r);
+    }
+    const cohorts = [...groups.values()]
+      .sort((a, b) => a.minPriority - b.minPriority || a.id - b.id)
+      .map((g) => ({
+        id: g.id, name: g.name, count: g.count,
+        profiles: orderUpcoming(g.profiles).map((p) => ({
+          id: p.id, profile_url: p.profile_url, status: p.status, scheduled_for: p.scheduled_for, note: p.note,
+        })),
+      }));
+    return { cohorts };
+  });
+
+  app.post('/api/queue/profile/:id/move', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const { to } = (req.body ?? {}) as { to?: 'top' | 'bottom' };
+    if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
+    repos.profiles.moveProfile(id, to === 'bottom' ? 'bottom' : 'top');
+    return { ok: true };
+  });
+
+  app.post('/api/queue/profile/:id/remove', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
+    repos.profiles.setStatus(id, 'skipped', { last_error: null });
+    return { ok: true };
+  });
+
+  app.post('/api/queue/cohort/:id/move', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const { to } = (req.body ?? {}) as { to?: 'top' | 'bottom' };
+    if (!repos.cohorts.findById(id)) return reply.code(404).send({ error: 'cohort not found' });
+    repos.profiles.prioritizeCohort(id, to === 'bottom' ? 'bottom' : 'top');
+    return { ok: true };
+  });
+
+  app.post('/api/queue/cohort/:id/remove', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!repos.cohorts.findById(id)) return reply.code(404).send({ error: 'cohort not found' });
+    repos.profiles.skipCohortQueue(id);
+    return { ok: true };
+  });
+
+  app.post('/api/queue/cohorts/reorder', async (req) => {
+    const { order } = (req.body ?? {}) as { order?: number[] };
+    repos.profiles.reorderCohorts(Array.isArray(order) ? order.map(Number) : []);
+    return { ok: true };
   });
 
   return app;

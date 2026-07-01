@@ -28,6 +28,7 @@ export interface Profile {
   sent_at: string | null;
   accepted_at: string | null;
   resolved_at: string | null;
+  priority: number;
   created_at: string;
 }
 

@@ -73,8 +73,8 @@ function initTabs() {
       const name = tab.dataset.tab;
       $$('main > .panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
       if (name === 'add') loadCohortOptions();
-      if (name === 'cohorts') loadCohorts();
-      if (name === 'metrics') loadMetrics();
+      if (name === 'cohorts') loadCohortsScreen();
+      if (name === 'docs') loadDocs();
       if (name === 'settings') loadSettings();
       if (name === 'attention') loadAttention();
     });
@@ -276,7 +276,7 @@ function showNotePop(anchor, text) {
 }
 function hideNotePop() { if (notePop) notePop.hidden = true; }
 
-function noteCell(note) {
+function noteButton(note) {
   const has = !!(note && note.trim());
   const text = has ? note : 'No note — bare request';
   const btn = el('button', {
@@ -289,27 +289,70 @@ function noteCell(note) {
     onblur: hideNotePop,
   });
   btn.innerHTML = has ? ICON_NOTE : ICON_NONOTE;
-  return el('td', { class: 'note-col' }, btn);
+  return btn;
 }
 
-let queueLimit = 10;
+let queueDragging = false;
 
 async function refreshQueue() {
-  const body = $('#queueBody'), empty = $('#queueEmpty'), count = $('#queueCount'), more = $('#queueMore');
+  if (queueDragging) return; // don't clobber an in-progress drag / action
+  const container = $('#queueGroups'), empty = $('#queueEmpty'), count = $('#queueCount');
   try {
-    const { upcoming, total_remaining } = await api(`/api/queue?limit=${queueLimit}`);
-    count.textContent = `${total_remaining} up for processing`;
-    if (more) more.hidden = total_remaining <= upcoming.length;
-    if (!upcoming.length) { body.replaceChildren(); empty.hidden = false; return; }
+    const { cohorts } = await api('/api/queue/grouped');
+    const total = cohorts.reduce((n, c) => n + c.count, 0);
+    count.textContent = `${total} up for processing`;
+    if (!cohorts.length) { container.replaceChildren(); empty.hidden = false; return; }
     empty.hidden = true;
-    body.replaceChildren(...upcoming.map((p) => el('tr', {},
-      el('td', {}, el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) })),
-      el('td', { class: 'mono' }, p.cohort_name || '—'),
-      el('td', {}, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
-      el('td', { class: 'mono' }, fmtTime(p.scheduled_for)),
-      noteCell(p.note),
-    )));
+    container.replaceChildren(...cohorts.map(renderCohortGroup));
   } catch (_) { /* transient */ }
+}
+
+function renderCohortGroup(c) {
+  const header = el('div', {
+    class: 'qg-head', draggable: 'true', 'data-cohort': String(c.id),
+    ondragstart: (e) => { queueDragging = true; e.dataTransfer.setData('text/plain', String(c.id)); e.dataTransfer.effectAllowed = 'move'; },
+    ondragend: () => { queueDragging = false; },
+    ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop-hint'); },
+    ondragleave: (e) => e.currentTarget.classList.remove('drop-hint'),
+    ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hint'); onCohortDrop(Number(e.dataTransfer.getData('text/plain')), c.id); },
+  },
+    el('span', { class: 'qg-drag', 'aria-hidden': 'true' }, '⋮⋮'),
+    el('span', { class: 'qg-name' }, c.name || '—'),
+    el('span', { class: 'qg-count' }, `${c.count} in queue`),
+    el('span', { class: 'qg-actions' },
+      el('button', { class: 'qg-ico', title: 'Prioritize cohort', onclick: () => queueAction(`/api/queue/cohort/${c.id}/move`, { to: 'top' }) }, '⤒'),
+      el('button', { class: 'qg-ico rm', title: 'Remove cohort from queue', onclick: () => queueAction(`/api/queue/cohort/${c.id}/remove`) }, '✕'),
+    ),
+  );
+  const rows = c.profiles.map((p) => el('div', { class: 'qg-row' },
+    el('a', { class: 'qg-slug', href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) }),
+    el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') }),
+    el('span', { class: 'qg-time mono', text: fmtTime(p.scheduled_for) }),
+    el('span', { class: 'qg-actions' },
+      noteButton(p.note),
+      el('button', { class: 'qg-ico', title: 'Send next', onclick: () => queueAction(`/api/queue/profile/${p.id}/move`, { to: 'top' }) }, '⤒'),
+      el('button', { class: 'qg-ico rm', title: 'Remove', onclick: () => queueAction(`/api/queue/profile/${p.id}/remove`) }, '✕'),
+    ),
+  ));
+  return el('div', { class: 'qg' }, header, el('div', { class: 'qg-body' }, ...rows));
+}
+
+async function onCohortDrop(draggedId, targetId) {
+  if (!draggedId || draggedId === targetId) { queueDragging = false; return; }
+  const order = $$('#queueGroups .qg-head').map((h) => Number(h.dataset.cohort));
+  const from = order.indexOf(draggedId), to = order.indexOf(targetId);
+  if (from === -1 || to === -1) { queueDragging = false; return; }
+  order.splice(to, 0, order.splice(from, 1)[0]);
+  queueDragging = false;
+  await queueAction('/api/queue/cohorts/reorder', { order });
+}
+
+async function queueAction(path, body) {
+  try {
+    await api(path, { method: 'POST', body: body ?? {} });
+    await refreshQueue();
+    await refreshStatus();
+  } catch (_) { /* ignore */ }
 }
 
 async function loadAttention() {
@@ -341,12 +384,6 @@ async function actOnProfile(id, action) {
 }
 
 function initAttention() {
-  const more = $('#queueMore');
-  if (more) more.addEventListener('click', () => {
-    queueLimit = queueLimit >= 1000 ? 10 : 1000;
-    more.textContent = queueLimit >= 1000 ? 'Show less' : 'View more';
-    refreshQueue();
-  });
   const retryAll = $('#attentionRetryAll');
   if (retryAll) retryAll.addEventListener('click', async () => {
     retryAll.disabled = true;
@@ -515,32 +552,74 @@ function initAddList() {
   });
 }
 
-/* ---------- cohorts ---------- */
-async function loadCohorts() {
-  const list = $('#cohortList'), empty = $('#cohortEmpty');
-  try {
-    const cohorts = await api('/api/cohorts');
-    if (!cohorts.length) { list.replaceChildren(); empty.hidden = false; return; }
-    empty.hidden = true;
-    list.replaceChildren(...cohorts.map((c) => {
-      const tplText = (c.message_template && c.message_template.trim())
-        ? el('div', { class: 'tpl', text: c.message_template })
-        : el('div', { class: 'tpl none', text: 'No template (bare request)' });
-      return el('div', { class: 'cohort-card', onclick: () => fillCohortForm(c) },
-        el('div', { class: 'name' }, el('span', { text: c.name })),
-        tplText,
-      );
-    }));
-  } catch (_) { empty.hidden = false; }
+/* ---------- cohorts + metrics (merged screen) ---------- */
+async function loadCohortsScreen() {
+  const [cohorts, metrics] = await Promise.all([
+    api('/api/cohorts').catch(() => []),
+    api('/api/metrics').catch(() => []),
+  ]);
+  renderMetricsTable(metrics);
+  renderCohortList(cohorts, metrics);
 }
 
-function fillCohortForm(c) {
-  $('#cohortName').value = c.name || '';
-  $('#cohortTemplate').value = c.message_template || '';
+function renderMetricsTable(rows) {
+  const body = $('#metricsBody'), empty = $('#metricsEmpty');
+  if (!rows.length) { body.replaceChildren(); empty.hidden = false; return; }
+  empty.hidden = true;
+  body.replaceChildren(...rows.map((m) => {
+    const pct = Math.round((m.acceptance_rate || 0) * 100);
+    const rateCell = el('div', { class: 'rate-cell' },
+      el('div', { class: 'rate-bar' }, el('i', { style: `width:${pct}%` })),
+      el('span', { class: 'rate-val', text: `${pct}%` }),
+    );
+    const median = (m.median_time_to_accept_days == null) ? '—' : String(m.median_time_to_accept_days);
+    return el('tr', {},
+      el('td', { class: 'mono' }, m.cohort_name || '—'),
+      el('td', { class: 'num mono' }, String(m.sent)),
+      el('td', { class: 'num mono' }, String(m.accepted)),
+      el('td', { class: 'num mono' }, String(m.pending)),
+      el('td', { class: 'num mono' }, String(m.expired)),
+      el('td', {}, rateCell),
+      el('td', { class: 'num mono' }, median),
+    );
+  }));
+}
+
+function renderCohortList(cohorts, metrics) {
+  const list = $('#cohortList'), empty = $('#cohortEmpty');
+  const byName = Object.fromEntries(metrics.map((m) => [m.cohort_name, m]));
+  if (!cohorts.length) { list.replaceChildren(); empty.hidden = false; return; }
+  empty.hidden = true;
+  list.replaceChildren(...cohorts.map((c) => {
+    const m = byName[c.name];
+    const stat = m
+      ? `${m.sent} sent · ${Math.round((m.acceptance_rate || 0) * 100)}% accepted`
+      : 'no sends yet';
+    const tplText = (c.message_template && c.message_template.trim())
+      ? el('div', { class: 'tpl', text: c.message_template })
+      : el('div', { class: 'tpl none', text: 'No template (bare request)' });
+    return el('div', { class: 'cohort-card', onclick: () => openCohortEditor(c) },
+      el('div', { class: 'name' }, el('span', { text: c.name })),
+      el('div', { class: 'cohort-stat', text: stat }),
+      tplText,
+    );
+  }));
+}
+
+function openCohortEditor(c) {
+  const form = $('#cohortForm');
+  form.hidden = false;
+  $('#cohortFormTitle').textContent = c ? `Edit “${c.name}”` : 'New cohort';
+  $('#cohortName').value = c ? (c.name || '') : '';
+  $('#cohortName').disabled = !!c; // name is the key; edit templates, not names
+  $('#cohortTemplate').value = c ? (c.message_template || '') : '';
   $('#cohortName').focus();
+  form.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function initCohorts() {
+  const newBtn = $('#cohortNewBtn');
+  if (newBtn) newBtn.addEventListener('click', () => openCohortEditor(null));
   $('#cohortForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {
@@ -551,36 +630,11 @@ function initCohorts() {
     try {
       await api('/api/cohorts', { method: 'POST', body: payload });
       $('#cohortForm').reset();
-      loadCohorts();
+      $('#cohortForm').hidden = true;
+      $('#cohortName').disabled = false;
+      loadCohortsScreen();
     } catch (_) { /* ignore */ }
   });
-}
-
-/* ---------- metrics ---------- */
-async function loadMetrics() {
-  const body = $('#metricsBody'), empty = $('#metricsEmpty');
-  try {
-    const rows = await api('/api/metrics');
-    if (!rows.length) { body.replaceChildren(); empty.hidden = false; return; }
-    empty.hidden = true;
-    body.replaceChildren(...rows.map((m) => {
-      const pct = Math.round((m.acceptance_rate || 0) * 100);
-      const rateCell = el('div', { class: 'rate-cell' },
-        el('div', { class: 'rate-bar' }, el('i', { style: `width:${pct}%` })),
-        el('span', { class: 'rate-val', text: `${pct}%` }),
-      );
-      const median = (m.median_time_to_accept_days == null) ? '—' : String(m.median_time_to_accept_days);
-      return el('tr', {},
-        el('td', { class: 'mono' }, m.cohort_name || '—'),
-        el('td', { class: 'num mono' }, String(m.sent)),
-        el('td', { class: 'num mono' }, String(m.accepted)),
-        el('td', { class: 'num mono' }, String(m.pending)),
-        el('td', { class: 'num mono' }, String(m.expired)),
-        el('td', {}, rateCell),
-        el('td', { class: 'num mono' }, median),
-      );
-    }));
-  } catch (_) { empty.hidden = false; }
 }
 
 /* ---------- settings ---------- */
@@ -593,7 +647,55 @@ async function loadSettings() {
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
     $('#setAccountType').value = s.account_type || 'unknown';
+    loadLogs();
   } catch (_) { /* ignore */ }
+}
+
+/* ---------- run log viewer ---------- */
+let logLines = [];
+async function loadLogs() {
+  const view = $('#logView');
+  try {
+    const { lines } = await api('/api/logs?tail=1000');
+    logLines = lines;
+    renderLogView();
+  } catch (_) { if (view) view.textContent = 'failed to load log'; }
+}
+function renderLogView() {
+  const view = $('#logView');
+  if (!view) return;
+  const q = ($('#logFilter').value || '').toLowerCase();
+  const shown = q ? logLines.filter((l) => l.toLowerCase().includes(q)) : logLines;
+  view.textContent = shown.length ? shown.join('\n') : '(no matching lines)';
+  view.scrollTop = view.scrollHeight;
+}
+function initLogViewer() {
+  const refresh = $('#logRefresh'), filter = $('#logFilter');
+  if (refresh) refresh.addEventListener('click', loadLogs);
+  if (filter) filter.addEventListener('input', renderLogView);
+}
+
+/* ---------- docs ---------- */
+let docsLoaded = false;
+async function loadDocs() {
+  const nav = $('#docsNav');
+  try {
+    const docs = await api('/api/docs');
+    nav.replaceChildren(...docs.map((d, idx) =>
+      el('button', {
+        class: 'docs-nav-item' + (idx === 0 ? ' is-active' : ''),
+        type: 'button', 'data-slug': d.slug,
+        onclick: (e) => selectDoc(d.slug, e.currentTarget),
+      }, d.title)));
+    if (!docsLoaded && docs.length) { await selectDoc(docs[0].slug, nav.firstChild); docsLoaded = true; }
+  } catch (_) { $('#docsContent').textContent = 'Failed to load docs.'; }
+}
+async function selectDoc(slug, btn) {
+  $$('.docs-nav-item').forEach((b) => b.classList.toggle('is-active', b === btn));
+  try {
+    const doc = await api(`/api/docs/${slug}`);
+    $('#docsContent').innerHTML = window.renderMarkdown(doc.markdown);
+  } catch (_) { $('#docsContent').textContent = 'Failed to load document.'; }
 }
 
 function initSettings() {
@@ -671,6 +773,7 @@ function init() {
   initCohorts();
   initSettings();
   initAttention();
+  initLogViewer();
   initWizard();
 
   refreshLogin();

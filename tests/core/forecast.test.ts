@@ -65,6 +65,15 @@ test('orderUpcoming: scheduled (by time) before queued (by id)', () => {
   expect(orderUpcoming(rows).map((r) => r.id)).toEqual([2, 1, 3, 4]);
 });
 
+test('orderUpcoming sorts queued by (priority, id)', () => {
+  const rows = [
+    { id: 3, status: 'queued', scheduled_for: null, priority: -1 },
+    { id: 1, status: 'queued', scheduled_for: null, priority: 0 },
+    { id: 2, status: 'queued', scheduled_for: null, priority: 0 },
+  ];
+  expect(orderUpcoming(rows).map((r) => r.id)).toEqual([3, 1, 2]);
+});
+
 const baseCtx = {
   backlog: 30, weeklyRemaining: 100, dailyRemaining: 20,
   guardrailTripped: false, paused: false, settings: settings(),

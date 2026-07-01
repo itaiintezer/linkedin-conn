@@ -4,6 +4,7 @@ import { selectNoteSource } from '../core/message.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { pickDue } from '../core/schedule.js';
 import { isTripped, tripCheckpoint, tripLoginLost, recordFailure, recordSuccess } from './guardrail.js';
+import { log } from '../core/log.js';
 
 export async function runSenderOnce(repos: Repos, driver: BrowserDriver, now: Date): Promise<void> {
   const settings = repos.settings.get();
@@ -32,6 +33,7 @@ export async function runSenderOnce(repos: Repos, driver: BrowserDriver, now: Da
   for (const p of due) {
     const cohort = repos.cohorts.findById(p.cohort_id)!;
     repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
+    log.debug('sender', 'attempting', { profile: p.id, url: p.profile_url });
 
     // Pass the raw note template (with {firstName} intact); the driver substitutes the
     // real name it reads from the profile at send time.
@@ -77,6 +79,7 @@ export async function runSenderOnce(repos: Repos, driver: BrowserDriver, now: Da
         if (recordFailure(repos, outcome.error ?? 'unknown', now)) return;
         break;
     }
+    log.info('sender', 'outcome', { profile: p.id, result: outcome.result, error: outcome.error ?? '' });
     if (remaining <= 0) break;
   }
 }

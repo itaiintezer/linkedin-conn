@@ -59,13 +59,15 @@ export function nextBatch(
   return { at, count: future.filter((t) => t === at).length };
 }
 
-export function orderUpcoming<T extends { id: number; status: string; scheduled_for: string | null }>(
+export function orderUpcoming<T extends { id: number; status: string; scheduled_for: string | null; priority?: number }>(
   rows: T[],
 ): T[] {
   const scheduled = rows
     .filter((r) => r.status === 'scheduled')
     .sort((a, b) => (a.scheduled_for ?? '').localeCompare(b.scheduled_for ?? ''));
-  const queued = rows.filter((r) => r.status === 'queued').sort((a, b) => a.id - b.id);
+  const queued = rows
+    .filter((r) => r.status === 'queued')
+    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0) || a.id - b.id);
   return [...scheduled, ...queued];
 }
 

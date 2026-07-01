@@ -102,3 +102,15 @@ test('re-running the planner the same day does not exceed the daily cap', () => 
   run(); run(); run();
   expect(repos.profiles.byStatus('scheduled').length).toBe(20); // still 20, not 60
 });
+
+test('planAndAssignToday schedules higher-priority queued profiles first', () => {
+  const c = repos.cohorts.create('Prio', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/a', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/b', null);
+  repos.profiles.setPriority(b.id, -5); // b should be scheduled before a
+  repos.settings.update({ weekly_cap: 1, batch_size: 1, batches_per_day: 1 });
+  // 2026-07-01 is a Wednesday, mid-window (09:00) so exactly one slot exists.
+  planAndAssignToday(repos, new Date('2026-07-01T09:00:00'), () => 0.5);
+  expect(repos.profiles.findById(b.id)!.status).toBe('scheduled');
+  expect(repos.profiles.findById(a.id)!.status).toBe('queued');
+});
