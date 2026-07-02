@@ -756,7 +756,7 @@ body > .drawer-backdrop {
 }
 body > .drawer {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 160;
-  width: min(440px, 92vw);
+  width: min(560px, 92vw);
   background: var(--panel); border-left: 1px solid var(--line);
   box-shadow: -24px 0 48px -24px rgba(27,38,34,0.35);
   display: flex; flex-direction: column;
@@ -779,16 +779,19 @@ body > .drawer {
 }
 .drawer-close:hover { background: var(--bg-wash); color: var(--ink); }
 .drawer-body { flex: 1; overflow-y: auto; padding: 8px 0 20px; }
+/* Fixed column tracks (slug | cohort | date-or-reason) so every row lines up —
+   flex with auto widths let the middle/right columns drift per row. */
 .drawer-row {
-  display: flex; align-items: baseline; gap: 12px;
+  display: grid; grid-template-columns: minmax(0, 1fr) 150px 148px;
+  align-items: baseline; gap: 12px;
   padding: 10px 24px; border-bottom: 1px solid var(--line-soft);
 }
 .drawer-row:hover { background: var(--bg-wash); }
-.drawer-slug { flex: 1; min-width: 0; font-family: var(--mono); font-size: 13px; font-weight: 500;
+.drawer-slug { min-width: 0; font-family: var(--mono); font-size: 13px; font-weight: 500;
   color: var(--brand-700); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-slug:hover { text-decoration: underline; }
-.drawer-cohort { font-size: 12px; color: var(--ink-3); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.drawer-date { flex: none; font-size: 11.5px; color: var(--ink-faint); }
+.drawer-cohort { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-date { font-size: 11.5px; color: var(--ink-faint); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .drawer-empty { padding: 40px 24px; text-align: center; color: var(--ink-3); font-size: 14px; }
 
 /* ---------- Archived cohorts ---------- */
