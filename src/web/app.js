@@ -866,8 +866,12 @@ function renderLogView() {
 }
 
 function scrollLogToEnd() {
+  // Synchronous (layout is up to date after replaceChildren); the timeout re-asserts
+  // after paint settles. Not rAF: it never fires while the tab is unfocused.
   const view = $('#logView');
-  if (view) requestAnimationFrame(() => { view.scrollTop = view.scrollHeight; });
+  if (!view) return;
+  view.scrollTop = view.scrollHeight;
+  setTimeout(() => { view.scrollTop = view.scrollHeight; }, 60);
 }
 
 function initLogViewer() {

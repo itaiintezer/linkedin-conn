@@ -549,7 +549,7 @@ input:disabled { color: var(--ink-3); cursor: not-allowed; background: var(--lin
 .settings-grid .span-all .btn { width: fit-content; }
 
 /* ---------- Run log ---------- */
-.log-filter { border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:13px; background:var(--panel); }
+.log-filter { border:1px solid var(--line); border-radius:8px; padding:7px 10px; font-size:13px; background:var(--panel); width:200px; }
 .log-view {
   margin-top:12px; max-height:420px; overflow:auto; padding:14px 16px;
   background:#0f1512; color:#c7d2cc; border-radius:var(--radius-sm);
@@ -657,14 +657,16 @@ input:disabled { color: var(--ink-3); cursor: not-allowed; background: var(--lin
 .qg.is-collapsed .qg-body { display:none; }
 .qg.is-collapsed .qg-head { border-bottom:none; }
 
-/* ---------- Status drill-down drawer ---------- */
-.drawer-backdrop {
+/* ---------- Status drill-down drawer ----------
+   `body > .drawer` (like .note-pop above): position:fixed must beat the global
+   `body > *:not(.atmosphere) { position: relative }` rule on specificity. */
+body > .drawer-backdrop {
   position: fixed; inset: 0; z-index: 150;
   background: rgba(27, 38, 34, 0.32);
   backdrop-filter: blur(3px) saturate(1.1);
   animation: rise .18s ease both;
 }
-.drawer {
+body > .drawer {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 160;
   width: min(440px, 92vw);
   background: var(--panel); border-left: 1px solid var(--line);
