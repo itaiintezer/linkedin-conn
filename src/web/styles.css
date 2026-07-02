@@ -1,5 +1,5 @@
 /* ============================================================
-   Relay — LinkedIn Outreach Console
+   The Machine — LinkedIn Outreach Console
    Aesthetic: premium GTM operations console.
    Warm paper canvas · crisp white panels · emerald primary.
    Fraunces (display) · Hanken Grotesk (UI) · JetBrains Mono (data)
@@ -513,29 +513,91 @@ input:disabled { color: var(--ink-3); cursor: not-allowed; background: var(--lin
 }
 
 /* ---------- Cohorts ---------- */
-.cohorts-layout { display: grid; grid-template-columns: 1fr 360px; gap: 28px; align-items: start; }
-.cohort-list-wrap > h3, .card-form > h3 {
-  margin: 0 0 16px; font-size: 12px; font-weight: 600; letter-spacing: 0.6px;
-  text-transform: uppercase; color: var(--ink-3);
+.cohort-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px; align-items: stretch;
 }
-.cohort-list { display: flex; flex-direction: column; gap: 12px; }
 .cohort-card {
   background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--brand);
   border-radius: var(--radius-sm); padding: 16px 18px; cursor: pointer;
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-sm); min-height: 118px;
   transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
 }
 .cohort-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
 .cohort-card .name { font-size: 16px; font-weight: 600; color: var(--ink); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.cohort-card .tpl { margin-top: 9px; font-size: 14px; color: var(--ink-2); white-space: pre-wrap; line-height: 1.5; }
+.cohort-card .name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cohort-card .tpl {
+  margin-top: 9px; font-size: 13.5px; color: var(--ink-2); line-height: 1.5;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
 .cohort-card .tpl.none { color: var(--ink-faint); font-style: italic; }
+/* archive buttons stay quiet until the card is hovered */
+.cohort-card .cohort-archive { opacity: 0; transition: opacity .14s ease; }
+.cohort-card:hover .cohort-archive, .cohort-card .cohort-archive:focus-visible { opacity: 1; }
+.cohort-card.is-archived .cohort-archive { opacity: 1; }
+
+/* "+ New cohort" tile */
+.cohort-new {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  border: 1.5px dashed #d4cfc2; border-left-width: 1.5px; background: transparent; box-shadow: none;
+  color: var(--ink-3); font: inherit; font-size: 14px; font-weight: 600;
+}
+.cohort-new:hover { border-color: var(--brand); color: var(--brand-700); background: var(--brand-50); transform: none; box-shadow: none; }
+.cohort-new-plus { font-family: var(--display); font-size: 26px; line-height: 1; }
+
+/* in-card archive confirmation (no browser dialogs) */
+.cohort-card .cc-confirm { display: none; }
+.cohort-card.is-confirming { cursor: default; border-left-color: var(--red); }
+.cohort-card.is-confirming .cc-main { display: none; }
+.cohort-card.is-confirming .cc-confirm { display: flex; flex-direction: column; gap: 12px; }
+.cc-confirm-txt { margin: 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.5; }
+.cc-confirm-txt strong { color: var(--ink); }
+.cc-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.cc-confirm-actions .btn { padding: 6px 14px; font-size: 13px; }
+.btn-danger { background: var(--panel); color: var(--red); border-color: #f1b6ae; }
+.btn-danger:hover { background: var(--red-bg); color: #8e2424; border-color: #e79d93; }
 .tag {
   font-family: var(--sans); font-size: 11px; font-weight: 600; letter-spacing: 0.2px;
   text-transform: uppercase; padding: 3px 9px; border-radius: 100px;
   background: var(--neutral-bg); color: var(--neutral); white-space: nowrap;
 }
 .tag.on { background: var(--green-bg); color: var(--green); }
-.card-form { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; gap: 16px; box-shadow: var(--shadow-sm); }
+
+/* ---------- Modals (attention, cohort editor) ----------
+   `body > .modal-overlay`: position:fixed must beat the global
+   `body > *:not(.atmosphere) { position: relative }` rule (see .note-pop). */
+body > .modal-overlay {
+  position: fixed; inset: 0; z-index: 170;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: rgba(27, 38, 34, 0.38);
+  backdrop-filter: blur(5px) saturate(1.15);
+  animation: rise .2s ease both;
+}
+.modal-card {
+  width: 100%; max-width: 480px; max-height: 88vh;
+  display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 26px 28px 24px; box-shadow: var(--shadow-lg);
+  animation: cardIn .32s cubic-bezier(.2,.7,.3,1) both;
+}
+.modal-card.modal-wide { max-width: 920px; }
+.modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
+.modal-head h3 {
+  margin: 0; font-family: var(--display); font-size: 22px; font-weight: 600;
+  letter-spacing: -0.4px; color: var(--ink); line-height: 1.15;
+}
+.modal-sub { margin: 4px 0 0; font-size: 13.5px; color: var(--ink-3); }
+.modal-head-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+.modal-close {
+  display: grid; place-items: center; width: 32px; height: 32px; flex: none;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  color: var(--ink-2); cursor: pointer;
+}
+.modal-close:hover { background: var(--bg-wash); color: var(--ink); }
+.modal-body { flex: 1; overflow-y: auto; min-height: 0; }
+.modal-form { display: flex; flex-direction: column; gap: 18px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+.toast.slim { margin: 0 0 14px; padding: 10px 14px; font-size: 13.5px; }
 
 /* ---------- Metrics bars ---------- */
 .rate-cell { display: flex; align-items: center; gap: 12px; min-width: 170px; }
@@ -598,7 +660,6 @@ input:disabled { color: var(--ink-3); cursor: not-allowed; background: var(--lin
 .wizard-actions .btn { min-width: 130px; justify-content: center; }
 
 @media (max-width: 820px) {
-  .cohorts-layout { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
   .add-layout { grid-template-columns: 1fr; }
   .add-main textarea { min-height: 220px; }

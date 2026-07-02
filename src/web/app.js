@@ -1,5 +1,5 @@
 /* ============================================================
-   RELAY — front-end controller
+   THE MACHINE — front-end controller
    Vanilla JS. Wires against /api/* (see server.ts).
    ============================================================ */
 'use strict';
@@ -76,7 +76,6 @@ function initTabs() {
       if (name === 'cohorts') loadCohortsScreen();
       if (name === 'docs') loadDocs();
       if (name === 'settings') { loadSettings(); scrollLogToEnd(); }
-      if (name === 'attention') loadAttention();
     });
   });
 }
@@ -322,13 +321,15 @@ function noteButton(note) {
 
 let queueDragging = false;
 
-/* Collapsed queue cohorts survive the 15s re-render and full reloads. */
-const collapsedCohorts = new Set(
-  (() => { try { return JSON.parse(localStorage.getItem('relay.collapsedCohorts') || '[]'); } catch (_) { return []; } })(),
+/* Queue cohorts start collapsed (they can be huge); the ids the user expanded
+   survive the 15s re-render and full reloads. */
+const expandedCohorts = new Set(
+  (() => { try { return JSON.parse(localStorage.getItem('machine.expandedCohorts') || '[]'); } catch (_) { return []; } })(),
 );
+function isCohortCollapsed(id) { return !expandedCohorts.has(id); }
 function toggleCohortCollapse(id) {
-  if (collapsedCohorts.has(id)) collapsedCohorts.delete(id); else collapsedCohorts.add(id);
-  try { localStorage.setItem('relay.collapsedCohorts', JSON.stringify([...collapsedCohorts])); } catch (_) { /* ignore */ }
+  if (expandedCohorts.has(id)) expandedCohorts.delete(id); else expandedCohorts.add(id);
+  try { localStorage.setItem('machine.expandedCohorts', JSON.stringify([...expandedCohorts])); } catch (_) { /* ignore */ }
 }
 
 /* A scheduled time in the past means "sends on the next tick (or gets re-flowed)" —
@@ -352,7 +353,7 @@ async function refreshQueue() {
 }
 
 function renderCohortGroup(c) {
-  const collapsed = collapsedCohorts.has(c.id);
+  const collapsed = isCohortCollapsed(c.id);
   const chevron = el('button', {
     class: 'qg-ico qg-chevron' + (collapsed ? ' is-collapsed' : ''),
     type: 'button',
@@ -362,7 +363,7 @@ function renderCohortGroup(c) {
       e.stopPropagation();
       toggleCohortCollapse(c.id);
       const qg = e.currentTarget.closest('.qg');
-      const isNow = collapsedCohorts.has(c.id);
+      const isNow = isCohortCollapsed(c.id);
       qg.classList.toggle('is-collapsed', isNow);
       e.currentTarget.classList.toggle('is-collapsed', isNow);
       e.currentTarget.title = isNow ? 'Expand cohort' : 'Collapse cohort';
@@ -466,8 +467,21 @@ function initDrawer() {
   });
   $('#drawerClose').addEventListener('click', closeDrawer);
   $('#drawerBackdrop').addEventListener('click', closeDrawer);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    closeDrawer();
+    closeAttentionModal();
+    closeCohortModal();
+  });
 }
+
+/* ---------- needs-attention modal ---------- */
+function openAttentionModal() {
+  $('#attentionResult').hidden = true; // stale toast from a previous open
+  $('#attentionModal').hidden = false;
+  loadAttention();
+}
+function closeAttentionModal() { $('#attentionModal').hidden = true; }
 
 async function loadAttention() {
   const body = $('#attentionBody'), empty = $('#attentionEmpty');
@@ -506,6 +520,8 @@ async function actOnProfile(p, action, btn) {
 }
 
 function initAttention() {
+  $('#attentionClose').addEventListener('click', closeAttentionModal);
+  $('#attentionModal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeAttentionModal(); });
   const retryAll = $('#attentionRetryAll');
   if (retryAll) retryAll.addEventListener('click', async () => {
     const result = $('#attentionResult');
@@ -528,11 +544,11 @@ function initAttention() {
 }
 
 function initDashboard() {
-  // The "Needs attention" outcome jumps to the Attention tab — but only when it
+  // The "Needs attention" outcome opens the attention modal — but only when it
   // carries a count (renderEngine toggles `is-clickable`).
   const attnCard = $('#outAttnCard');
   if (attnCard) attnCard.addEventListener('click', () => {
-    if (attnCard.classList.contains('is-clickable')) switchTab('attention');
+    if (attnCard.classList.contains('is-clickable')) openAttentionModal();
   });
 
   $('#pauseToggle').addEventListener('click', async () => {
@@ -597,12 +613,6 @@ function initDashboard() {
 }
 
 /* ---------- add list ---------- */
-function todayCohortName() {
-  const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const d = new Date();
-  return `${M[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
-}
-
 function countProfiles(text) {
   const re = /https?:\/\/[^\s,"'<>]*linkedin\.com\/in\/[A-Za-z0-9\-_%]+\/?/gi;
   const seen = new Set();
@@ -630,7 +640,7 @@ function initAddList() {
   tpl.addEventListener('input', updateTplCount);
   updateTplCount();
 
-  $('#listCohort').placeholder = todayCohortName();
+  $('#listCohort').placeholder = 'e.g. Founders Q3';
 
   const submitBtn = $('#listForm button[type="submit"]');
   const updateCount = () => {
@@ -732,30 +742,58 @@ function renderMetricsTable(rows) {
 function renderCohortList(cohorts, metrics) {
   const list = $('#cohortList'), empty = $('#cohortEmpty');
   const byName = Object.fromEntries(metrics.map((m) => [m.cohort_name, m]));
-  if (!cohorts.length) { list.replaceChildren(); empty.hidden = false; return; }
-  empty.hidden = true;
-  list.replaceChildren(...cohorts.map((c) => {
-    const m = byName[c.name];
-    const stat = m
-      ? `${m.sent} sent · ${Math.round((m.acceptance_rate || 0) * 100)}% accepted`
-      : 'no sends yet';
-    const tplText = (c.message_template && c.message_template.trim())
-      ? el('div', { class: 'tpl', text: c.message_template })
-      : el('div', { class: 'tpl none', text: 'No template (bare request)' });
-    const archiveBtn = el('button', {
-      class: 'btn btn-ghost cohort-archive', type: 'button', title: 'Archive cohort',
-      onclick: async (e) => {
-        e.stopPropagation();
-        if (!confirm(`Archive “${c.name}”?\n\nIt disappears from this screen and the Add List dropdown, and anything still queued in it stops sending. History is kept and you can restore it below.`)) return;
-        try { await api(`/api/cohorts/${c.id}/archive`, { method: 'POST' }); loadCohortsScreen(); } catch (_) { /* ignore */ }
-      },
-    }, 'Archive');
-    return el('div', { class: 'cohort-card', onclick: () => openCohortEditor(c) },
-      el('div', { class: 'name' }, el('span', { text: c.name }), archiveBtn),
+  empty.hidden = cohorts.length > 0;
+  const newTile = el('button', { class: 'cohort-card cohort-new', type: 'button', onclick: () => openCohortEditor(null) },
+    el('span', { class: 'cohort-new-plus', 'aria-hidden': 'true' }, '+'),
+    el('span', { text: 'New cohort' }),
+  );
+  list.replaceChildren(...cohorts.map((c) => renderCohortCard(c, byName[c.name])), newTile);
+}
+
+function renderCohortCard(c, m) {
+  const stat = m
+    ? `${m.total} profiles · ${m.sent} sent · ${Math.round((m.acceptance_rate || 0) * 100)}% accepted`
+    : 'no sends yet';
+  const tplText = (c.message_template && c.message_template.trim())
+    ? el('div', { class: 'tpl', text: c.message_template })
+    : el('div', { class: 'tpl none', text: 'No template (bare request)' });
+
+  // Archive asks in place: the card flips to a confirm state, no browser dialogs.
+  const card = el('div', {
+    class: 'cohort-card',
+    onclick: () => { if (!card.classList.contains('is-confirming')) openCohortEditor(c); },
+  },
+    el('div', { class: 'cc-main' },
+      el('div', { class: 'name' },
+        el('span', { text: c.name }),
+        el('button', {
+          class: 'btn btn-ghost cohort-archive', type: 'button', title: 'Archive cohort',
+          onclick: (e) => { e.stopPropagation(); card.classList.add('is-confirming'); },
+        }, 'Archive'),
+      ),
       el('div', { class: 'cohort-stat', text: stat }),
       tplText,
-    );
-  }));
+    ),
+    el('div', { class: 'cc-confirm', onclick: (e) => e.stopPropagation() },
+      el('p', { class: 'cc-confirm-txt' },
+        el('strong', { text: `Archive “${c.name}”?` }),
+        ` Anything still queued stops sending. History is kept — restore it any time from “Archived cohorts”.`,
+      ),
+      el('div', { class: 'cc-confirm-actions' },
+        el('button', { class: 'btn btn-ghost', type: 'button', onclick: () => card.classList.remove('is-confirming') }, 'Cancel'),
+        el('button', {
+          class: 'btn btn-danger', type: 'button',
+          onclick: async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true; btn.textContent = 'Archiving…';
+            try { await api(`/api/cohorts/${c.id}/archive`, { method: 'POST' }); loadCohortsScreen(); }
+            catch (_) { btn.disabled = false; btn.textContent = 'Archive'; }
+          },
+        }, 'Archive'),
+      ),
+    ),
+  );
+  return card;
 }
 
 function renderArchivedList(archived) {
@@ -779,19 +817,26 @@ function renderArchivedList(archived) {
 }
 
 function openCohortEditor(c) {
-  const form = $('#cohortForm');
-  form.hidden = false;
   $('#cohortFormTitle').textContent = c ? `Edit “${c.name}”` : 'New cohort';
   $('#cohortName').value = c ? (c.name || '') : '';
   $('#cohortName').disabled = !!c; // name is the key; edit templates, not names
   $('#cohortTemplate').value = c ? (c.message_template || '') : '';
-  $('#cohortName').focus();
-  form.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  updateCohortTplCount();
+  $('#cohortModal').hidden = false;
+  (c ? $('#cohortTemplate') : $('#cohortName')).focus();
+}
+
+function closeCohortModal() { $('#cohortModal').hidden = true; }
+
+function updateCohortTplCount() {
+  $('#cohortTplCount').textContent = `${$('#cohortTemplate').value.length} / 300`;
 }
 
 function initCohorts() {
-  const newBtn = $('#cohortNewBtn');
-  if (newBtn) newBtn.addEventListener('click', () => openCohortEditor(null));
+  $('#cohortTemplate').addEventListener('input', updateCohortTplCount);
+  $('#cohortModalClose').addEventListener('click', closeCohortModal);
+  $('#cohortCancel').addEventListener('click', closeCohortModal);
+  $('#cohortModal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeCohortModal(); });
   $('#cohortForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const payload = {
@@ -802,8 +847,8 @@ function initCohorts() {
     try {
       await api('/api/cohorts', { method: 'POST', body: payload });
       $('#cohortForm').reset();
-      $('#cohortForm').hidden = true;
       $('#cohortName').disabled = false;
+      closeCohortModal();
       loadCohortsScreen();
     } catch (_) { /* ignore */ }
   });
