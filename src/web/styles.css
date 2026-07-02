@@ -364,7 +364,24 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .data-table a { color: var(--brand-700); text-decoration: none; font-family: var(--mono); font-size: 13.5px; font-weight: 500; }
 .data-table a:hover { text-decoration: underline; }
 .data-table .mono { font-family: var(--mono); color: var(--ink-3); font-size: 13px; }
-.err { color: var(--red); font-size: 13px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.err { color: var(--red); font-size: 13px; }
+
+/* Needs-attention table: fixed layout so the long cohort name and error text can't
+   blow the columns past the modal (which clipped Error + the Actions buttons under
+   the wrap's overflow:hidden). Widths sum to 100%; greedy text columns truncate. */
+.attn-table { table-layout: fixed; }
+.attn-table .c-profile  { width: 16%; }
+.attn-table .c-cohort   { width: 15%; }
+.attn-table .c-status   { width: 18%; }
+.attn-table .c-attempts { width: 9%; }
+.attn-table .c-error    { width: 23%; }
+.attn-table .c-actions  { width: 19%; }
+.attn-table td.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attn-table td.trunc > a { display: block; overflow: hidden; text-overflow: ellipsis; }
+/* Tighter cell padding so the status pill fits on one line and both action buttons
+   fit their columns without clipping. */
+.attn-table td.status-cell { padding-left: 10px; padding-right: 10px; }
+.attn-table td.row-actions { padding-left: 10px; padding-right: 12px; }
 
 /* ---------- Queue note glyph + hover popover ---------- */
 .data-table th.note-col, .data-table td.note-col { text-align: center; width: 64px; padding-left: 8px; padding-right: 8px; }
@@ -395,13 +412,13 @@ body > .note-pop {
 
 /* ---------- Status pills (tinted) ---------- */
 .pill {
-  display: inline-flex; align-items: center; gap: 7px;
+  display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
   font-family: var(--sans); font-size: 12.5px; font-weight: 600;
   letter-spacing: 0.1px; text-transform: capitalize;
   padding: 4px 11px 4px 9px; border-radius: 100px;
   background: var(--neutral-bg); color: var(--neutral);
 }
-.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .pill.queued          { background: var(--slate-bg);  color: var(--slate); }
 .pill.scheduled       { background: var(--blue-bg);   color: var(--blue); }
 .pill.sending         { background: var(--amber-bg);  color: var(--amber); }

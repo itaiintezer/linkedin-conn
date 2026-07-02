@@ -509,11 +509,11 @@ async function loadAttention() {
     if (!rows.length) { body.replaceChildren(); empty.hidden = false; return; }
     empty.hidden = true;
     body.replaceChildren(...rows.map((p) => el('tr', {},
-      el('td', {}, el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) })),
-      el('td', { class: 'mono' }, p.cohort_name || '—'),
-      el('td', {}, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
+      el('td', { class: 'trunc' }, el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', title: p.profile_url || '', text: slugFromUrl(p.profile_url) })),
+      el('td', { class: 'mono trunc', title: p.cohort_name || '' }, p.cohort_name || '—'),
+      el('td', { class: 'status-cell' }, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
       el('td', { class: 'num mono' }, String(p.attempts ?? 0)),
-      el('td', { class: 'err', title: p.last_error || '' }, p.last_error || '—'),
+      el('td', { class: 'err trunc', title: p.last_error || '' }, p.last_error || '—'),
       el('td', { class: 'row-actions' },
         el('button', { class: 'btn btn-ghost', onclick: (e) => actOnProfile(p, 'retry', e.currentTarget) }, 'Retry'),
         el('button', { class: 'btn btn-ghost', onclick: (e) => actOnProfile(p, 'dismiss', e.currentTarget) }, 'Dismiss'),
