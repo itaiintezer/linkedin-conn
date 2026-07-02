@@ -1,7 +1,7 @@
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
-import { planAndAssignToday } from '../../src/worker/scheduler-service.js';
+import { planAndAssignToday, requeueOverdue } from '../../src/worker/scheduler-service.js';
 
 let repos: Repos;
 beforeEach(() => { repos = new Repos(openDatabase(':memory:')); });
@@ -101,6 +101,51 @@ test('re-running the planner the same day does not exceed the daily cap', () => 
   };
   run(); run(); run();
   expect(repos.profiles.byStatus('scheduled').length).toBe(20); // still 20, not 60
+});
+
+test('planAndAssignToday does nothing while paused', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/p', null);
+  repos.settings.update({ paused: 1 });
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => 0.5);
+  expect(repos.profiles.byStatus('scheduled')).toHaveLength(0);
+  expect(repos.profiles.byStatus('queued')).toHaveLength(1);
+});
+
+test('planAndAssignToday does nothing while the guardrail is tripped', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/p', null);
+  repos.appState.trip('checkpoint', 'x', '2026-06-29T00:00:00.000Z');
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => 0.5);
+  expect(repos.profiles.byStatus('scheduled')).toHaveLength(0);
+});
+
+test('requeueOverdue returns stale scheduled profiles to queued', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/p', null);
+  repos.profiles.setScheduled(p.id, '2026-06-29T09:00:00.000Z');
+  const n = requeueOverdue(repos, new Date('2026-06-29T10:00:00Z')); // 60 min overdue > grace
+  expect(n).toBe(1);
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('queued');
+  expect(row.scheduled_for).toBeNull();
+});
+
+test('requeueOverdue leaves items within the grace period scheduled', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/p', null);
+  repos.profiles.setScheduled(p.id, '2026-06-29T09:00:00.000Z');
+  const n = requeueOverdue(repos, new Date('2026-06-29T09:05:00Z')); // 5 min < 10 min grace
+  expect(n).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('scheduled');
+});
+
+test('requeueOverdue ignores future-scheduled profiles', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/p', null);
+  repos.profiles.setScheduled(p.id, '2026-06-29T15:00:00.000Z');
+  expect(requeueOverdue(repos, new Date('2026-06-29T10:00:00Z'))).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('scheduled');
 });
 
 test('planAndAssignToday schedules higher-priority queued profiles first', () => {

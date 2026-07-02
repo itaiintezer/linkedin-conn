@@ -4,8 +4,29 @@ import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
 import { log } from '../core/log.js';
 
+/** How long a scheduled profile may sit past its slot before it's re-queued. */
+export const OVERDUE_GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * Return scheduled profiles that missed their slot by more than the grace period to
+ * 'queued' so the planner re-flows them into a valid future working-hours slot.
+ * Healthy items never hit this: the sender picks up anything due within a minute.
+ * Only blocked slots accumulate here (paused, guardrail, logged out, app was off).
+ */
+export function requeueOverdue(repos: Repos, now: Date, graceMs: number = OVERDUE_GRACE_MS): number {
+  const cutoff = now.getTime() - graceMs;
+  const stale = repos.profiles.byStatus('scheduled')
+    .filter((p) => p.scheduled_for !== null && new Date(p.scheduled_for).getTime() < cutoff);
+  for (const p of stale) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
+  if (stale.length > 0) log.info('scheduler', 'requeued overdue profiles for re-scheduling', { count: stale.length });
+  return stale.length;
+}
+
 export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = Math.random): void {
   const s = repos.settings.get();
+  // While paused or halted the sender won't run — don't materialize slots that will
+  // only go stale. /api/resume and a guardrail acknowledge re-plan immediately.
+  if (s.paused || repos.appState.get().guardrail_tripped) return;
   if (s.weekdays_only && (now.getDay() === 0 || now.getDay() === 6)) return;
 
   // Never schedule outside today's working-hours window. Once the window has closed we

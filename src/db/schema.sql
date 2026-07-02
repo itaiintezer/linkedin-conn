@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS cohorts (
   name TEXT NOT NULL UNIQUE,
   message_template TEXT,
   allow_no_note INTEGER NOT NULL DEFAULT 0,
+  archived INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

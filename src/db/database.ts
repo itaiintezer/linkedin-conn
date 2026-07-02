@@ -48,4 +48,8 @@ export function runMigrations(db: DB): void {
   if (profileCols.length > 0 && !profileCols.includes('priority')) {
     db.exec('ALTER TABLE profiles ADD COLUMN priority INTEGER NOT NULL DEFAULT 0');
   }
+  const cohortCols = (db.prepare('PRAGMA table_info(cohorts)').all() as { name: string }[]).map((c) => c.name);
+  if (cohortCols.length > 0 && !cohortCols.includes('archived')) {
+    db.exec('ALTER TABLE cohorts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
+  }
 }

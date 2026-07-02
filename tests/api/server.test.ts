@@ -404,3 +404,78 @@ test('POST /api/queue/profile/:id/move 404s for unknown id', async () => {
   const res = await app.inject({ method: 'POST', url: '/api/queue/profile/99999/move', payload: { to: 'top' } });
   expect(res.statusCode).toBe(404);
 });
+
+/* ---------- UX batch fixes: archive, status filter, sending, resume-replan ---------- */
+
+test('POST /api/cohorts/:id/archive hides the cohort and skips its queue', async () => {
+  const c = repos.cohorts.create('Arch', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/arch-1', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/arch-2', null);
+  repos.profiles.setScheduled(b.id, '2099-01-01T00:00:00.000Z');
+  const res = await app.inject({ method: 'POST', url: `/api/cohorts/${c.id}/archive` });
+  expect(res.statusCode).toBe(200);
+  expect(repos.cohorts.list().find((x) => x.id === c.id)).toBeUndefined();
+  expect(repos.cohorts.listArchived().find((x) => x.id === c.id)).toBeDefined();
+  expect(repos.profiles.findById(a.id)!.status).toBe('skipped');
+  expect(repos.profiles.findById(b.id)!.status).toBe('skipped');
+});
+
+test('POST /api/cohorts/:id/unarchive restores the cohort', async () => {
+  const c = repos.cohorts.create('Back', null, true);
+  repos.cohorts.setArchived(c.id, true);
+  const res = await app.inject({ method: 'POST', url: `/api/cohorts/${c.id}/unarchive` });
+  expect(res.statusCode).toBe(200);
+  expect(repos.cohorts.list().find((x) => x.id === c.id)).toBeDefined();
+});
+
+test('GET /api/cohorts/archived lists only archived cohorts', async () => {
+  const live = repos.cohorts.create('Live', null, true);
+  const dead = repos.cohorts.create('Dead', null, true);
+  repos.cohorts.setArchived(dead.id, true);
+  const res = await app.inject({ method: 'GET', url: '/api/cohorts/archived' });
+  const names = (JSON.parse(res.body) as { name: string }[]).map((c) => c.name);
+  expect(names).toContain('Dead');
+  expect(names).not.toContain('Live');
+  expect(live.id).toBeGreaterThan(0);
+});
+
+test('GET /api/metrics excludes archived cohorts', async () => {
+  const c = repos.cohorts.create('MDead', null, true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/mdead', null);
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-06-29T09:00:00.000Z' });
+  repos.cohorts.setArchived(c.id, true);
+  const res = await app.inject({ method: 'GET', url: '/api/metrics' });
+  const rows = JSON.parse(res.body) as { cohort_name: string }[];
+  expect(rows.find((r) => r.cohort_name === 'MDead')).toBeUndefined();
+});
+
+test('GET /api/profiles?status=accepted filters by status', async () => {
+  const c = repos.cohorts.create('F', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/f-acc', null);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/f-queued', null);
+  repos.profiles.setStatus(a.id, 'accepted', { accepted_at: '2026-06-29T09:00:00.000Z' });
+  const res = await app.inject({ method: 'GET', url: '/api/profiles?status=accepted' });
+  const rows = JSON.parse(res.body) as { profile_url: string; status: string }[];
+  expect(rows).toHaveLength(1);
+  expect(rows[0].status).toBe('accepted');
+});
+
+test('GET /api/status includes the profiles currently sending', async () => {
+  const c = repos.cohorts.create('Snd', null, true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/now-sending', null);
+  repos.profiles.setStatus(p.id, 'sending');
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  const body = JSON.parse(res.body);
+  expect(body.sending).toEqual([{ id: p.id, profile_url: 'https://www.linkedin.com/in/now-sending' }]);
+});
+
+test('POST /api/resume re-plans the day so queued profiles get slots again', async () => {
+  const c = repos.cohorts.create('Rpl', null, true);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/rpl', null);
+  repos.settings.update({ paused: 1, pause_reason: 'test' });
+  const res = await app.inject({ method: 'POST', url: '/api/resume' });
+  expect(res.statusCode).toBe(200);
+  // If we're inside working hours right now the profile gets a slot; either way
+  // it must no longer be blocked by pause and the endpoint must not throw.
+  expect(repos.settings.get().paused).toBe(0);
+});

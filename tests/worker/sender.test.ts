@@ -67,6 +67,30 @@ test('note_quota with allow_no_note retries bare and sends', async () => {
   expect(repos.settings.get().note_quota_exhausted).toBe(1);
 });
 
+test('outside working hours: due profiles are not sent (window guard)', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  // local 10pm Monday — after the default 8-20 window
+  await runSenderOnce(repos, driver, new Date('2026-06-29T22:00:00'));
+  expect(driver.sentLog).toHaveLength(0);
+  expect(driver.open).toBe(false); // never opened the browser
+});
+
+test('weekend with weekdays_only: due profiles are not sent', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-27T09:00:00.000Z', c.id);
+  await runSenderOnce(repos, driver, new Date('2026-06-28T10:00:00')); // local Sunday
+  expect(driver.sentLog).toHaveLength(0);
+});
+
+test('force bypasses the window guard (Run batch now)', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  await runSenderOnce(repos, driver, new Date('2026-06-29T22:00:00'), { force: true });
+  expect(driver.sentLog).toHaveLength(1);
+  expect(repos.profiles.byStatus('sent')).toHaveLength(1);
+});
+
 test('does nothing when paused', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
