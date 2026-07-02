@@ -88,6 +88,31 @@ test('runMigrations adds expiry_days to a legacy settings table (default 0)', ()
   expect((db.prepare('SELECT expiry_days FROM settings WHERE id = 1').get() as any).expiry_days).toBe(0);
 });
 
+test('runMigrations adds profiles.skip_reason and rewrites already_connected rows', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE profiles (id INTEGER PRIMARY KEY, cohort_id INTEGER, profile_url TEXT, status TEXT DEFAULT 'queued');`);
+  db.exec(`INSERT INTO profiles (id, cohort_id, profile_url, status) VALUES
+    (1, 1, 'https://www.linkedin.com/in/a', 'already_connected'),
+    (2, 1, 'https://www.linkedin.com/in/b', 'skipped'),
+    (3, 1, 'https://www.linkedin.com/in/c', 'sent');`);
+  runMigrations(db);
+  const cols = (db.prepare('PRAGMA table_info(profiles)').all() as { name: string }[]).map((c) => c.name);
+  expect(cols).toContain('skip_reason');
+  const rows = db.prepare('SELECT id, status, skip_reason FROM profiles ORDER BY id').all() as any[];
+  expect(rows[0]).toMatchObject({ status: 'skipped', skip_reason: 'already_connected' });
+  expect(rows[1]).toMatchObject({ status: 'skipped', skip_reason: null }); // legacy skip keeps NULL reason
+  expect(rows[2]).toMatchObject({ status: 'sent', skip_reason: null });
+  // Idempotent: a second run must not throw or change anything.
+  runMigrations(db);
+  expect((db.prepare("SELECT COUNT(*) c FROM profiles WHERE status='already_connected'").get() as any).c).toBe(0);
+});
+
+test('fresh db has profiles.skip_reason', () => {
+  const db = openDatabase(':memory:');
+  const cols = (db.prepare('PRAGMA table_info(profiles)').all() as { name: string }[]).map((c) => c.name);
+  expect(cols).toContain('skip_reason');
+});
+
 test('runMigrations adds failure_threshold to a legacy settings table', () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), account_type TEXT NOT NULL DEFAULT 'unknown');`);

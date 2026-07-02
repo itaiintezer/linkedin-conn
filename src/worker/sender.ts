@@ -91,12 +91,20 @@ export async function runSenderOnce(
         remaining--;
         break;
       case 'already':
-        repos.profiles.setStatus(p.id, 'already_connected', { last_error: null });
-        repos.events.recordEvent(p.id, 'already_connected');
-        logVerdict(p, 'already connected');
+        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'already_connected' });
+        repos.events.recordEvent(p.id, 'skipped');
+        logVerdict(p, 'skipped: already connected');
+        break;
+      case 'email_required':
+        // LinkedIn gates this member behind "enter their email to connect" — a
+        // per-profile verdict that can never succeed on retry. Terminal skip; does
+        // NOT touch the failure streak.
+        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'email_required' });
+        repos.events.recordEvent(p.id, 'skipped');
+        logVerdict(p, 'skipped: LinkedIn requires their email to connect');
         break;
       case 'unavailable':
-        repos.profiles.setStatus(p.id, 'skipped', { last_error: outcome.result });
+        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'unavailable' });
         repos.events.recordEvent(p.id, 'skipped');
         logVerdict(p, 'skipped: send composer unavailable');
         if (recordFailure(repos, 'send composer unavailable', clock())) return;

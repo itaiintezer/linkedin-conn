@@ -31,14 +31,42 @@ test('sends due profiles, records sent status + event, respects remaining cap', 
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(2);
 });
 
-test('already-connected -> already_connected status + event, not counted as sent', async () => {
+test('already-connected -> skipped with reason, not counted as sent', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
-  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
   driver.scripted.set('https://www.linkedin.com/in/a', 'already');
   await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
-  expect(repos.profiles.byStatus('already_connected')).toHaveLength(1);
-  expect(repos.profiles.byStatus('skipped')).toHaveLength(0);
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('skipped');
+  expect(row.skip_reason).toBe('already_connected');
+  expect(row.last_error).toBeNull();
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(0);
+});
+
+test('email_required -> skipped with reason, terminal, no failure streak', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'email_required');
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('skipped');
+  expect(row.skip_reason).toBe('email_required');
+  expect(row.last_error).toBeNull();
+  // A per-profile verdict, not an automation failure: streak untouched, no guardrail.
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(0);
+});
+
+test('unavailable -> skipped with reason unavailable (still counts toward failure streak)', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'unavailable');
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('skipped');
+  expect(row.skip_reason).toBe('unavailable');
+  expect(repos.appState.get().failure_streak).toBe(1);
 });
 
 test('checkpoint -> trips guardrail and flags needs_attention', async () => {

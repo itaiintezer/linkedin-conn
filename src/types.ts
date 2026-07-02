@@ -3,10 +3,12 @@ export type { CheckpointScan };
 
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
-  | 'accepted' | 'expired' | 'skipped' | 'failed' | 'needs_attention'
-  | 'already_connected';
+  | 'accepted' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
 
-export type EventType = 'sent' | 'accepted' | 'expired' | 'skipped' | 'failed' | 'already_connected';
+/** Why a skipped profile was skipped (terminal — the engine never retries these). */
+export type SkipReason = 'already_connected' | 'email_required' | 'unavailable' | 'dismissed';
+
+export type EventType = 'sent' | 'accepted' | 'expired' | 'skipped' | 'failed';
 
 export type AccountType = 'unknown' | 'free' | 'premium' | 'salesnav';
 
@@ -28,6 +30,7 @@ export interface Profile {
   status: ProfileStatus;
   attempts: number;
   last_error: string | null;
+  skip_reason: SkipReason | null;
   scheduled_for: string | null; // ISO
   sent_at: string | null;
   accepted_at: string | null;
@@ -57,7 +60,8 @@ export interface Settings {
 }
 
 export type SendResult =
-  | 'sent' | 'already' | 'unavailable' | 'note_quota' | 'checkpoint' | 'error';
+  | 'sent' | 'already' | 'unavailable' | 'note_quota' | 'checkpoint' | 'error'
+  | 'email_required';
 
 /** What the browser saw when a send went wrong — captured for the operator. */
 export interface SendEvidence {

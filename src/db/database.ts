@@ -48,6 +48,14 @@ export function runMigrations(db: DB): void {
   if (profileCols.length > 0 && !profileCols.includes('priority')) {
     db.exec('ALTER TABLE profiles ADD COLUMN priority INTEGER NOT NULL DEFAULT 0');
   }
+  if (profileCols.length > 0 && !profileCols.includes('skip_reason')) {
+    db.exec('ALTER TABLE profiles ADD COLUMN skip_reason TEXT');
+  }
+  // The already_connected status was folded into skipped + skip_reason (2026-07-03).
+  // Idempotent: matches nothing once rewritten.
+  if (profileCols.length > 0) {
+    db.exec("UPDATE profiles SET status='skipped', skip_reason='already_connected' WHERE status='already_connected'");
+  }
   const cohortCols = (db.prepare('PRAGMA table_info(cohorts)').all() as { name: string }[]).map((c) => c.name);
   if (cohortCols.length > 0 && !cohortCols.includes('archived')) {
     db.exec('ALTER TABLE cohorts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');

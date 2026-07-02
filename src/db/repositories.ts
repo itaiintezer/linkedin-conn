@@ -2,7 +2,7 @@ import type { DB } from './database.js';
 import type { Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason } from '../types.js';
 
 const PROFILE_COLUMNS = new Set([
-  'first_name', 'custom_message', 'attempts', 'last_error',
+  'first_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
   'scheduled_for', 'sent_at', 'accepted_at', 'resolved_at',
 ]);
 const SETTINGS_COLUMNS = new Set([
