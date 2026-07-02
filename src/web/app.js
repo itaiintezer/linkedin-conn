@@ -186,7 +186,7 @@ function renderEngine(status) {
 
   // --- Terminal outcomes ---
   setText('outExpired', c.expired || 0);
-  setText('outAlready', c.already_connected || 0);
+  setText('outSkipped', c.skipped || 0);
   const attention = (c.failed || 0) + (c.needs_attention || 0);
   setText('outAttn', attention);
   const attnCard = document.getElementById('outAttnCard');
@@ -444,7 +444,14 @@ const DRILL_DATE = {
   sent: { field: 'sent_at', label: 'sent' },
   accepted: { field: 'accepted_at', label: 'accepted' },
   expired: { field: 'sent_at', label: 'sent' },
-  already_connected: { field: 'sent_at', label: 'sent' },
+};
+
+/* Human labels for profiles.skip_reason; NULL (legacy rows) renders as a dash. */
+const SKIP_REASON_LABEL = {
+  already_connected: 'already connected',
+  email_required: 'requires their email',
+  unavailable: 'composer unavailable',
+  dismissed: 'dismissed',
 };
 
 function closeDrawer() {
@@ -470,7 +477,9 @@ async function openDrawer(status, title) {
     body.replaceChildren(...rows.map((p) => el('div', { class: 'drawer-row' },
       el('a', { class: 'drawer-slug', href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) }),
       el('span', { class: 'drawer-cohort', text: p.cohort_name || '—' }),
-      el('span', { class: 'drawer-date mono', text: p[d.field] ? `${d.label} ${fmtTime(p[d.field])}` : '—' }),
+      status === 'skipped'
+        ? el('span', { class: 'drawer-date', text: SKIP_REASON_LABEL[p.skip_reason] || '—' })
+        : el('span', { class: 'drawer-date mono', text: p[d.field] ? `${d.label} ${fmtTime(p[d.field])}` : '—' }),
     )));
   } catch (_) {
     $('#drawerCount').textContent = '';

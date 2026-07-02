@@ -44,7 +44,9 @@ Each card:
 - **Sent** — requests delivered.
 - **Accepted** — people who accepted. "checked …" shows when acceptance was last verified
   (The Machine checks about once a day — see §6).
-- **Already connected** — people you were *already* connected to (skipped, not re-sent).
+- **Skipped** — terminal skips that will never be retried, with a reason each:
+  already connected, requires their email to connect, composer unavailable, or
+  dismissed by you.
 - **Needs attention** — anything that failed. Click it to open the **Attention** tab.
 
 **Up next** lists the next 10 profiles to be processed. **View more** shows the rest.
@@ -54,7 +56,7 @@ If something fails (LinkedIn UI hiccup, a profile that can't receive requests, e
 lands here with the reason — so you can see exactly **who** and **what** failed. For each
 row you can:
 - **Retry** — put it back in the queue to try again.
-- **Dismiss** — give up on it (marks it skipped).
+- **Dismiss** — give up on it (moves it to **Skipped** with reason "dismissed").
 Or use **Retry all** to requeue everything at once.
 
 ## 6. How acceptance tracking works
