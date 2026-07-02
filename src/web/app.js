@@ -75,7 +75,7 @@ function initTabs() {
       if (name === 'add') loadCohortOptions();
       if (name === 'cohorts') loadCohortsScreen();
       if (name === 'docs') loadDocs();
-      if (name === 'settings') loadSettings();
+      if (name === 'settings') { loadSettings(); scrollLogToEnd(); }
       if (name === 'attention') loadAttention();
     });
   });
@@ -196,12 +196,39 @@ function renderEngine(status) {
     attnCard.classList.toggle('is-clickable', attention > 0);
   }
 
-  // Show the bulk Retry button only when there's something to retry.
+  // Show the bulk Retry button only when there's something to retry. Skip while a
+  // retry is in flight so the poll doesn't clobber its "Requeued N" feedback.
   const retryBtn = $('#retryFailed');
-  if (retryBtn) {
+  if (retryBtn && !retryBtn.dataset.busy) {
     retryBtn.hidden = attention === 0;
     retryBtn.textContent = attention ? `Retry failed (${attention})` : 'Retry failed';
   }
+
+  // --- Now processing ---
+  const pill = $('#sendingPill');
+  if (pill) {
+    const sending = status.sending || [];
+    pill.hidden = sending.length === 0;
+    if (sending.length) {
+      const label = sending.map((p) => slugFromUrl(p.profile_url)).join(', ');
+      $('#sendingTxt').textContent = `processing ${label}`;
+      pill.title = `Now sending: ${label}`;
+    }
+  }
+}
+
+/* The engine has one visual run-state: running, paused (amber), or halted (red).
+   Stops the conveyor + pulse animations via CSS and shows a badge on the track. */
+function applyEngineState(status) {
+  const engine = $('#engine'), badge = $('#engineState'), txt = $('#engineStateTxt');
+  const tripped = !!(status.guardrail && status.guardrail.tripped);
+  const paused = !!status.paused;
+  engine.classList.toggle('is-paused', paused || tripped);
+  engine.classList.toggle('is-halted', tripped);
+  badge.hidden = !(paused || tripped);
+  if (txt) txt.textContent = tripped ? 'Halted' : 'Paused';
+  const dot = $('#refreshDot');
+  if (dot) dot.classList.toggle('is-still', paused || tripped);
 }
 
 function applyPauseUi(status) {
@@ -238,6 +265,7 @@ async function refreshStatus() {
   try {
     const status = await api('/api/status');
     renderEngine(status);
+    applyEngineState(status);
     applyPauseUi(status);
     applyGuardrailUi(status);
   } catch (_) { /* transient; next tick retries */ }
@@ -294,6 +322,22 @@ function noteButton(note) {
 
 let queueDragging = false;
 
+/* Collapsed queue cohorts survive the 15s re-render and full reloads. */
+const collapsedCohorts = new Set(
+  (() => { try { return JSON.parse(localStorage.getItem('relay.collapsedCohorts') || '[]'); } catch (_) { return []; } })(),
+);
+function toggleCohortCollapse(id) {
+  if (collapsedCohorts.has(id)) collapsedCohorts.delete(id); else collapsedCohorts.add(id);
+  try { localStorage.setItem('relay.collapsedCohorts', JSON.stringify([...collapsedCohorts])); } catch (_) { /* ignore */ }
+}
+
+/* A scheduled time in the past means "sends on the next tick (or gets re-flowed)" —
+   show that instead of a stale timestamp. */
+function fmtQueueTime(p) {
+  if (p.status === 'scheduled' && p.scheduled_for && new Date(p.scheduled_for).getTime() <= Date.now()) return 'due now';
+  return fmtTime(p.scheduled_for);
+}
+
 async function refreshQueue() {
   if (queueDragging) return; // don't clobber an in-progress drag / action
   const container = $('#queueGroups'), empty = $('#queueEmpty'), count = $('#queueCount');
@@ -308,6 +352,23 @@ async function refreshQueue() {
 }
 
 function renderCohortGroup(c) {
+  const collapsed = collapsedCohorts.has(c.id);
+  const chevron = el('button', {
+    class: 'qg-ico qg-chevron' + (collapsed ? ' is-collapsed' : ''),
+    type: 'button',
+    title: collapsed ? 'Expand cohort' : 'Collapse cohort',
+    'aria-expanded': String(!collapsed),
+    onclick: (e) => {
+      e.stopPropagation();
+      toggleCohortCollapse(c.id);
+      const qg = e.currentTarget.closest('.qg');
+      const isNow = collapsedCohorts.has(c.id);
+      qg.classList.toggle('is-collapsed', isNow);
+      e.currentTarget.classList.toggle('is-collapsed', isNow);
+      e.currentTarget.title = isNow ? 'Expand cohort' : 'Collapse cohort';
+      e.currentTarget.setAttribute('aria-expanded', String(!isNow));
+    },
+  }, '⌄');
   const header = el('div', {
     class: 'qg-head', draggable: 'true', 'data-cohort': String(c.id),
     ondragstart: (e) => { queueDragging = true; e.dataTransfer.setData('text/plain', String(c.id)); e.dataTransfer.effectAllowed = 'move'; },
@@ -316,6 +377,7 @@ function renderCohortGroup(c) {
     ondragleave: (e) => e.currentTarget.classList.remove('drop-hint'),
     ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('drop-hint'); onCohortDrop(Number(e.dataTransfer.getData('text/plain')), c.id); },
   },
+    chevron,
     el('span', { class: 'qg-drag', 'aria-hidden': 'true' }, '⋮⋮'),
     el('span', { class: 'qg-name' }, c.name || '—'),
     el('span', { class: 'qg-count' }, `${c.count} in queue`),
@@ -327,14 +389,14 @@ function renderCohortGroup(c) {
   const rows = c.profiles.map((p) => el('div', { class: 'qg-row' },
     el('a', { class: 'qg-slug', href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) }),
     el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') }),
-    el('span', { class: 'qg-time mono', text: fmtTime(p.scheduled_for) }),
+    el('span', { class: 'qg-time mono', text: fmtQueueTime(p) }),
     el('span', { class: 'qg-actions' },
       noteButton(p.note),
       el('button', { class: 'qg-ico', title: 'Send next', onclick: () => queueAction(`/api/queue/profile/${p.id}/move`, { to: 'top' }) }, '⤒'),
       el('button', { class: 'qg-ico rm', title: 'Remove', onclick: () => queueAction(`/api/queue/profile/${p.id}/remove`) }, '✕'),
     ),
   ));
-  return el('div', { class: 'qg' }, header, el('div', { class: 'qg-body' }, ...rows));
+  return el('div', { class: 'qg' + (collapsed ? ' is-collapsed' : '') }, header, el('div', { class: 'qg-body' }, ...rows));
 }
 
 async function onCohortDrop(draggedId, targetId) {
@@ -355,6 +417,58 @@ async function queueAction(path, body) {
   } catch (_) { /* ignore */ }
 }
 
+/* ---------- status drill-down drawer ----------
+   The engine's Pending / Accepted stations and Expired / Already-connected outcome
+   cards open a slide-over listing the profiles behind that number. */
+const DRILL_DATE = {
+  sent: { field: 'sent_at', label: 'sent' },
+  accepted: { field: 'accepted_at', label: 'accepted' },
+  expired: { field: 'sent_at', label: 'sent' },
+  already_connected: { field: 'sent_at', label: 'sent' },
+};
+
+function closeDrawer() {
+  $('#statusDrawer').hidden = true;
+  $('#drawerBackdrop').hidden = true;
+}
+
+async function openDrawer(status, title) {
+  const drawer = $('#statusDrawer'), body = $('#drawerBody');
+  $('#drawerTitle').textContent = title;
+  $('#drawerCount').textContent = 'loading…';
+  body.replaceChildren();
+  drawer.hidden = false;
+  $('#drawerBackdrop').hidden = false;
+  try {
+    const rows = await api(`/api/profiles?status=${encodeURIComponent(status)}`);
+    $('#drawerCount').textContent = `${rows.length} profile${rows.length === 1 ? '' : 's'}`;
+    if (!rows.length) {
+      body.replaceChildren(el('div', { class: 'drawer-empty', text: 'No profiles with this status yet.' }));
+      return;
+    }
+    const d = DRILL_DATE[status] || { field: 'sent_at', label: 'sent' };
+    body.replaceChildren(...rows.map((p) => el('div', { class: 'drawer-row' },
+      el('a', { class: 'drawer-slug', href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) }),
+      el('span', { class: 'drawer-cohort', text: p.cohort_name || '—' }),
+      el('span', { class: 'drawer-date mono', text: p[d.field] ? `${d.label} ${fmtTime(p[d.field])}` : '—' }),
+    )));
+  } catch (_) {
+    $('#drawerCount').textContent = '';
+    body.replaceChildren(el('div', { class: 'drawer-empty', text: 'Failed to load profiles.' }));
+  }
+}
+
+function initDrawer() {
+  $$('.is-drill').forEach((card) => {
+    const open = () => openDrawer(card.dataset.drill, card.dataset.drillTitle);
+    card.addEventListener('click', open);
+    card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  });
+  $('#drawerClose').addEventListener('click', closeDrawer);
+  $('#drawerBackdrop').addEventListener('click', closeDrawer);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+}
+
 async function loadAttention() {
   const body = $('#attentionBody'), empty = $('#attentionEmpty');
   try {
@@ -368,28 +482,48 @@ async function loadAttention() {
       el('td', { class: 'num mono' }, String(p.attempts ?? 0)),
       el('td', { class: 'err', title: p.last_error || '' }, p.last_error || '—'),
       el('td', { class: 'row-actions' },
-        el('button', { class: 'btn btn-ghost', onclick: () => actOnProfile(p.id, 'retry') }, 'Retry'),
-        el('button', { class: 'btn btn-ghost', onclick: () => actOnProfile(p.id, 'dismiss') }, 'Dismiss'),
+        el('button', { class: 'btn btn-ghost', onclick: (e) => actOnProfile(p, 'retry', e.currentTarget) }, 'Retry'),
+        el('button', { class: 'btn btn-ghost', onclick: (e) => actOnProfile(p, 'dismiss', e.currentTarget) }, 'Dismiss'),
       ),
     )));
   } catch (_) { empty.hidden = false; }
 }
 
-async function actOnProfile(id, action) {
+async function actOnProfile(p, action, btn) {
+  const result = $('#attentionResult');
+  if (btn) { btn.disabled = true; btn.textContent = action === 'retry' ? 'Retrying…' : 'Dismissing…'; }
   try {
-    await api(`/api/profiles/${id}/${action}`, { method: 'POST' });
+    await api(`/api/profiles/${p.id}/${action}`, { method: 'POST' });
+    toast(result, action === 'retry'
+      ? `Requeued ${slugFromUrl(p.profile_url)} — it's back in the queue.`
+      : `Dismissed ${slugFromUrl(p.profile_url)}.`);
     await loadAttention();
     await refreshStatus();
-  } catch (_) { /* ignore */ }
+  } catch (err) {
+    toast(result, `Failed: ${err.message}`, true);
+    if (btn) { btn.disabled = false; btn.textContent = action === 'retry' ? 'Retry' : 'Dismiss'; }
+  }
 }
 
 function initAttention() {
   const retryAll = $('#attentionRetryAll');
   if (retryAll) retryAll.addEventListener('click', async () => {
+    const result = $('#attentionResult');
     retryAll.disabled = true;
-    try { await api('/api/retry', { method: 'POST' }); await loadAttention(); await refreshStatus(); }
-    catch (_) { /* ignore */ }
-    retryAll.disabled = false;
+    const original = retryAll.textContent;
+    retryAll.textContent = 'Retrying…';
+    try {
+      const res = await api('/api/retry', { method: 'POST' });
+      const n = res && typeof res.retried === 'number' ? res.retried : 0;
+      retryAll.textContent = `Requeued ${n}`;
+      toast(result, n ? `Requeued ${n} profile${n === 1 ? '' : 's'} — they'll be re-scheduled and retried.` : 'Nothing to retry.');
+      await loadAttention();
+      await refreshStatus();
+    } catch (err) {
+      retryAll.textContent = 'Failed';
+      toast(result, `Failed: ${err.message}`, true);
+    }
+    setTimeout(() => { retryAll.textContent = original; retryAll.disabled = false; }, 2500);
   });
 }
 
@@ -431,12 +565,19 @@ function initDashboard() {
   $('#retryFailed').addEventListener('click', async () => {
     const btn = $('#retryFailed');
     btn.disabled = true;
+    btn.dataset.busy = '1'; // renderEngine leaves the label alone while set
+    const original = btn.textContent;
+    btn.textContent = 'Retrying…';
     try {
-      await api('/api/retry', { method: 'POST' });
+      const res = await api('/api/retry', { method: 'POST' });
+      const n = res && typeof res.retried === 'number' ? res.retried : 0;
+      btn.textContent = `Requeued ${n}`;
       await refreshStatus();
       await refreshQueue();
-    } catch (_) { /* ignore */ }
-    btn.disabled = false;
+    } catch (_) {
+      btn.textContent = 'Failed';
+    }
+    setTimeout(() => { btn.textContent = original; btn.disabled = false; delete btn.dataset.busy; refreshStatus(); }, 2500);
   });
 
   $('#guardrailRecheck').addEventListener('click', async () => {
@@ -554,12 +695,14 @@ function initAddList() {
 
 /* ---------- cohorts + metrics (merged screen) ---------- */
 async function loadCohortsScreen() {
-  const [cohorts, metrics] = await Promise.all([
+  const [cohorts, metrics, archived] = await Promise.all([
     api('/api/cohorts').catch(() => []),
     api('/api/metrics').catch(() => []),
+    api('/api/cohorts/archived').catch(() => []),
   ]);
   renderMetricsTable(metrics);
   renderCohortList(cohorts, metrics);
+  renderArchivedList(archived);
 }
 
 function renderMetricsTable(rows) {
@@ -572,9 +715,10 @@ function renderMetricsTable(rows) {
       el('div', { class: 'rate-bar' }, el('i', { style: `width:${pct}%` })),
       el('span', { class: 'rate-val', text: `${pct}%` }),
     );
-    const median = (m.median_time_to_accept_days == null) ? '—' : String(m.median_time_to_accept_days);
+    const median = (m.median_time_to_accept_days == null) ? '—' : m.median_time_to_accept_days.toFixed(1);
     return el('tr', {},
       el('td', { class: 'mono' }, m.cohort_name || '—'),
+      el('td', { class: 'num mono' }, String(m.total)),
       el('td', { class: 'num mono' }, String(m.sent)),
       el('td', { class: 'num mono' }, String(m.accepted)),
       el('td', { class: 'num mono' }, String(m.pending)),
@@ -598,12 +742,40 @@ function renderCohortList(cohorts, metrics) {
     const tplText = (c.message_template && c.message_template.trim())
       ? el('div', { class: 'tpl', text: c.message_template })
       : el('div', { class: 'tpl none', text: 'No template (bare request)' });
+    const archiveBtn = el('button', {
+      class: 'btn btn-ghost cohort-archive', type: 'button', title: 'Archive cohort',
+      onclick: async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Archive “${c.name}”?\n\nIt disappears from this screen and the Add List dropdown, and anything still queued in it stops sending. History is kept and you can restore it below.`)) return;
+        try { await api(`/api/cohorts/${c.id}/archive`, { method: 'POST' }); loadCohortsScreen(); } catch (_) { /* ignore */ }
+      },
+    }, 'Archive');
     return el('div', { class: 'cohort-card', onclick: () => openCohortEditor(c) },
-      el('div', { class: 'name' }, el('span', { text: c.name })),
+      el('div', { class: 'name' }, el('span', { text: c.name }), archiveBtn),
       el('div', { class: 'cohort-stat', text: stat }),
       tplText,
     );
   }));
+}
+
+function renderArchivedList(archived) {
+  const block = $('#archivedBlock'), list = $('#archivedList'), count = $('#archivedCount');
+  if (!block) return;
+  block.hidden = !archived.length;
+  if (!archived.length) { list.replaceChildren(); return; }
+  count.textContent = `(${archived.length})`;
+  list.replaceChildren(...archived.map((c) => el('div', { class: 'cohort-card is-archived' },
+    el('div', { class: 'name' },
+      el('span', { text: c.name }),
+      el('button', {
+        class: 'btn btn-ghost cohort-archive', type: 'button', title: 'Restore cohort',
+        onclick: async () => {
+          try { await api(`/api/cohorts/${c.id}/unarchive`, { method: 'POST' }); loadCohortsScreen(); } catch (_) { /* ignore */ }
+        },
+      }, 'Restore'),
+    ),
+    el('div', { class: 'cohort-stat', text: 'archived' }),
+  )));
 }
 
 function openCohortEditor(c) {
@@ -651,8 +823,12 @@ async function loadSettings() {
   } catch (_) { /* ignore */ }
 }
 
-/* ---------- run log viewer ---------- */
+/* ---------- run log viewer ----------
+   Renders at most LOG_RENDER_CAP lines (the full file is one Download away) so the
+   view stays snappy, colorizes by level, and always lands scrolled to the newest. */
+const LOG_RENDER_CAP = 300;
 let logLines = [];
+
 async function loadLogs() {
   const view = $('#logView');
   try {
@@ -661,14 +837,43 @@ async function loadLogs() {
     renderLogView();
   } catch (_) { if (view) view.textContent = 'failed to load log'; }
 }
+
+function logLineClass(line) {
+  if (line.includes(' ERROR ')) return 'log-line err';
+  if (line.includes(' WARN ')) return 'log-line warn';
+  if (line.includes(' verdict ')) return 'log-line verdict';
+  if (line.includes(' DEBUG ')) return 'log-line dim';
+  return 'log-line';
+}
+
 function renderLogView() {
-  const view = $('#logView');
+  const view = $('#logView'), meta = $('#logMeta');
   if (!view) return;
   const q = ($('#logFilter').value || '').toLowerCase();
-  const shown = q ? logLines.filter((l) => l.toLowerCase().includes(q)) : logLines;
-  view.textContent = shown.length ? shown.join('\n') : '(no matching lines)';
-  view.scrollTop = view.scrollHeight;
+  const matches = q ? logLines.filter((l) => l.toLowerCase().includes(q)) : logLines;
+  const shown = matches.slice(-LOG_RENDER_CAP);
+  if (meta) {
+    meta.textContent = matches.length > shown.length
+      ? `last ${shown.length} of ${matches.length}${q ? ' matching' : ''} lines`
+      : `${shown.length}${q ? ' matching' : ''} lines`;
+  }
+  if (!shown.length) {
+    view.textContent = q ? '(no matching lines)' : '(log is empty)';
+    return;
+  }
+  view.replaceChildren(...shown.map((l) => el('div', { class: logLineClass(l), text: l })));
+  scrollLogToEnd();
 }
+
+function scrollLogToEnd() {
+  // Synchronous (layout is up to date after replaceChildren); the timeout re-asserts
+  // after paint settles. Not rAF: it never fires while the tab is unfocused.
+  const view = $('#logView');
+  if (!view) return;
+  view.scrollTop = view.scrollHeight;
+  setTimeout(() => { view.scrollTop = view.scrollHeight; }, 60);
+}
+
 function initLogViewer() {
   const refresh = $('#logRefresh'), filter = $('#logFilter');
   if (refresh) refresh.addEventListener('click', loadLogs);
@@ -769,6 +974,7 @@ function init() {
   initTabs();
   initLogin();
   initDashboard();
+  initDrawer();
   initAddList();
   initCohorts();
   initSettings();

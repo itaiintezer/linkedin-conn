@@ -81,3 +81,23 @@ test('skipCohortQueue marks queued and scheduled profiles skipped', () => {
   expect(repos.profiles.findById(a.id)!.status).toBe('skipped');
   expect(repos.profiles.findById(b.id)!.status).toBe('skipped');
 });
+
+/* ---------- cohort archive ---------- */
+
+test('setArchived hides a cohort from list() and listArchived() shows it', () => {
+  const c = repos.cohorts.create('ArchRepo', null, true);
+  repos.cohorts.setArchived(c.id, true);
+  expect(repos.cohorts.list().find((x) => x.id === c.id)).toBeUndefined();
+  expect(repos.cohorts.listArchived().find((x) => x.id === c.id)).toBeDefined();
+  repos.cohorts.setArchived(c.id, false);
+  expect(repos.cohorts.list().find((x) => x.id === c.id)).toBeDefined();
+});
+
+test('getOrCreate resurrects an archived cohort instead of writing into a hidden one', () => {
+  const c = repos.cohorts.create('Zombie', null, true);
+  repos.cohorts.setArchived(c.id, true);
+  const again = repos.cohorts.getOrCreate('Zombie', null, true);
+  expect(again.id).toBe(c.id);
+  expect(again.archived).toBe(0);
+  expect(repos.cohorts.list().find((x) => x.id === c.id)).toBeDefined();
+});

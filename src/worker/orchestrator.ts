@@ -1,7 +1,7 @@
 import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { Mutex } from '../core/mutex.js';
-import { planAndAssignToday } from './scheduler-service.js';
+import { planAndAssignToday, requeueOverdue } from './scheduler-service.js';
 import { runSenderOnce } from './sender.js';
 import { runAcceptanceCheck } from './acceptance-checker.js';
 import { log } from '../core/log.js';
@@ -62,9 +62,14 @@ export class Orchestrator {
   }
 
   /** One sender pass, guarded so an overlapping tick is dropped rather than run in parallel. */
-  async runSenderTick(): Promise<void> {
+  async runSenderTick(now: Date = new Date()): Promise<void> {
     try {
-      await this.browserLock.tryRun(() => runSenderOnce(this.repos, this.driver, new Date()));
+      await this.browserLock.tryRun(() => {
+        // Self-heal stale slots first (inside the lock so a running batch is never
+        // yanked out from under the sender), then send whatever is due.
+        requeueOverdue(this.repos, now);
+        return runSenderOnce(this.repos, this.driver, now);
+      });
     } catch (err) {
       this.handleTickError('sender', err);
     }

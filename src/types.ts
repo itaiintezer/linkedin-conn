@@ -12,6 +12,7 @@ export interface Cohort {
   name: string;
   message_template: string | null;
   allow_no_note: number; // 0 | 1 (SQLite has no bool)
+  archived: number;      // 0 | 1
   created_at: string;    // ISO
 }
 

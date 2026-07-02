@@ -41,10 +41,12 @@ export async function runAcceptanceCheck(repos: Repos, driver: BrowserDriver, no
   }
 
   const iso = now.toISOString();
+  const urlById = new Map(sent.map((r) => [r.id, r.profile_url]));
   const accepted = computeAccepted(sent, connections);
   for (const id of accepted) {
     repos.profiles.setStatus(id, 'accepted', { accepted_at: iso, resolved_at: iso });
     repos.events.recordEvent(id, 'accepted');
+    log.info('acceptance', 'verdict', { profile: id, url: urlById.get(id) ?? '', verdict: 'accepted' });
   }
 
   // Deterministic, scrape-free expiry backstop (disabled by default via expiry_days=0),
@@ -55,6 +57,7 @@ export async function runAcceptanceCheck(repos: Repos, driver: BrowserDriver, no
   for (const id of expired) {
     repos.profiles.setStatus(id, 'expired', { resolved_at: iso });
     repos.events.recordEvent(id, 'expired');
+    log.info('acceptance', 'verdict', { profile: id, url: urlById.get(id) ?? '', verdict: 'expired (age backstop)' });
   }
 
   repos.appState.setAcceptanceChecked(iso);

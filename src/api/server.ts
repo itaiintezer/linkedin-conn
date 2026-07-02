@@ -12,6 +12,7 @@ import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
 import { Mutex } from '../core/mutex.js';
 import { runSenderOnce } from '../worker/sender.js';
+import { planAndAssignToday } from '../worker/scheduler-service.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote } from '../core/message.js';
 import type { Logger } from '../core/logger.js';
@@ -102,10 +103,31 @@ export function buildServer(
         detail: a.guardrail_detail,
         trippedAt: a.guardrail_tripped_at,
       },
+      // Profiles the sender is driving through the browser right now ("Now processing").
+      sending: repos.profiles.byStatus('sending').map((p) => ({ id: p.id, profile_url: p.profile_url })),
     };
   });
 
   app.get('/api/cohorts', async () => repos.cohorts.list());
+  app.get('/api/cohorts/archived', async () => repos.cohorts.listArchived());
+
+  // Archiving hides the cohort (metrics, dropdowns) and stops its remaining queue;
+  // history stays in the DB and unarchive restores it.
+  app.post('/api/cohorts/:id/archive', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!repos.cohorts.findById(id)) return reply.code(404).send({ error: 'cohort not found' });
+    repos.cohorts.setArchived(id, true);
+    repos.profiles.skipCohortQueue(id);
+    defaultLog.info('api', 'cohort archived', { cohort: id });
+    return { ok: true };
+  });
+
+  app.post('/api/cohorts/:id/unarchive', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!repos.cohorts.findById(id)) return reply.code(404).send({ error: 'cohort not found' });
+    repos.cohorts.setArchived(id, false);
+    return { ok: true };
+  });
 
   app.post('/api/cohorts', async (req) => {
     const { name, message_template } = req.body as { name: string; message_template?: string };
@@ -120,17 +142,23 @@ export function buildServer(
     const rows = repos.db.prepare(`
       SELECT p.cohort_id, c.name AS cohort_name, p.status, p.sent_at, p.accepted_at
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
+      WHERE c.archived = 0
     `).all() as unknown as MetricRow[];
     return computeCohortMetrics(rows);
   });
 
-  app.get('/api/profiles', async (): Promise<unknown[]> =>
-    repos.db.prepare(`
+  app.get('/api/profiles', async (req): Promise<unknown[]> => {
+    const status = (req.query as { status?: string }).status;
+    const where = status ? 'WHERE p.status = ?' : '';
+    const stmt = repos.db.prepare(`
       SELECT p.id, p.profile_url, p.status, p.scheduled_for, p.sent_at, p.accepted_at,
              p.last_error, c.name AS cohort_name
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
+      ${where}
       ORDER BY p.id DESC LIMIT 500
-    `).all());
+    `);
+    return (status ? stmt.all(status) : stmt.all()) as unknown[];
+  });
 
   app.get('/api/queue', async (req) => {
     const limitRaw = Number((req.query as { limit?: string }).limit);
@@ -157,7 +185,14 @@ export function buildServer(
   });
 
   app.post('/api/pause', async () => { defaultLog.info('api', 'pause'); repos.settings.update({ paused: 1, pause_reason: 'Manual pause' }); return { ok: true }; });
-  app.post('/api/resume', async () => { defaultLog.info('api', 'resume'); repos.settings.update({ paused: 0, pause_reason: null }); return { ok: true }; });
+  app.post('/api/resume', async () => {
+    defaultLog.info('api', 'resume');
+    repos.settings.update({ paused: 0, pause_reason: null });
+    // Slots that went stale during the pause were re-queued by the tick; re-plan now
+    // so sending resumes without waiting for the hourly scheduler.
+    planAndAssignToday(repos, new Date());
+    return { ok: true };
+  });
 
   // Manual trigger: promote up to batch_size queued profiles to due-now and run one
   // sender batch immediately. Respects pause/login/guardrail (runSenderOnce returns early).
@@ -172,7 +207,8 @@ export function buildServer(
     const candidates = [...repos.profiles.byStatus('queued'), ...repos.profiles.byStatus('scheduled')].slice(0, batch);
     defaultLog.info('api', 'run-now', { promoted: candidates.length });
     for (const p of candidates) repos.profiles.setScheduled(p.id, dueIso);
-    await browserLock.tryRun(() => runSenderOnce(repos, driver, now));
+    // force: a manual trigger may run outside working hours by design.
+    await browserLock.tryRun(() => runSenderOnce(repos, driver, now, { force: true }));
     return { ok: true, promoted: candidates.length };
   });
 
@@ -227,6 +263,7 @@ export function buildServer(
     if (snap.loggedIn && !checkpoint) {
       repos.appState.clearGuardrail();
       repos.appState.resetFailureStreak();
+      planAndAssignToday(repos, now); // resume scheduling immediately, not at the next hourly tick
       return { ok: true, resumed: true };
     }
     const reason = !snap.loggedIn ? 'login_lost' : 'checkpoint';

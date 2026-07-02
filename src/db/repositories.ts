@@ -29,10 +29,21 @@ export class CohortRepo {
     return this.db.prepare('SELECT * FROM cohorts WHERE id = ?').get(id) as unknown as Cohort | undefined;
   }
   list(): Cohort[] {
-    return this.db.prepare('SELECT * FROM cohorts ORDER BY created_at DESC').all() as unknown as Cohort[];
+    return this.db.prepare('SELECT * FROM cohorts WHERE archived = 0 ORDER BY created_at DESC').all() as unknown as Cohort[];
+  }
+  listArchived(): Cohort[] {
+    return this.db.prepare('SELECT * FROM cohorts WHERE archived = 1 ORDER BY created_at DESC').all() as unknown as Cohort[];
+  }
+  setArchived(id: number, archived: boolean): void {
+    this.db.prepare('UPDATE cohorts SET archived = ? WHERE id = ?').run(archived ? 1 : 0, id);
   }
   getOrCreate(name: string, template: string | null, allowNoNote: boolean): Cohort {
-    return this.findByName(name) ?? this.create(name, template, allowNoNote);
+    const existing = this.findByName(name);
+    if (!existing) return this.create(name, template, allowNoNote);
+    // Adding under an archived name resurrects the cohort — otherwise the new
+    // profiles would queue into a cohort the UI can't show.
+    if (existing.archived) { this.setArchived(existing.id, false); return this.findById(existing.id)!; }
+    return existing;
   }
 }
 
