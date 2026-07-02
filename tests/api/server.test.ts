@@ -294,14 +294,16 @@ test('GET /api/attention lists failed and needs_attention with errors', async ()
   expect(body.map((r: { last_error: string }) => r.last_error).sort()).toEqual(['boom', 'note quota']);
 });
 
-test('POST /api/profiles/:id/retry requeues a single profile', async () => {
+test('POST /api/profiles/:id/retry requeues a single profile and clears skip_reason', async () => {
   const c = repos.cohorts.create('R1', null, true);
   const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/r1', null);
-  repos.profiles.setStatus(a.id, 'failed', { last_error: 'boom' });
+  repos.profiles.setStatus(a.id, 'skipped', { last_error: null, skip_reason: 'email_required' });
   const res = await app.inject({ method: 'POST', url: `/api/profiles/${a.id}/retry` });
   expect(res.statusCode).toBe(200);
-  expect(repos.profiles.findById(a.id)!.status).toBe('queued');
-  expect(repos.profiles.findById(a.id)!.last_error).toBeNull();
+  const row = repos.profiles.findById(a.id)!;
+  expect(row.status).toBe('queued');
+  expect(row.last_error).toBeNull();
+  expect(row.skip_reason).toBeNull();
 });
 
 test('POST /api/profiles/:id/dismiss marks it skipped with reason dismissed', async () => {

@@ -223,7 +223,7 @@ export function buildServer(
   app.post('/api/retry', async () => {
     const targets = [...repos.profiles.byStatus('failed'), ...repos.profiles.byStatus('needs_attention')];
     defaultLog.info('api', 'retry', { count: targets.length });
-    for (const p of targets) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null, last_error: null });
+    for (const p of targets) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null, last_error: null, skip_reason: null });
     return { ok: true, retried: targets.length };
   });
 
@@ -240,7 +240,7 @@ export function buildServer(
   app.post('/api/profiles/:id/retry', async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
-    repos.profiles.setStatus(id, 'queued', { scheduled_for: null, last_error: null });
+    repos.profiles.setStatus(id, 'queued', { scheduled_for: null, last_error: null, skip_reason: null });
     return { ok: true };
   });
 
