@@ -342,7 +342,7 @@ test('GET /api/docs lists the api doc', async () => {
 test('GET /api/docs/api returns markdown', async () => {
   const res = await app.inject({ method: 'GET', url: '/api/docs/api' });
   expect(res.statusCode).toBe(200);
-  expect(JSON.parse(res.body).markdown).toContain('# Relay API');
+  expect(JSON.parse(res.body).markdown).toContain('# The Machine API');
 });
 
 test('GET /api/docs/unknown 404s', async () => {

@@ -1,6 +1,6 @@
-# Relay API
+# The Machine API
 
-Local HTTP API for the Relay LinkedIn outreach console. Base URL: `http://localhost:4400`.
+Local HTTP API for The Machine LinkedIn outreach console. Base URL: `http://localhost:4400`.
 All request/response bodies are JSON. No authentication (localhost, single user).
 
 ## For agents: the two you need
