@@ -83,6 +83,10 @@ export class LinkedInDriver implements BrowserDriver {
         return { result: 'unavailable', firstName };
       }
 
+      // The gate usually shows its "please enter their email to connect" text the moment
+      // the composer opens — bail before typing a note or submitting anything.
+      if (await this.emailRequired(page)) return this.emailRequiredOutcome(page, firstName);
+
       if (message !== null) {
         if (!hasAddNote) {
           // Can't attach a note (e.g. weekly note quota). Let the caller decide whether
