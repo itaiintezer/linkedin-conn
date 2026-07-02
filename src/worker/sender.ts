@@ -9,6 +9,11 @@ import { log } from '../core/log.js';
 export interface SenderOptions {
   /** Bypass the working-hours guard — used by the manual "Run batch now" trigger. */
   force?: boolean;
+  /** Time source for per-profile timestamps (sent_at, guardrail trips). A batch can run
+   *  for many minutes, so stamping everything with the batch-start `now` recorded the
+   *  wrong halt time (the 2026-07-02 "Halted 3:56 PM" was really a 4:02 PM trip).
+   *  Defaults to the batch `now` so deterministic tests are unaffected. */
+  clock?: () => Date;
 }
 
 /** Local-time working-hours + sending-day test, mirroring the scheduler. */
@@ -37,6 +42,8 @@ export async function runSenderOnce(
   const sentInWindow = repos.events.countSentSince(windowStartIso(now));
   let remaining = remainingCapacity(settings.weekly_cap, sentInWindow);
   if (remaining <= 0) return;
+
+  const clock = opts.clock ?? (() => now);
 
   const scheduled = repos.profiles.byStatus('scheduled');
   const due = pickDue(scheduled, now, Math.min(remaining, settings.batch_size));
@@ -77,7 +84,7 @@ export async function runSenderOnce(
 
     switch (outcome.result) {
       case 'sent':
-        repos.profiles.setStatus(p.id, 'sent', { sent_at: now.toISOString() });
+        repos.profiles.setStatus(p.id, 'sent', { sent_at: clock().toISOString() });
         repos.events.recordSend(p.id, 'sent');
         recordSuccess(repos); // reset the failure streak
         logVerdict(p, 'sent — invite pending');
@@ -92,20 +99,31 @@ export async function runSenderOnce(
         repos.profiles.setStatus(p.id, 'skipped', { last_error: outcome.result });
         repos.events.recordEvent(p.id, 'skipped');
         logVerdict(p, 'skipped: send composer unavailable');
-        if (recordFailure(repos, 'send composer unavailable', now)) return;
+        if (recordFailure(repos, 'send composer unavailable', clock())) return;
         break;
-      case 'checkpoint':
-        repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'checkpoint' });
-        logVerdict(p, 'needs attention: checkpoint / captcha');
-        tripCheckpoint(repos, now);
+      case 'checkpoint': {
+        const ev = outcome.evidence;
+        const detail = ev
+          ? `Checkpoint/captcha page at ${ev.pageUrl}`
+            + (ev.matched ? ` (matched "${ev.matched}")` : '')
+            + (ev.screenshot ? ` — screenshot: /incidents/${ev.screenshot}` : '')
+          : undefined;
+        repos.profiles.setStatus(p.id, 'needs_attention', {
+          last_error: ev?.matched ? `checkpoint (matched "${ev.matched}")` : 'checkpoint',
+        });
+        logVerdict(p, `needs attention: checkpoint / captcha${detail ? ` — ${detail}` : ''}`);
+        tripCheckpoint(repos, clock(), detail);
         return;
+      }
       case 'error':
-      default:
+      default: {
+        const shot = outcome.evidence?.screenshot;
         repos.profiles.setStatus(p.id, 'failed', { last_error: outcome.error ?? 'unknown' });
         repos.events.recordEvent(p.id, 'failed');
-        logVerdict(p, `failed: ${outcome.error ?? 'unknown'}`);
-        if (recordFailure(repos, outcome.error ?? 'unknown', now)) return;
+        logVerdict(p, `failed: ${outcome.error ?? 'unknown'}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
+        if (recordFailure(repos, outcome.error ?? 'unknown', clock())) return;
         break;
+      }
     }
     if (remaining <= 0) break;
   }

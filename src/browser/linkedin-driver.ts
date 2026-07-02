@@ -1,9 +1,11 @@
 import type { Page } from 'playwright-core';
-import type { BrowserDriver, SendOutcome, LoginSnapshot } from '../types.js';
+import type { BrowserDriver, SendOutcome, LoginSnapshot, CheckpointScan } from '../types.js';
 import { CloakSession } from './cloak-session.js';
 import { SEL, find, URLS, customInviteUrl, profileSlug } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
 import { applyFirstName } from '../core/message.js';
+import { detectCheckpoint } from '../core/checkpoint.js';
+import { captureEvidence } from './evidence.js';
 
 const rand = (min: number, max: number) => min + Math.floor(Math.random() * (max - min));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -28,10 +30,10 @@ export class LinkedInDriver implements BrowserDriver {
     return { loggedIn: !!li, cookieExpiry };
   }
 
-  async checkpointPresent(): Promise<boolean> {
-    if (!this.session.launched) return false;
+  async checkpointScan(): Promise<CheckpointScan> {
+    if (!this.session.launched) return { hit: false, via: null, matched: null, url: '', title: '' };
     const page = await this.session.page();
-    return this.looksLikeCheckpoint(page);
+    return this.scanCheckpoint(page);
   }
 
   async openLoginWindow(): Promise<void> {
@@ -49,7 +51,10 @@ export class LinkedInDriver implements BrowserDriver {
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       await sleep(rand(1500, 3500));
       const firstName = await this.readFirstName(page);
-      if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
+      {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
+      }
       if (await find.pendingBadge(page).first().isVisible().catch(() => false)) {
         return { result: 'already', firstName }; // an invite is already pending
       }
@@ -72,7 +77,8 @@ export class LinkedInDriver implements BrowserDriver {
       const hasAddNote = await addNote.isVisible().catch(() => false);
 
       if (!hasSendWithout && !hasAddNote) {
-        if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
         return { result: 'unavailable', firstName };
       }
 
@@ -102,22 +108,54 @@ export class LinkedInDriver implements BrowserDriver {
         await find.pendingBadge(page).first().waitFor({ state: 'visible', timeout: 9000 });
         return { result: 'sent', firstName };
       } catch {
-        if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected', firstName };
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
         // No Pending badge. If there's no longer any Connect control for this person, the
         // request had nowhere to land — they're already connected, not a failure (which would
         // keep getting retried against LinkedIn).
         if (await this.isAlreadyConnected(page, url)) return { result: 'already', firstName };
-        return { result: 'error', error: 'send not confirmed: no Pending state after submit', firstName };
+        return this.errorOutcome(page, 'send not confirmed: no Pending state after submit', firstName);
       }
     } catch (e) {
-      if (await this.looksLikeCheckpoint(page)) return { result: 'checkpoint', error: 'checkpoint detected' };
-      return { result: 'error', error: (e as Error).message };
+      const scan = await this.scanCheckpoint(page);
+      if (scan.hit) return this.checkpointOutcome(page, scan);
+      return this.errorOutcome(page, (e as Error).message);
     }
   }
 
-  private async looksLikeCheckpoint(page: Page): Promise<boolean> {
-    const body = (await page.content().catch(() => '')) || '';
-    return /captcha|checkpoint|verify you|unusual activity|security check/i.test(body);
+  /**
+   * Narrow challenge detection: the page URL (challenges navigate to /checkpoint/,
+   * /authwall, /uas/) plus the tab title and h1 headline. Never the page body — the
+   * old whole-HTML regex halted the engine on a profile whose content merely
+   * mentioned security words (2026-07-02).
+   */
+  private async scanCheckpoint(page: Page): Promise<CheckpointScan> {
+    const url = page.url();
+    const title = (await page.title().catch(() => '')) || '';
+    const headings = await page.locator('h1').allInnerTexts().catch(() => [] as string[]);
+    return detectCheckpoint({ url, title, headings });
+  }
+
+  /** A checkpoint verdict, with the page snapshotted so the halt is explainable. */
+  private async checkpointOutcome(page: Page, scan: CheckpointScan, firstName?: string): Promise<SendOutcome> {
+    const ev = await captureEvidence(page, 'checkpoint', { matched: scan.matched, via: scan.via });
+    return {
+      result: 'checkpoint',
+      error: `checkpoint detected at ${scan.url}`,
+      firstName,
+      evidence: { pageUrl: scan.url, matched: scan.matched, screenshot: ev?.screenshot ?? null },
+    };
+  }
+
+  /** A failed-send verdict, with the page snapshotted so the failure is explainable. */
+  private async errorOutcome(page: Page, error: string, firstName?: string): Promise<SendOutcome> {
+    const ev = await captureEvidence(page, 'send-failed', { error });
+    return {
+      result: 'error',
+      error,
+      firstName,
+      evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+    };
   }
 
   /**
@@ -224,7 +262,10 @@ export class LinkedInDriver implements BrowserDriver {
     const page = await this.session.page();
     await page.goto(URLS.sentInvitations, { waitUntil: 'domcontentloaded' });
     await sleep(rand(2000, 4000));
-    if (await this.looksLikeCheckpoint(page)) throw new Error('checkpoint detected during invitations read');
+    if ((await this.scanCheckpoint(page)).hit) {
+      await captureEvidence(page, 'checkpoint', { during: 'invitations read' });
+      throw new Error('checkpoint detected during invitations read');
+    }
     await this.autoScroll(page);
     return this.collectProfileLinks(page, SEL.invitationCardLink);
   }
@@ -233,7 +274,10 @@ export class LinkedInDriver implements BrowserDriver {
     const page = await this.session.page();
     await page.goto(URLS.connections, { waitUntil: 'domcontentloaded' });
     await sleep(rand(2000, 4000));
-    if (await this.looksLikeCheckpoint(page)) throw new Error('checkpoint detected during connections read');
+    if ((await this.scanCheckpoint(page)).hit) {
+      await captureEvidence(page, 'checkpoint', { during: 'connections read' });
+      throw new Error('checkpoint detected during connections read');
+    }
     await this.autoScroll(page, 6); // a few pages of "recently added" is enough
     return this.collectProfileLinks(page, SEL.connectionCardLink);
   }

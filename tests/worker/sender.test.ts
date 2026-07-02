@@ -52,6 +52,32 @@ test('checkpoint -> trips guardrail and flags needs_attention', async () => {
   expect(repos.settings.get().paused).toBe(0); // manual pause untouched
 });
 
+test('checkpoint evidence flows into guardrail detail and last_error', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'checkpoint');
+  driver.evidence = {
+    pageUrl: 'https://www.linkedin.com/checkpoint/challenge/z',
+    matched: 'security verification',
+    screenshot: '2026-07-02T13-02-44-checkpoint.png',
+  };
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  const st = repos.appState.get();
+  expect(st.guardrail_detail).toContain('checkpoint/challenge/z');
+  expect(st.guardrail_detail).toContain('security verification');
+  expect(st.guardrail_detail).toContain('/incidents/2026-07-02T13-02-44-checkpoint.png');
+  expect(repos.profiles.findById(p.id)!.last_error).toContain('security verification');
+});
+
+test('guardrail trip timestamp is the moment of the trip, not batch start', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'checkpoint');
+  const tripAt = new Date('2026-06-29T10:07:33.000Z');
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'), { clock: () => tripAt });
+  expect(repos.appState.get().guardrail_tripped_at).toBe('2026-06-29T10:07:33.000Z');
+});
+
 test('note_quota with allow_no_note retries bare and sends', async () => {
   const c = repos.cohorts.create('A', 'hi {firstName}', true);
   seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);

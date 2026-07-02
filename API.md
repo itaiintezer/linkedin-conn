@@ -61,3 +61,10 @@ Queue grouped by cohort in send-priority order: `{ "cohorts": [{ "id", "name", "
 - `POST /api/run-now` — send one batch immediately.
 - `GET /api/settings`, `POST /api/settings` — pacing/limits (allow-listed keys only).
 - `GET /api/logs?tail=N`, `GET /api/logs/download` — run log.
+- `POST /api/guardrail/acknowledge` — re-check a halt; resumes if logged in and no
+  checkpoint on the current page, otherwise re-trips with a `detail` saying which URL
+  and pattern is still blocking.
+- `GET /api/incidents?limit=N` — halt/failure evidence metadata (newest first): what
+  page the browser was on, which checkpoint pattern matched, and links to the
+  screenshot + HTML snapshot captured at that moment (served under `/incidents/…`,
+  stored in `data/incidents/`, newest 60 kept).

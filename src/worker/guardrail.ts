@@ -7,9 +7,9 @@ export function isTripped(repos: Repos): boolean {
   return repos.appState.get().guardrail_tripped === 1;
 }
 
-export function tripCheckpoint(repos: Repos, now: Date): void {
-  log.warn('guardrail', 'tripped checkpoint');
-  repos.appState.trip('checkpoint', 'Captcha/checkpoint detected', now.toISOString());
+export function tripCheckpoint(repos: Repos, now: Date, detail = 'Captcha/checkpoint detected'): void {
+  log.warn('guardrail', 'tripped checkpoint', { detail });
+  repos.appState.trip('checkpoint', detail, now.toISOString());
 }
 
 export function tripLoginLost(repos: Repos, now: Date): void {

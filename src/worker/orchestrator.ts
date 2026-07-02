@@ -68,7 +68,9 @@ export class Orchestrator {
         // Self-heal stale slots first (inside the lock so a running batch is never
         // yanked out from under the sender), then send whatever is due.
         requeueOverdue(this.repos, now);
-        return runSenderOnce(this.repos, this.driver, now);
+        // Live clock: a batch runs for minutes, so per-profile timestamps (sent_at,
+        // guardrail trips) must not all be stamped with the batch-start `now`.
+        return runSenderOnce(this.repos, this.driver, now, { clock: () => new Date() });
       });
     } catch (err) {
       this.handleTickError('sender', err);

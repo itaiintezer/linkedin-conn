@@ -16,6 +16,17 @@ test('isTripped reflects app_state', () => {
   expect(repos.appState.get().guardrail_reason).toBe('checkpoint');
 });
 
+test('tripCheckpoint records a specific detail when given one', () => {
+  tripCheckpoint(repos, NOW, 'Checkpoint page at https://www.linkedin.com/checkpoint/challenge/x (matched "security verification")');
+  expect(repos.appState.get().guardrail_detail).toContain('checkpoint/challenge/x');
+  expect(repos.appState.get().guardrail_detail).toContain('security verification');
+});
+
+test('tripCheckpoint keeps the generic detail when none is given', () => {
+  tripCheckpoint(repos, NOW);
+  expect(repos.appState.get().guardrail_detail).toBe('Captcha/checkpoint detected');
+});
+
 test('tripLoginLost sets login_lost reason', () => {
   tripLoginLost(repos, NOW);
   expect(repos.appState.get().guardrail_reason).toBe('login_lost');

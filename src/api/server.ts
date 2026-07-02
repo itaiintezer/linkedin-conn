@@ -2,7 +2,9 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { INCIDENTS_DIR } from '../config.js';
+import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
@@ -30,8 +32,11 @@ const ALLOWED_SETTINGS_KEYS = new Set([
 
 export function buildServer(
   repos: Repos, driver: BrowserDriver, browserLock: Mutex = new Mutex(), logger: Logger = defaultLog,
+  opts: { incidentsDir?: string } = {},
 ): FastifyInstance {
   const app = Fastify({ logger: false });
+  const incidentsDir = opts.incidentsDir ?? INCIDENTS_DIR;
+  mkdirSync(incidentsDir, { recursive: true }); // @fastify/static requires the root to exist
 
   app.setErrorHandler((err, _req, reply) => {
     const e = err as any;
@@ -40,6 +45,8 @@ export function buildServer(
   });
 
   app.register(fastifyStatic, { root: join(__dirname, '..', 'web'), prefix: '/' });
+  // Halt/failure evidence (screenshots, page HTML) captured by the sender.
+  app.register(fastifyStatic, { root: incidentsDir, prefix: '/incidents/', decorateReply: false });
 
   app.post('/api/profiles', async (req, reply) => {
     const { url, cohort, message } = req.body as { url: string; cohort?: string; message?: string };
@@ -208,7 +215,7 @@ export function buildServer(
     defaultLog.info('api', 'run-now', { promoted: candidates.length });
     for (const p of candidates) repos.profiles.setScheduled(p.id, dueIso);
     // force: a manual trigger may run outside working hours by design.
-    await browserLock.tryRun(() => runSenderOnce(repos, driver, now, { force: true }));
+    await browserLock.tryRun(() => runSenderOnce(repos, driver, now, { force: true, clock: () => new Date() }));
     return { ok: true, promoted: candidates.length };
   });
 
@@ -258,18 +265,33 @@ export function buildServer(
     const now = new Date();
     const snap = await driver.readLoginState();
     repos.appState.setLogin(snap, now.toISOString());
-    const checkpoint = await driver.checkpointPresent();
-    defaultLog.info('api', 'guardrail acknowledge', { resumed: snap.loggedIn && !checkpoint });
-    if (snap.loggedIn && !checkpoint) {
+    const scan = await driver.checkpointScan();
+    defaultLog.info('api', 'guardrail acknowledge', {
+      resumed: snap.loggedIn && !scan.hit, url: scan.url, matched: scan.matched ?? '',
+    });
+    if (snap.loggedIn && !scan.hit) {
       repos.appState.clearGuardrail();
       repos.appState.resetFailureStreak();
       planAndAssignToday(repos, now); // resume scheduling immediately, not at the next hourly tick
       return { ok: true, resumed: true };
     }
     const reason = !snap.loggedIn ? 'login_lost' : 'checkpoint';
-    const detail = !snap.loggedIn ? 'Still not logged in' : 'Checkpoint still present';
+    const detail = !snap.loggedIn
+      ? 'Still not logged in'
+      : `Checkpoint still present at ${scan.url}${scan.matched ? ` (matched "${scan.matched}")` : ''}`;
     repos.appState.trip(reason, detail, now.toISOString());
-    return { ok: true, resumed: false, reason };
+    return { ok: true, resumed: false, reason, detail };
+  });
+
+  // Halt/failure evidence captured by the sender (meta only; files under /incidents/).
+  app.get('/api/incidents', async (req) => {
+    const limitRaw = Number((req.query as { limit?: string }).limit);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 100) : 20;
+    return listIncidents(incidentsDir, limit).map((m) => ({
+      ...m,
+      screenshot: m.screenshot ? `/incidents/${m.screenshot}` : null,
+      html: m.html ? `/incidents/${m.html}` : null,
+    }));
   });
 
   app.get('/api/logs', async (req) => {

@@ -1,3 +1,6 @@
+import type { CheckpointScan } from './core/checkpoint.js';
+export type { CheckpointScan };
+
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
   | 'accepted' | 'expired' | 'skipped' | 'failed' | 'needs_attention'
@@ -56,10 +59,20 @@ export interface Settings {
 export type SendResult =
   | 'sent' | 'already' | 'unavailable' | 'note_quota' | 'checkpoint' | 'error';
 
+/** What the browser saw when a send went wrong — captured for the operator. */
+export interface SendEvidence {
+  pageUrl: string;
+  /** Checkpoint pattern that matched (see core/checkpoint.ts), if any. */
+  matched?: string | null;
+  /** Screenshot file name under data/incidents/ (served at /incidents/<name>). */
+  screenshot?: string | null;
+}
+
 export interface SendOutcome {
   result: SendResult;
   firstName?: string;
   error?: string;
+  evidence?: SendEvidence;
 }
 
 export interface BrowserDriver {
@@ -73,8 +86,8 @@ export interface BrowserDriver {
   sendConnectionRequest(url: string, message: string | null): Promise<SendOutcome>;
   readPendingInvites(): Promise<string[]>;     // normalized profile URLs
   readRecentConnections(): Promise<string[]>;  // normalized profile URLs
-  /** Whether the currently-loaded page looks like a checkpoint/captcha. */
-  checkpointPresent(): Promise<boolean>;
+  /** Scan the currently-loaded page for a checkpoint/captcha (url + what matched). */
+  checkpointScan(): Promise<CheckpointScan>;
   close(): Promise<void>;
 }
 

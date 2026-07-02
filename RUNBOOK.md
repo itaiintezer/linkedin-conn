@@ -68,8 +68,10 @@ The "checked …" time on the Accepted card tells you when this last ran.
 
 ## 7. Safety
 - If LinkedIn shows a **captcha or security check**, The Machine pauses itself and shows a red
-  banner. Solve the challenge in the LinkedIn browser window, then click
-  **"I've fixed it — re-check & resume."**
+  banner. The banner says exactly which page tripped it and links to a **screenshot** taken at
+  that moment (also saved under `data/incidents/`). Solve the challenge in the LinkedIn browser
+  window, then click **"I've fixed it — re-check & resume."** If the screenshot shows a normal
+  page (no challenge), it was a false alarm — just re-check to resume.
 - You can **Pause** / **Resume** anytime from the dashboard.
 - The Machine caps sends per week (default 100) and per day to stay well within safe limits.
 

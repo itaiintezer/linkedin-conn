@@ -1,4 +1,4 @@
-import type { BrowserDriver, SendOutcome, SendResult, LoginSnapshot } from '../types.js';
+import type { BrowserDriver, SendOutcome, SendResult, SendEvidence, LoginSnapshot, CheckpointScan } from '../types.js';
 import { applyFirstName } from '../core/message.js';
 export type { BrowserDriver };
 
@@ -8,6 +8,8 @@ export class FakeDriver implements BrowserDriver {
   open = false;
   cookieExpiry: string | null = null;
   checkpoint = false;
+  /** Attached to checkpoint/error outcomes, mirroring the real driver's capture. */
+  evidence: SendEvidence | undefined;
   pending: string[] = [];
   connections: string[] = [];
   scripted = new Map<string, SendResult>();
@@ -28,10 +30,15 @@ export class FakeDriver implements BrowserDriver {
     const note = message === null ? null : applyFirstName(message, this.firstName);
     this.sentLog.push({ url, message: note });
     const result = this.scripted.get(url) ?? 'sent';
-    return { result, firstName: this.firstName };
+    const evidence = (result === 'checkpoint' || result === 'error') ? this.evidence : undefined;
+    return { result, firstName: this.firstName, ...(evidence ? { evidence } : {}) };
   }
   async readPendingInvites() { return this.pending; }
   async readRecentConnections() { return this.connections; }
-  async checkpointPresent() { return this.checkpoint; }
+  async checkpointScan(): Promise<CheckpointScan> {
+    return this.checkpoint
+      ? { hit: true, via: 'url', matched: 'linkedin.com/checkpoint/', url: 'https://www.linkedin.com/checkpoint/challenge/fake', title: '' }
+      : { hit: false, via: null, matched: null, url: 'https://www.linkedin.com/feed/', title: '' };
+  }
   async close() { this.open = false; }
 }

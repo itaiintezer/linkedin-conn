@@ -162,6 +162,41 @@ test('POST /api/guardrail/acknowledge stays tripped when still unhealthy', async
   expect(repos.appState.get().guardrail_tripped).toBe(1);
 });
 
+test('acknowledge blocked by a live checkpoint reports where and what matched', async () => {
+  const driver = new FakeDriver();
+  driver.checkpoint = true;
+  const a = buildServer(repos, driver);
+  repos.appState.trip('checkpoint', 'x', '2026-06-30T09:00:00.000Z');
+  const res = await a.inject({ method: 'POST', url: '/api/guardrail/acknowledge' });
+  const body = JSON.parse(res.body);
+  expect(body.resumed).toBe(false);
+  expect(body.detail).toContain('linkedin.com/checkpoint');
+  expect(repos.appState.get().guardrail_detail).toContain('linkedin.com/checkpoint');
+});
+
+test('GET /api/incidents lists captured evidence newest first with screenshot urls', async () => {
+  const dir = mkdtempSync(pathJoin(tmpdir(), 'incidents-api-'));
+  const { captureEvidence } = await import('../../src/browser/evidence.js');
+  const page = {
+    url: () => 'https://www.linkedin.com/checkpoint/challenge/x',
+    title: async () => 'Security Verification | LinkedIn',
+    content: async () => '<html></html>',
+    screenshot: async () => Buffer.from('png'),
+  };
+  await captureEvidence(page, 'checkpoint', { matched: 'x' }, dir, new Date('2026-07-02T10:00:00Z'));
+  await captureEvidence(page, 'send-failed', {}, dir, new Date('2026-07-02T12:00:00Z'));
+  const a = buildServer(repos, new FakeDriver(), new Mutex(), undefined, { incidentsDir: dir });
+  const res = await a.inject({ method: 'GET', url: '/api/incidents?limit=5' });
+  const rows = JSON.parse(res.body);
+  expect(rows).toHaveLength(2);
+  expect(rows[0].tag).toBe('send-failed');
+  expect(rows[0].screenshot).toBe('/incidents/2026-07-02T12-00-00-send-failed.png');
+  // the screenshot itself is served
+  const img = await a.inject({ method: 'GET', url: rows[0].screenshot });
+  expect(img.statusCode).toBe(200);
+  expect(img.body).toBe('png');
+});
+
 test('POST /api/run-now is skipped (no send) while the shared browser lock is held', async () => {
   const driver = new FakeDriver();
   const lock = new Mutex();

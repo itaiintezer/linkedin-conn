@@ -256,8 +256,27 @@ function applyGuardrailUi(status) {
   banner.hidden = !tripped;
   if (tripped) {
     $('#guardrailReason').textContent = GUARDRAIL_TEXT[g.reason] || g.detail || 'Automation was halted.';
+    // The specific cause (which page, which pattern, screenshot path) — everything
+    // beyond the generic reason text — so "what actually happened?" is answerable.
+    const generic = !g.detail || g.detail === 'Captcha/checkpoint detected';
+    $('#guardrailDetail').textContent = generic ? '' : g.detail;
     $('#guardrailTime').textContent = g.trippedAt ? `Halted ${fmtTime(g.trippedAt)}` : '';
+    loadGuardrailShot(g);
   }
+}
+
+/* Link the banner to the screenshot captured at trip time. Fetched once per trip
+   (keyed on trippedAt) so the status poll doesn't hammer /api/incidents. */
+let shotLoadedFor = null;
+async function loadGuardrailShot(g) {
+  const link = $('#guardrailShot');
+  if (!link || shotLoadedFor === g.trippedAt) return;
+  shotLoadedFor = g.trippedAt;
+  link.hidden = true;
+  try {
+    const rows = await api('/api/incidents?limit=1');
+    if (rows.length && rows[0].screenshot) { link.href = rows[0].screenshot; link.hidden = false; }
+  } catch (_) { /* no evidence captured for this trip */ }
 }
 
 async function refreshStatus() {
