@@ -79,6 +79,7 @@ export class LinkedInDriver implements BrowserDriver {
       if (!hasSendWithout && !hasAddNote) {
         const scan = await this.scanCheckpoint(page);
         if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
+        if (await this.emailRequired(page)) return this.emailRequiredOutcome(page, firstName);
         return { result: 'unavailable', firstName };
       }
 
@@ -99,6 +100,9 @@ export class LinkedInDriver implements BrowserDriver {
         await sendWithout.click();
       }
       await sleep(rand(1500, 3000));
+      // The email-verification gate appears here, in place of a success signal — catch it
+      // now, while the dialog is still on screen (the confirm step navigates away).
+      if (await this.emailRequired(page)) return this.emailRequiredOutcome(page, firstName);
 
       // 3) Confirm the invite actually registered. The composer route only spins after
       //    submit and gives no success signal, so we trust LinkedIn's own state instead
@@ -153,6 +157,24 @@ export class LinkedInDriver implements BrowserDriver {
     return {
       result: 'error',
       error,
+      firstName,
+      evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+    };
+  }
+
+  /** True if LinkedIn's email-verification gate is showing (the invite cannot be sent). */
+  private async emailRequired(page: Page): Promise<boolean> {
+    if (await find.emailVerifyText(page).first().isVisible().catch(() => false)) return true;
+    return find.emailVerifyInput(page).first().isVisible().catch(() => false);
+  }
+
+  /** The member requires their email to connect — terminal, never retryable. Evidence is
+   *  captured BEFORE dismissing so the screenshot shows the gate itself. */
+  private async emailRequiredOutcome(page: Page, firstName?: string): Promise<SendOutcome> {
+    const ev = await captureEvidence(page, 'email-required', {});
+    await find.dismissDialog(page).first().click().catch(() => {}); // leave no modal behind
+    return {
+      result: 'email_required',
       firstName,
       evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
     };

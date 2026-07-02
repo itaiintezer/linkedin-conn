@@ -49,6 +49,13 @@ export const find = {
   // English "Pending" wording is safe.
   pendingBadge: (s: Scope): Locator => s.locator('[aria-label*="Pending" i]'),
 
+  // Email-verification gate: some members only accept invites from people who know
+  // their email. LinkedIn shows "To verify this member knows you, please enter their
+  // email to connect." with an email input in the invite dialog. Either signal
+  // suffices; en-US is forced at launch so the English wording is stable.
+  emailVerifyText: (s: Scope): Locator => s.getByText(/enter their email to connect/i),
+  emailVerifyInput: (s: Scope): Locator => s.locator('div[role="dialog"] input[type="email"]'),
+
   // Fallback path (used only when the direct custom-invite route shows no composer).
   // The Connect control has two shapes, so we match it two ways:
   //  - top card: a button/anchor with aria-label "Invite <Name> to connect" — match by
