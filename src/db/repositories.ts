@@ -111,7 +111,7 @@ export class ProfileRepo {
     }
   }
   skipCohortQueue(cohortId: number): void {
-    this.db.prepare("UPDATE profiles SET status='skipped' WHERE cohort_id = ? AND status IN ('queued','scheduled')").run(cohortId);
+    this.db.prepare("UPDATE profiles SET status='skipped', skip_reason='dismissed' WHERE cohort_id = ? AND status IN ('queued','scheduled')").run(cohortId);
   }
 }
 

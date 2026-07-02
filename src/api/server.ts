@@ -158,7 +158,7 @@ export function buildServer(
     const status = (req.query as { status?: string }).status;
     const where = status ? 'WHERE p.status = ?' : '';
     const stmt = repos.db.prepare(`
-      SELECT p.id, p.profile_url, p.status, p.scheduled_for, p.sent_at, p.accepted_at,
+      SELECT p.id, p.profile_url, p.status, p.skip_reason, p.scheduled_for, p.sent_at, p.accepted_at,
              p.last_error, c.name AS cohort_name
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       ${where}
@@ -247,7 +247,7 @@ export function buildServer(
   app.post('/api/profiles/:id/dismiss', async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
-    repos.profiles.setStatus(id, 'skipped', { last_error: null });
+    repos.profiles.setStatus(id, 'skipped', { last_error: null, skip_reason: 'dismissed' });
     return { ok: true };
   });
 
@@ -357,7 +357,7 @@ export function buildServer(
   app.post('/api/queue/profile/:id/remove', async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
-    repos.profiles.setStatus(id, 'skipped', { last_error: null });
+    repos.profiles.setStatus(id, 'skipped', { last_error: null, skip_reason: 'dismissed' });
     return { ok: true };
   });
 

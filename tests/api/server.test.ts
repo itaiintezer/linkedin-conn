@@ -304,13 +304,25 @@ test('POST /api/profiles/:id/retry requeues a single profile', async () => {
   expect(repos.profiles.findById(a.id)!.last_error).toBeNull();
 });
 
-test('POST /api/profiles/:id/dismiss marks it skipped', async () => {
+test('POST /api/profiles/:id/dismiss marks it skipped with reason dismissed', async () => {
   const c = repos.cohorts.create('D1', null, true);
   const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/d1', null);
   repos.profiles.setStatus(a.id, 'needs_attention', { last_error: 'x' });
   const res = await app.inject({ method: 'POST', url: `/api/profiles/${a.id}/dismiss` });
   expect(res.statusCode).toBe(200);
-  expect(repos.profiles.findById(a.id)!.status).toBe('skipped');
+  const row = repos.profiles.findById(a.id)!;
+  expect(row.status).toBe('skipped');
+  expect(row.skip_reason).toBe('dismissed');
+});
+
+test('GET /api/profiles?status=skipped returns skip_reason', async () => {
+  const c = repos.cohorts.create('SK', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/sk1', null);
+  repos.profiles.setStatus(a.id, 'skipped', { skip_reason: 'email_required' });
+  const res = await app.inject({ method: 'GET', url: '/api/profiles?status=skipped' });
+  const body = JSON.parse(res.body);
+  expect(body).toHaveLength(1);
+  expect(body[0].skip_reason).toBe('email_required');
 });
 
 test('POST /api/profiles/:id/retry 404s for an unknown id', async () => {
