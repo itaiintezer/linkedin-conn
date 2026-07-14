@@ -4,20 +4,40 @@ import { computeAccepted, computeExpiredByAge } from '../core/acceptance.js';
 import { isTripped, tripLoginLost, recordReadError, recordSuccess } from './guardrail.js';
 import { log } from '../core/log.js';
 
-export async function runAcceptanceCheck(repos: Repos, driver: BrowserDriver, now: Date): Promise<void> {
-  if (repos.settings.get().paused) return;
-  if (isTripped(repos)) return;
+/**
+ * Outcome of a single acceptance pass. `ran` is true only when we actually read the
+ * connections list and applied verdicts; every early return sets `ran: false` with a
+ * `reason` so callers (e.g. the manual recheck endpoint) can report what happened.
+ */
+export interface AcceptanceRunResult {
+  ran: boolean;
+  reason?: 'paused' | 'guardrail' | 'no_pending' | 'logged_out' | 'login_lost' | 'read_error' | 'empty_read';
+  accepted: number;
+  expired: number;
+  checkedAt?: string;
+}
+
+export async function runAcceptanceCheck(
+  repos: Repos,
+  driver: BrowserDriver,
+  now: Date,
+  opts: { force?: boolean } = {},
+): Promise<AcceptanceRunResult> {
+  // `force` (manual on-demand recheck) bypasses ONLY the paused gate — acceptance is
+  // read-only against LinkedIn. Every other safety gate below is unconditional.
+  if (!opts.force && repos.settings.get().paused) return { ran: false, reason: 'paused', accepted: 0, expired: 0 };
+  if (isTripped(repos)) return { ran: false, reason: 'guardrail', accepted: 0, expired: 0 };
 
   // Nothing to verify -> stay dark (DB only, no browser).
   const sent = repos.profiles.byStatus('sent').map((p) => ({ id: p.id, profile_url: p.profile_url, sent_at: p.sent_at }));
-  if (sent.length === 0) return;
+  if (sent.length === 0) return { ran: false, reason: 'no_pending', accepted: 0, expired: 0 };
 
-  if (repos.appState.get().login_logged_in !== 1) return;
+  if (repos.appState.get().login_logged_in !== 1) return { ran: false, reason: 'logged_out', accepted: 0, expired: 0 };
 
   // Committing to act: confirm login live (opens the browser) and refresh the cache.
   const snap = await driver.readLoginState();
   repos.appState.setLogin(snap, now.toISOString());
-  if (!snap.loggedIn) { tripLoginLost(repos, now); return; }
+  if (!snap.loggedIn) { tripLoginLost(repos, now); return { ran: false, reason: 'login_lost', accepted: 0, expired: 0 }; }
 
   // We only READ the connections list — a new acceptance surfaces at the top of
   // "recently added", so the top slice is the right place to look. We intentionally
@@ -30,14 +50,14 @@ export async function runAcceptanceCheck(repos: Repos, driver: BrowserDriver, no
   } catch (e) {
     // Checkpoint text trips immediately; other read failures count toward the streak.
     recordReadError(repos, (e as Error).message ?? 'acceptance read failed', now);
-    return;
+    return { ran: false, reason: 'read_error', accepted: 0, expired: 0 };
   }
 
   // Fail-safe: a suspiciously empty read (page didn't render, UI changed, rate-limited)
   // must never drive state changes. Skip the run rather than mark anything.
   if (connections.size === 0) {
     log.warn('acceptance', 'connections read returned nothing — skipping (no state change)');
-    return;
+    return { ran: false, reason: 'empty_read', accepted: 0, expired: 0 };
   }
 
   const iso = now.toISOString();
@@ -63,4 +83,5 @@ export async function runAcceptanceCheck(repos: Repos, driver: BrowserDriver, no
   repos.appState.setAcceptanceChecked(iso);
   recordSuccess(repos); // a clean read clears any accumulated streak
   log.info('acceptance', 'checked', { accepted: accepted.length, expired: expired.length, connections: connections.size });
+  return { ran: true, accepted: accepted.length, expired: expired.length, checkedAt: iso };
 }

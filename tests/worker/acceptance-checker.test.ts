@@ -126,3 +126,46 @@ test('does not stamp acceptance_checked_at when there is nothing to verify', asy
   await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
   expect(repos.appState.get().acceptance_checked_at).toBeNull();
 });
+
+test('force runs the check even while paused and promotes accepted profiles', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const a = seedSent('https://www.linkedin.com/in/a', c.id);
+  repos.settings.update({ paused: 1 });
+  driver.connections = ['https://www.linkedin.com/in/a'];
+  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'), { force: true });
+  expect(res).toEqual({ ran: true, accepted: 1, expired: 0, checkedAt: '2026-06-29T12:00:00.000Z' });
+  expect(repos.profiles.findById(a.id)!.status).toBe('accepted');
+});
+
+test('without force, a paused engine returns reason "paused" and changes nothing', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedSent('https://www.linkedin.com/in/a', c.id);
+  repos.settings.update({ paused: 1 });
+  driver.connections = ['https://www.linkedin.com/in/a'];
+  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+  expect(res).toEqual({ ran: false, reason: 'paused', accepted: 0, expired: 0 });
+  expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
+});
+
+test('reports reason "no_pending" when there is nothing to verify', async () => {
+  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+  expect(res).toEqual({ ran: false, reason: 'no_pending', accepted: 0, expired: 0 });
+});
+
+test('reports reason "empty_read" on a suspiciously empty connections read', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedSent('https://www.linkedin.com/in/a', c.id);
+  driver.connections = [];
+  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'), { force: true });
+  expect(res).toEqual({ ran: false, reason: 'empty_read', accepted: 0, expired: 0 });
+});
+
+test('reports reason "guardrail" when the guardrail is tripped, even with force', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedSent('https://www.linkedin.com/in/a', c.id);
+  repos.appState.trip('checkpoint', 'x', '2026-06-29T00:00:00.000Z');
+  driver.connections = ['https://www.linkedin.com/in/a'];
+  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'), { force: true });
+  expect(res).toEqual({ ran: false, reason: 'guardrail', accepted: 0, expired: 0 });
+  expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
+});
