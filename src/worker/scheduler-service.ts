@@ -23,6 +23,9 @@ export function requeueOverdue(repos: Repos, now: Date, graceMs: number = OVERDU
 }
 
 export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = Math.random): void {
+  // Self-heal first: stale past-due slots must not inflate committedToday() and zero out
+  // the daily budget. Runs on every path (startup, hourly tick, resume, guardrail-ack).
+  requeueOverdue(repos, now);
   const s = repos.settings.get();
   // While paused or halted the sender won't run — don't materialize slots that will
   // only go stale. /api/resume and a guardrail acknowledge re-plan immediately.

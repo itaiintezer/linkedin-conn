@@ -159,3 +159,19 @@ test('planAndAssignToday schedules higher-priority queued profiles first', () =>
   expect(repos.profiles.findById(b.id)!.status).toBe('scheduled');
   expect(repos.profiles.findById(a.id)!.status).toBe('queued');
 });
+
+test('planAndAssignToday requeues stale scheduled so they do not suppress the daily budget', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  // 25 stale scheduled rows (a day overdue) would inflate committedToday past the daily target (20)
+  for (let i = 0; i < 25; i++) {
+    const p = repos.profiles.add(c.id, `https://www.linkedin.com/in/stale${i}`, null);
+    repos.profiles.setScheduled(p.id, '2026-06-28T09:00:00.000Z');
+  }
+  // plus fresh queued work
+  for (let i = 0; i < 10; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/q${i}`, null);
+  let i = 0; const seq = [0.1, 0.35, 0.6, 0.85];
+  planAndAssignToday(repos, new Date('2026-06-29T09:00:00'), () => seq[(i++) % seq.length]);
+  // Without the fold: committedToday=25 -> daily budget 0 -> nothing scheduled.
+  // With the fold: the 25 stale rows are requeued first, so the full daily target flows.
+  expect(repos.profiles.byStatus('scheduled').length).toBe(20);
+});
