@@ -126,3 +126,15 @@ test('start() rebuilds the whole scheduled backlog, not just overdue slots', () 
   orch.stop(); // clear the timers start() registered so the test process exits
   expect(repos.profiles.findById(p.id)!.scheduled_for).not.toBe(futureIso);
 });
+
+test('start() recovers a profile stranded in sending by a mid-send crash', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/mid', null);
+  // Simulate the sender marking it 'sending' (attempts++) before the process was killed.
+  repos.profiles.setStatus(p.id, 'sending', { attempts: 1 });
+  const orch = new Orchestrator(repos, driver);
+  orch.start();
+  orch.stop();
+  // Startup recovery returned it to the queue (then possibly re-scheduled): never left stuck.
+  expect(repos.profiles.findById(p.id)!.status).not.toBe('sending');
+});
