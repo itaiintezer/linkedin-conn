@@ -306,7 +306,7 @@ export class LinkedInDriver implements BrowserDriver {
       await captureEvidence(page, 'checkpoint', { during: 'connections read' });
       throw new Error('checkpoint detected during connections read');
     }
-    await this.scrollConnections(page, 8); // ~8 rounds ≈ the last month of "recently added"
+    await this.scrollConnections(page, 6); // a few pages of "recently added" (weeks of history)
     return this.collectProfileLinks(page, SEL.connectionCardLink);
   }
 
