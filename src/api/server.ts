@@ -14,6 +14,7 @@ import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
 import { Mutex } from '../core/mutex.js';
 import { runSenderOnce } from '../worker/sender.js';
+import { runAcceptanceCheck } from '../worker/acceptance-checker.js';
 import { planAndAssignToday } from '../worker/scheduler-service.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote } from '../core/message.js';
@@ -217,6 +218,15 @@ export function buildServer(
     // force: a manual trigger may run outside working hours by design.
     await browserLock.tryRun(() => runSenderOnce(repos, driver, now, { force: true, clock: () => new Date() }));
     return { ok: true, promoted: candidates.length };
+  });
+
+  // Manual, on-demand acceptance reconciliation. Read-only against LinkedIn, so it runs
+  // even while paused (force: true) — but still respects the guardrail, login, and
+  // empty-read fail-safes inside runAcceptanceCheck. Uses run (not tryRun) so it queues
+  // behind any in-flight sender/acceptance batch rather than being silently dropped.
+  app.post('/api/recheck-acceptance', async () => {
+    defaultLog.info('api', 'recheck-acceptance');
+    return browserLock.run(() => runAcceptanceCheck(repos, driver, new Date(), { force: true }));
   });
 
   // Reset failed / needs-attention profiles back to queued so they get retried.
