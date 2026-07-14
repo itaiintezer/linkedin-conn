@@ -77,3 +77,19 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
 
   log.debug('scheduler', 'assigned slots', { count: assignments.length, slots: times.length, budget });
 }
+
+/**
+ * Full rebuild: return EVERY scheduled profile to the queue (clearing its slot), then
+ * re-flow the whole backlog into fresh policy-compliant batches. Called at startup so a
+ * backlog of past-due (or otherwise stale) slots is re-sorted to policy — same batch size
+ * and spacing — instead of firing as a burst or suppressing today's plan. `scheduled_for`
+ * is always today-or-past (the planner never schedules beyond today's window), so requeuing
+ * all scheduled rows is safe. Priority order is preserved: requeue leaves `priority` intact
+ * and queuedByPriority() re-orders by (priority, id).
+ */
+export function resortSchedule(repos: Repos, now: Date, rng: () => number = Math.random): void {
+  for (const p of repos.profiles.byStatus('scheduled')) {
+    repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
+  }
+  planAndAssignToday(repos, now, rng);
+}
