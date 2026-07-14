@@ -1,7 +1,7 @@
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
-import { planAndAssignToday, requeueOverdue, resortSchedule } from '../../src/worker/scheduler-service.js';
+import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending } from '../../src/worker/scheduler-service.js';
 
 let repos: Repos;
 beforeEach(() => { repos = new Repos(openDatabase(':memory:')); });
@@ -229,4 +229,32 @@ test('resortSchedule while paused requeues everything but schedules nothing', ()
   resortSchedule(repos, new Date('2026-06-29T08:00:00'), () => 0.5);
   expect(repos.profiles.byStatus('scheduled')).toHaveLength(0);
   expect(repos.profiles.byStatus('queued')).toHaveLength(5);
+});
+
+test('recoverOrphanedSending returns stuck sending profiles to queued, keeping attempts', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/mid', null);
+  // Mirror the sender: a row picked for a batch is set 'sending' (attempts++) off its slot,
+  // then the process is killed before the outcome lands.
+  repos.profiles.setScheduled(p.id, '2026-06-29T09:00:00.000Z');
+  repos.profiles.setStatus(p.id, 'sending', { attempts: 1 });
+  const n = recoverOrphanedSending(repos);
+  expect(n).toBe(1);
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('queued');
+  expect(row.scheduled_for).toBeNull(); // cleared so the planner re-flows it into a fresh slot
+  expect(row.attempts).toBe(1);         // the consumed attempt is preserved
+});
+
+test('recoverOrphanedSending ignores non-sending profiles', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const q = repos.profiles.add(c.id, 'https://www.linkedin.com/in/q', null);
+  const sch = repos.profiles.add(c.id, 'https://www.linkedin.com/in/s', null);
+  repos.profiles.setScheduled(sch.id, '2026-06-29T15:00:00.000Z');
+  const sent = repos.profiles.add(c.id, 'https://www.linkedin.com/in/sent', null);
+  repos.profiles.setStatus(sent.id, 'sent', { sent_at: '2026-06-29T10:00:00.000Z' });
+  expect(recoverOrphanedSending(repos)).toBe(0);
+  expect(repos.profiles.findById(q.id)!.status).toBe('queued');
+  expect(repos.profiles.findById(sch.id)!.status).toBe('scheduled');
+  expect(repos.profiles.findById(sent.id)!.status).toBe('sent');
 });

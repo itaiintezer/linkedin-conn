@@ -93,3 +93,21 @@ export function resortSchedule(repos: Repos, now: Date, rng: () => number = Math
   }
   planAndAssignToday(repos, now, rng);
 }
+
+/**
+ * Recover profiles stranded in 'sending' by a process killed mid-send. The sender marks a
+ * profile 'sending' (attempts already incremented) before driving the browser; a crash between
+ * that mark and the outcome leaves the row stuck — never re-queued, never re-planned, and
+ * invisible to committedToday(). Return them to 'queued' (clearing the stale slot) so the
+ * planner re-flows them into policy batches; attempts is left as-is (the attempt was consumed).
+ *
+ * STARTUP-ONLY: the browser is in-process, so a fresh process has nothing genuinely in flight —
+ * every 'sending' row is definitively orphaned. Never call this mid-run, where a 'sending' row
+ * is a live send.
+ */
+export function recoverOrphanedSending(repos: Repos): number {
+  const stuck = repos.profiles.byStatus('sending');
+  for (const p of stuck) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
+  if (stuck.length > 0) log.info('scheduler', 'recovered orphaned sending profiles', { count: stuck.length });
+  return stuck.length;
+}
