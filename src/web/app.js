@@ -591,9 +591,10 @@ function initDashboard() {
 
   const recheck = $('#recheckAccept');
   if (recheck) {
-    // The Accepted station is a drill target; keep button clicks/keys from opening the drawer.
-    const swallow = (e) => e.stopPropagation();
-    recheck.addEventListener('keydown', swallow);
+    // The Accepted station is a drill target; keep the button's own activation keys
+    // (Enter/Space) from bubbling to the station's drill handler. Let every other key
+    // through — notably Escape must still reach the document handler that closes drawers.
+    recheck.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); });
     recheck.addEventListener('click', async (e) => {
       e.stopPropagation();
       recheck.disabled = true;
