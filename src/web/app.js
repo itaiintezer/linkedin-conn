@@ -607,9 +607,13 @@ function initDashboard() {
                logged_out: 'Logged out', login_lost: 'Logged out', read_error: 'Read failed',
                empty_read: 'No new acceptances' }[res && res.reason] || 'Done');
         recheck.title = label;
+        const status = $('#recheckStatus');
+        if (status) status.textContent = label;
         await refreshStatus();
       } catch (_) {
         recheck.title = 'Failed';
+        const status = $('#recheckStatus');
+        if (status) status.textContent = 'Recheck failed';
       }
       recheck.classList.remove('busy');
       setTimeout(() => { recheck.title = original; recheck.disabled = false; }, 2500);
