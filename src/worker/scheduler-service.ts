@@ -23,6 +23,9 @@ export function requeueOverdue(repos: Repos, now: Date, graceMs: number = OVERDU
 }
 
 export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = Math.random): void {
+  // Self-heal first: stale past-due slots must not inflate committedToday() and zero out
+  // the daily budget. Runs on every path (startup, hourly tick, resume, guardrail-ack).
+  requeueOverdue(repos, now);
   const s = repos.settings.get();
   // While paused or halted the sender won't run — don't materialize slots that will
   // only go stale. /api/resume and a guardrail acknowledge re-plan immediately.
@@ -73,4 +76,20 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   for (const a of assignments) repos.profiles.setScheduled(a.id, a.when.toISOString());
 
   log.debug('scheduler', 'assigned slots', { count: assignments.length, slots: times.length, budget });
+}
+
+/**
+ * Full rebuild: return EVERY scheduled profile to the queue (clearing its slot), then
+ * re-flow the whole backlog into fresh policy-compliant batches. Called at startup so a
+ * backlog of past-due (or otherwise stale) slots is re-sorted to policy — same batch size
+ * and spacing — instead of firing as a burst or suppressing today's plan. `scheduled_for`
+ * is always today-or-past (the planner never schedules beyond today's window), so requeuing
+ * all scheduled rows is safe. Priority order is preserved: requeue leaves `priority` intact
+ * and queuedByPriority() re-orders by (priority, id).
+ */
+export function resortSchedule(repos: Repos, now: Date, rng: () => number = Math.random): void {
+  for (const p of repos.profiles.byStatus('scheduled')) {
+    repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
+  }
+  planAndAssignToday(repos, now, rng);
 }

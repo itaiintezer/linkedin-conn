@@ -1,7 +1,7 @@
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
-import { planAndAssignToday, requeueOverdue } from '../../src/worker/scheduler-service.js';
+import { planAndAssignToday, requeueOverdue, resortSchedule } from '../../src/worker/scheduler-service.js';
 
 let repos: Repos;
 beforeEach(() => { repos = new Repos(openDatabase(':memory:')); });
@@ -158,4 +158,75 @@ test('planAndAssignToday schedules higher-priority queued profiles first', () =>
   planAndAssignToday(repos, new Date('2026-07-01T09:00:00'), () => 0.5);
   expect(repos.profiles.findById(b.id)!.status).toBe('scheduled');
   expect(repos.profiles.findById(a.id)!.status).toBe('queued');
+});
+
+test('planAndAssignToday requeues stale scheduled so they do not suppress the daily budget', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  // 25 stale scheduled rows (a day overdue) would inflate committedToday past the daily target (20)
+  for (let i = 0; i < 25; i++) {
+    const p = repos.profiles.add(c.id, `https://www.linkedin.com/in/stale${i}`, null);
+    repos.profiles.setScheduled(p.id, '2026-06-28T09:00:00.000Z');
+  }
+  // plus fresh queued work
+  for (let i = 0; i < 10; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/q${i}`, null);
+  let i = 0; const seq = [0.1, 0.35, 0.6, 0.85];
+  planAndAssignToday(repos, new Date('2026-06-29T09:00:00'), () => seq[(i++) % seq.length]);
+  // Without the fold: committedToday=25 -> daily budget 0 -> nothing scheduled.
+  // With the fold: the 25 stale rows are requeued first, so the full daily target flows.
+  expect(repos.profiles.byStatus('scheduled').length).toBe(20);
+});
+
+test('resortSchedule rebuilds all scheduled slots to policy (batch size preserved)', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  // 30 profiles crammed into a single future slot (a bad/legacy plan)
+  for (let i = 0; i < 30; i++) {
+    const p = repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+    repos.profiles.setScheduled(p.id, '2026-06-29T18:00:00.000Z');
+  }
+  let i = 0; const seq = [0.1, 0.35, 0.6, 0.85];
+  resortSchedule(repos, new Date('2026-06-29T08:00:00'), () => seq[(i++) % seq.length]);
+  const scheduled = repos.profiles.byStatus('scheduled');
+  expect(scheduled.length).toBe(20);                          // daily target: 4 batches * 5, not 30
+  expect(repos.profiles.byStatus('queued').length).toBe(10);
+  const counts: Record<string, number> = {};
+  for (const p of scheduled) counts[p.scheduled_for!] = (counts[p.scheduled_for!] ?? 0) + 1;
+  for (const k of Object.keys(counts)) expect(counts[k]).toBeLessThanOrEqual(5); // batch_size
+});
+
+test('resortSchedule preserves priority order across a rebuild', () => {
+  const c = repos.cohorts.create('Prio', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/a', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/b', null);
+  repos.profiles.setScheduled(a.id, '2026-07-01T09:00:00.000Z');
+  repos.profiles.setScheduled(b.id, '2026-07-01T09:00:00.000Z');
+  repos.profiles.setPriority(b.id, -5); // higher priority (lower number) wins the single slot
+  repos.settings.update({ weekly_cap: 1, batch_size: 1, batches_per_day: 1 });
+  resortSchedule(repos, new Date('2026-07-01T09:00:00'), () => 0.5);
+  expect(repos.profiles.findById(b.id)!.status).toBe('scheduled');
+  expect(repos.profiles.findById(a.id)!.status).toBe('queued');
+});
+
+test('resortSchedule after a mid-day restart honours sends already made today', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  // 18 already sent today -> only 2 of today's target of 20 remain
+  for (let i = 0; i < 18; i++) {
+    const p = repos.profiles.add(c.id, `https://www.linkedin.com/in/sent${i}`, null);
+    repos.profiles.setStatus(p.id, 'sent', { sent_at: new Date('2026-06-29T08:30:00').toISOString() });
+  }
+  for (let i = 0; i < 30; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/q${i}`, null);
+  let i = 0; const seq = [0.1, 0.35, 0.6, 0.85];
+  resortSchedule(repos, new Date('2026-06-29T09:00:00'), () => seq[(i++) % seq.length]);
+  expect(repos.profiles.byStatus('scheduled').length).toBe(2); // 20 target - 18 sent today
+});
+
+test('resortSchedule while paused requeues everything but schedules nothing', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 5; i++) {
+    const p = repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+    repos.profiles.setScheduled(p.id, '2026-06-29T18:00:00.000Z');
+  }
+  repos.settings.update({ paused: 1 });
+  resortSchedule(repos, new Date('2026-06-29T08:00:00'), () => 0.5);
+  expect(repos.profiles.byStatus('scheduled')).toHaveLength(0);
+  expect(repos.profiles.byStatus('queued')).toHaveLength(5);
 });
