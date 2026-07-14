@@ -112,3 +112,29 @@ test('a stale slot is re-queued by the tick instead of being sent late', async (
   expect(driver.sentLog).toHaveLength(0);
   expect(repos.profiles.findById(p.id)!.status).toBe('queued');
 });
+
+test('start() rebuilds the whole scheduled backlog, not just overdue slots', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/future', null);
+  // A far-future slot: planAndAssignToday's overdue-requeue would leave it alone (not overdue),
+  // so this distinguishes the startup call. resortSchedule requeues EVERY scheduled row
+  // unconditionally, clearing this slot regardless of the real wall clock -> time-independent.
+  const futureIso = '2099-01-01T09:00:00.000Z';
+  repos.profiles.setScheduled(p.id, futureIso);
+  const orch = new Orchestrator(repos, driver);
+  orch.start();
+  orch.stop(); // clear the timers start() registered so the test process exits
+  expect(repos.profiles.findById(p.id)!.scheduled_for).not.toBe(futureIso);
+});
+
+test('start() recovers a profile stranded in sending by a mid-send crash', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/mid', null);
+  // Simulate the sender marking it 'sending' (attempts++) before the process was killed.
+  repos.profiles.setStatus(p.id, 'sending', { attempts: 1 });
+  const orch = new Orchestrator(repos, driver);
+  orch.start();
+  orch.stop();
+  // Startup recovery returned it to the queue (then possibly re-scheduled): never left stuck.
+  expect(repos.profiles.findById(p.id)!.status).not.toBe('sending');
+});

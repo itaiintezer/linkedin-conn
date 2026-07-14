@@ -23,6 +23,9 @@ export function requeueOverdue(repos: Repos, now: Date, graceMs: number = OVERDU
 }
 
 export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = Math.random): void {
+  // Self-heal first: stale past-due slots must not inflate committedToday() and zero out
+  // the daily budget. Runs on every path (startup, hourly tick, resume, guardrail-ack).
+  requeueOverdue(repos, now);
   const s = repos.settings.get();
   // While paused or halted the sender won't run — don't materialize slots that will
   // only go stale. /api/resume and a guardrail acknowledge re-plan immediately.
@@ -73,4 +76,38 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   for (const a of assignments) repos.profiles.setScheduled(a.id, a.when.toISOString());
 
   log.debug('scheduler', 'assigned slots', { count: assignments.length, slots: times.length, budget });
+}
+
+/**
+ * Full rebuild: return EVERY scheduled profile to the queue (clearing its slot), then
+ * re-flow the whole backlog into fresh policy-compliant batches. Called at startup so a
+ * backlog of past-due (or otherwise stale) slots is re-sorted to policy — same batch size
+ * and spacing — instead of firing as a burst or suppressing today's plan. `scheduled_for`
+ * is always today-or-past (the planner never schedules beyond today's window), so requeuing
+ * all scheduled rows is safe. Priority order is preserved: requeue leaves `priority` intact
+ * and queuedByPriority() re-orders by (priority, id).
+ */
+export function resortSchedule(repos: Repos, now: Date, rng: () => number = Math.random): void {
+  for (const p of repos.profiles.byStatus('scheduled')) {
+    repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
+  }
+  planAndAssignToday(repos, now, rng);
+}
+
+/**
+ * Recover profiles stranded in 'sending' by a process killed mid-send. The sender marks a
+ * profile 'sending' (attempts already incremented) before driving the browser; a crash between
+ * that mark and the outcome leaves the row stuck — never re-queued, never re-planned, and
+ * invisible to committedToday(). Return them to 'queued' (clearing the stale slot) so the
+ * planner re-flows them into policy batches; attempts is left as-is (the attempt was consumed).
+ *
+ * STARTUP-ONLY: the browser is in-process, so a fresh process has nothing genuinely in flight —
+ * every 'sending' row is definitively orphaned. Never call this mid-run, where a 'sending' row
+ * is a live send.
+ */
+export function recoverOrphanedSending(repos: Repos): number {
+  const stuck = repos.profiles.byStatus('sending');
+  for (const p of stuck) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
+  if (stuck.length > 0) log.info('scheduler', 'recovered orphaned sending profiles', { count: stuck.length });
+  return stuck.length;
 }

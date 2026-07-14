@@ -1,7 +1,7 @@
 import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { Mutex } from '../core/mutex.js';
-import { planAndAssignToday, requeueOverdue } from './scheduler-service.js';
+import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending } from './scheduler-service.js';
 import { runSenderOnce } from './sender.js';
 import { runAcceptanceCheck } from './acceptance-checker.js';
 import { log } from '../core/log.js';
@@ -90,7 +90,13 @@ export class Orchestrator {
   }
 
   start(): void {
-    planAndAssignToday(this.repos, new Date());
+    // Recover rows stranded in 'sending' by a mid-send crash BEFORE re-sorting: a fresh
+    // process has nothing genuinely in flight (the browser is in-process), so any 'sending'
+    // row is orphaned. Returning it to 'queued' first lets the re-sort re-flow it into a slot.
+    recoverOrphanedSending(this.repos);
+    // Startup re-sort: rebuild the whole backlog to policy so a pile of past-due slots
+    // (after downtime) is re-flowed into correctly-sized batches, not fired as a burst.
+    resortSchedule(this.repos, new Date());
     this.timers.push(setInterval(() => planAndAssignToday(this.repos, new Date()), 60 * 60 * 1000));
     this.timers.push(setInterval(() => { void this.runSenderTick(); }, 60 * 1000));
 
