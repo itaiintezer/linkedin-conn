@@ -589,6 +589,33 @@ function initDashboard() {
     btn.disabled = false;
   });
 
+  const recheck = $('#recheckAccept');
+  if (recheck) {
+    // The Accepted station is a drill target; keep button clicks/keys from opening the drawer.
+    const swallow = (e) => e.stopPropagation();
+    recheck.addEventListener('keydown', swallow);
+    recheck.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      recheck.disabled = true;
+      recheck.classList.add('busy');
+      const original = recheck.title;
+      try {
+        const res = await api('/api/recheck-acceptance', { method: 'POST' });
+        const label = res && res.ran
+          ? (res.accepted > 0 ? `Found ${res.accepted}` : 'No new acceptances')
+          : ({ paused: 'Paused', guardrail: 'Blocked — check attention', no_pending: 'No pending invites',
+               logged_out: 'Logged out', login_lost: 'Logged out', read_error: 'Read failed',
+               empty_read: 'No new acceptances' }[res && res.reason] || 'Done');
+        recheck.title = label;
+        await refreshStatus();
+      } catch (_) {
+        recheck.title = 'Failed';
+      }
+      recheck.classList.remove('busy');
+      setTimeout(() => { recheck.title = original; recheck.disabled = false; }, 2500);
+    });
+  }
+
   $('#runNow').addEventListener('click', async () => {
     const btn = $('#runNow');
     btn.disabled = true;
