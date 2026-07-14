@@ -6,6 +6,8 @@ import { normalizeProfileUrl } from '../core/url.js';
 import { applyFirstName } from '../core/message.js';
 import { detectCheckpoint } from '../core/checkpoint.js';
 import { captureEvidence } from './evidence.js';
+import { scrollToLoad } from './auto-scroll.js';
+import { log } from '../core/log.js';
 
 const rand = (min: number, max: number) => min + Math.floor(Math.random() * (max - min));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -304,12 +306,35 @@ export class LinkedInDriver implements BrowserDriver {
       await captureEvidence(page, 'checkpoint', { during: 'connections read' });
       throw new Error('checkpoint detected during connections read');
     }
-    await this.autoScroll(page, 6); // a few pages of "recently added" is enough
+    await this.scrollConnections(page, 8); // ~8 rounds ≈ the last month of "recently added"
     return this.collectProfileLinks(page, SEL.connectionCardLink);
   }
 
+  /**
+   * Load more of the "recently added" connections by scrolling. CRITICAL: this list lives
+   * inside a scrollable <main>, NOT the document — and its lazy loader only fires on real
+   * wheel events, so programmatic window/element scrolling is a silent no-op (that was the
+   * old bug: it never actually paged in more connections). We move the cursor over the list
+   * and dispatch trusted wheel events, measuring the scoped card selector for growth and
+   * stopping once it stalls (see auto-scroll.ts). Not virtualized: cards persist, so a
+   * single collectProfileLinks afterwards captures everyone we scrolled past.
+   */
+  private async scrollConnections(page: Page, maxRounds: number): Promise<void> {
+    const box = await page.locator('main').boundingBox().catch(() => null);
+    const x = box ? box.x + box.width / 2 : 600;
+    const y = box ? box.y + box.height / 2 : 400;
+    await page.mouse.move(x, y);
+    const { rounds, finalCount } = await scrollToLoad({
+      scrollOnce: async () => { await page.mouse.wheel(0, 2200); await sleep(rand(1100, 1800)); },
+      count: () => page.locator(SEL.connectionCardLink).count(),
+      onRound: (round, count) => log.debug('acceptance', 'connections scroll', { round, count }),
+    }, maxRounds);
+    log.info('acceptance', 'connections list loaded', { rounds, cards: finalCount });
+  }
+
   // Scroll to the bottom repeatedly until the number of profile links stops growing
-  // (lazy-loaded lists), bounded by maxRounds.
+  // (lazy-loaded lists), bounded by maxRounds. Used only by the deprecated
+  // readPendingInvites diagnostic below.
   private async autoScroll(page: Page, maxRounds = 15): Promise<void> {
     let prev = -1;
     for (let i = 0; i < maxRounds; i++) {
