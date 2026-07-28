@@ -15,8 +15,8 @@ function settings(over: Partial<Settings> = {}): Settings {
 }
 
 test('dailyTargetFor: batches_per_day * max(1, batch_size)', () => {
-  expect(dailyTargetFor(settings())).toBe(20);          // 4 * 5
-  expect(dailyTargetFor(settings({ batch_size: 0 }))).toBe(4); // 4 * max(1,0)
+  expect(dailyTargetFor(settings(), 'invite')).toBe(20);          // 4 * 5
+  expect(dailyTargetFor(settings({ batch_size: 0 }), 'invite')).toBe(4); // 4 * max(1,0)
 });
 
 test('committedToday counts scheduled rows plus profiles sent today', () => {
@@ -27,11 +27,28 @@ test('committedToday counts scheduled rows plus profiles sent today', () => {
   const now = new Date(2026, 6, 1, 12, 0); // local noon, Wed 2026-07-01
   repos.profiles.setScheduled(a.id, new Date(2026, 6, 1, 15, 0).toISOString()); // -> scheduled
   repos.profiles.setStatus(b.id, 'sent', { sent_at: new Date(2026, 6, 1, 9, 0).toISOString() });
-  expect(committedToday(repos, now)).toBe(2);
+  expect(committedToday(repos, now, 'invite')).toBe(2);
 });
 
 test('dailyRemainingFor never goes negative', () => {
   const repos = new Repos(openDatabase(':memory:'));
   const now = new Date(2026, 6, 1, 12, 0);
-  expect(dailyRemainingFor(repos, settings({ batches_per_day: 0 }), now)).toBe(0);
+  expect(dailyRemainingFor(repos, settings({ batches_per_day: 0 }), now, 'invite')).toBe(0);
+});
+
+test('daily budget is computed per kind from that kind caps and rows', () => {
+  const repos = new Repos(openDatabase(':memory:'));
+  repos.settings.update({ batches_per_day: 2, batch_size: 3, msg_batches_per_day: 4, msg_batch_size: 5 });
+  const inv = repos.cohorts.create('I', null, true);
+  const msg = repos.cohorts.create('M', 'hi', true, 'message');
+  const pi = repos.profiles.add(inv.id, 'https://www.linkedin.com/in/i1', null);
+  const pm = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/m1', null, 'message');
+  repos.profiles.setScheduled(pi.id, '2026-07-28T09:00:00.000Z');
+  repos.profiles.setScheduled(pm.id, '2026-07-28T09:00:00.000Z');
+  const now = new Date('2026-07-28T10:00:00');
+  const s = repos.settings.get();
+  expect(dailyTargetFor(s, 'invite')).toBe(6);
+  expect(dailyTargetFor(s, 'message')).toBe(20);
+  expect(dailyRemainingFor(repos, s, now, 'invite')).toBe(5);   // 6 - 1 scheduled invite
+  expect(dailyRemainingFor(repos, s, now, 'message')).toBe(19); // 20 - 1 scheduled message
 });

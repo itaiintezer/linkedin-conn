@@ -99,7 +99,7 @@ export function buildServer(
         next_batch: nextBatchForecast(scheduledRows, {
           backlog: queueRemaining,
           weeklyRemaining,
-          dailyRemaining: dailyRemainingFor(repos, s, now),
+          dailyRemaining: dailyRemainingFor(repos, s, now, 'invite'),
           guardrailTripped: a.guardrail_tripped === 1,
           paused: s.paused === 1,
           settings: s,

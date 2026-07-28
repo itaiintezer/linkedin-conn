@@ -1,11 +1,11 @@
-import type { Settings } from '../types.js';
+import type { Settings, CampaignKind } from '../types.js';
 import { dailyTargetFor } from './daily-budget.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Average sends per *sending day*, clamped by the weekly cap. 0 => never. */
-function dailySendRate(s: Settings): number {
-  const dailyTarget = dailyTargetFor(s);
+function dailySendRate(s: Settings, kind: CampaignKind = 'invite'): number {
+  const dailyTarget = dailyTargetFor(s, kind);
   const sendingDaysPerWeek = s.weekdays_only ? 5 : 7;
   if (dailyTarget <= 0 || sendingDaysPerWeek <= 0) return 0;
   const weeklyThroughput = Math.min(s.weekly_cap, dailyTarget * sendingDaysPerWeek);

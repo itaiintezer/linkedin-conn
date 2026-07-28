@@ -48,7 +48,7 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   // volume is batches_per_day * batch_size. Without this, a single day could spend the
   // entire weekly allowance at once (and a late-day run would pile it onto one slot).
   const batchSize = Math.max(1, s.batch_size);
-  const dailyBudget = dailyRemainingFor(repos, s, now);
+  const dailyBudget = dailyRemainingFor(repos, s, now, 'invite');
   if (dailyBudget <= 0) return;
 
   const allTimes = planDailyBatches(now, {
