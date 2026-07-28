@@ -139,4 +139,7 @@ export interface InboxRow {
   name: string;        // participant display name as rendered
   snippet: string;     // last-message preview text
   youSentLast: boolean; // snippet started with the "You:" prefix
+  /** Thread URL from the row's anchor href, when the driver can extract one. Preferred
+   *  match key over `name` — exact and unaffected by display-name rendering drift. */
+  threadUrl?: string;
 }

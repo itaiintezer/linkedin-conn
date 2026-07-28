@@ -160,6 +160,22 @@ test('reports reason "empty_read" on a suspiciously empty connections read', asy
   expect(res).toEqual({ ran: false, reason: 'empty_read', accepted: 0, expired: 0 });
 });
 
+test('message-kind sent rows are never promoted by the invite acceptance pass, even when their URL appears in recent connections', async () => {
+  const ci = repos.cohorts.create('A', 'hi', true, 'invite');
+  const invitePending = seedSent('https://www.linkedin.com/in/inv', ci.id);
+  const cm = repos.cohorts.create('M', 'hi', true, 'message');
+  const msg = repos.profiles.add(cm.id, 'https://www.linkedin.com/in/msg', null, 'message');
+  repos.profiles.setStatus(msg.id, 'sent', { sent_at: '2026-06-20T00:00:00Z' });
+
+  driver.connections = ['https://www.linkedin.com/in/inv', 'https://www.linkedin.com/in/msg'];
+  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+
+  expect(repos.profiles.findById(invitePending.id)!.status).toBe('accepted');
+  // The message-kind row is untouched — it stays in the reply funnel, never
+  // hijacked into 'accepted' just because the invite pass reads unfiltered by kind.
+  expect(repos.profiles.findById(msg.id)!.status).toBe('sent');
+});
+
 test('reports reason "guardrail" when the guardrail is tripped, even with force', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   seedSent('https://www.linkedin.com/in/a', c.id);
