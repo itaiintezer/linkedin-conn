@@ -898,3 +898,13 @@ test('POST /api/profiles/:id/retry allows exactly the statuses the UI offers', a
     expect(repos.profiles.findById(p.id)!.status).toBe('queued');
   }
 });
+
+test('cross-kind 409 messages use the right article', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: { cohort: 'ArtI', text: 'https://www.linkedin.com/in/art1' } });
+  const toMsg = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'ArtI', kind: 'message', text: 'https://www.linkedin.com/in/art2', message_template: 'hi' },
+  });
+  expect(toMsg.statusCode).toBe(409);
+  expect(toMsg.json().error).toContain('is an invite cohort'); // not "is a invite"
+});

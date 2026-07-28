@@ -69,7 +69,7 @@ export function buildServer(
     // sends a mangled DM to a real person, so it must fail loudly rather than default.
     const existing = repos.cohorts.findByName(cohortName);
     if (existing && existing.kind !== kind) {
-      return reply.code(409).send({ error: `cohort "${cohortName}" is a ${existing.kind} cohort` });
+      return reply.code(409).send({ error: `cohort "${cohortName}" is ${existing.kind === 'invite' ? 'an invite' : 'a message'} cohort` });
     }
     const note = message?.trim() || undefined;
     const max = kind === 'message' ? MAX_MESSAGE : MAX_NOTE;
@@ -107,7 +107,7 @@ export function buildServer(
     // so silently mixing kinds inside one cohort would mis-pace both engines.
     const existing = repos.cohorts.findByName(cohortName);
     if (existing && existing.kind !== kind) {
-      return reply.code(409).send({ error: `cohort "${cohortName}" is a ${existing.kind} cohort` });
+      return reply.code(409).send({ error: `cohort "${cohortName}" is ${existing.kind === 'invite' ? 'an invite' : 'a message'} cohort` });
     }
     const c = repos.cohorts.getOrCreate(cohortName, template ?? null, allowNoNote, kind);
     repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
@@ -214,7 +214,7 @@ export function buildServer(
     // existing-cohort edit that omits `kind` must not be rejected by the 'invite' default.
     const existing = repos.cohorts.findByName(name);
     if (existing && existing.kind !== kind && kindRaw !== undefined) {
-      return reply.code(409).send({ error: `cohort "${name}" is a ${existing.kind} cohort` });
+      return reply.code(409).send({ error: `cohort "${name}" is ${existing.kind === 'invite' ? 'an invite' : 'a message'} cohort` });
     }
     // Same template rules as /api/lists — a message cohort with no text would queue
     // profiles the sender can only route to needs_attention, and the UI's client-side
