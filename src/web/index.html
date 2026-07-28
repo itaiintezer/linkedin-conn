@@ -286,6 +286,28 @@
           </div>
         </div>
         <aside class="add-rail card-surface">
+          <!-- Campaign type comes first: it decides what the rest of the rail means
+               (which cohorts you can add to, how long the text may be, whether it's
+               optional at all). A cohort's kind is fixed when it's created. -->
+          <div class="field">
+            <label id="listKindLabel">Campaign type</label>
+            <div class="kind-toggle" role="radiogroup" aria-labelledby="listKindLabel">
+              <label class="kind-opt">
+                <input type="radio" name="listKind" value="invite" checked />
+                <span class="kind-opt-ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M15.5 20v-1.6a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20" stroke-linecap="round"/><circle cx="8.75" cy="7.5" r="3.5"/><path d="M18.5 7.5h4M20.5 5.5v4" stroke-linecap="round"/></svg>
+                </span>
+                <span class="kind-opt-txt">Connection requests<small>invite people to connect</small></span>
+              </label>
+              <label class="kind-opt is-msg">
+                <input type="radio" name="listKind" value="message" />
+                <span class="kind-opt-ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="m3.9 7 8.1 5.8L20.1 7" stroke-linecap="round"/></svg>
+                </span>
+                <span class="kind-opt-txt">Messages<small>to existing 1st-degree connections</small></span>
+              </label>
+            </div>
+          </div>
           <div class="field">
             <label for="listCohortSelect">Add to cohort</label>
             <select id="listCohortSelect"><option value="">New (auto-dated)</option></select>
@@ -295,9 +317,9 @@
             <input id="listCohort" type="text" autocomplete="off" />
           </div>
           <div class="field">
-            <label for="listTemplate">Message template <span class="hint" id="tplCount">0 / 300</span></label>
+            <label for="listTemplate"><span id="tplLabel">Message template</span> <span class="hint" id="tplCount">0 / 300</span></label>
             <textarea id="listTemplate" maxlength="300" rows="5" placeholder="Hi {firstName}, I came across your work and…"></textarea>
-            <p class="hint">Use <code>{firstName}</code> to personalize. Leave blank to send without a note.</p>
+            <p class="hint" id="tplHelp">Use <code>{firstName}</code> to personalize. Leave blank to send without a note.</p>
           </div>
           <button class="btn btn-green add-submit" type="submit">Enqueue</button>
           <div class="toast" id="listResult" hidden></div>
@@ -313,6 +335,11 @@
           <p class="panel-sub">Reusable audiences and their message templates</p>
         </div>
       </div>
+      <!-- Only shown once message cohorts exist, so the two funnels don't need
+           labelling for someone who only sends connection requests. -->
+      <div class="panel-head sub metrics-head" id="inviteMetricsHead" hidden>
+        <div class="panel-title"><h3>Connection request cohorts</h3><p class="panel-sub">Acceptance funnel</p></div>
+      </div>
       <div class="table-wrap">
         <table class="data-table">
           <thead>
@@ -321,6 +348,20 @@
           <tbody id="metricsBody"></tbody>
         </table>
         <div class="empty" id="metricsEmpty" hidden>No metrics yet — send some requests first.</div>
+      </div>
+
+      <div id="msgMetricsBlock" hidden>
+        <div class="panel-head sub metrics-head">
+          <div class="panel-title"><h3>Message cohorts</h3><p class="panel-sub">Reply funnel</p></div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr><th>Cohort</th><th class="num">Total</th><th class="num">Sent</th><th class="num">Replied</th><th class="num">Awaiting</th><th>Reply rate</th><th class="num">Median days</th></tr>
+            </thead>
+            <tbody id="msgMetricsBody"></tbody>
+          </table>
+        </div>
       </div>
 
       <div class="section-divider"><span>Manage cohorts</span></div>
@@ -422,14 +463,23 @@
         </button>
       </div>
       <form id="cohortForm" class="modal-form">
+        <div class="toast slim" id="cohortResult" hidden></div>
+        <div class="field">
+          <label for="cohortKind">Campaign type</label>
+          <select id="cohortKind">
+            <option value="invite">Connection requests</option>
+            <option value="message">Messages to existing connections</option>
+          </select>
+          <p class="hint" id="cohortKindHelp">Fixed once the cohort exists — its profiles are already queued as one kind.</p>
+        </div>
         <div class="field">
           <label for="cohortName">Name</label>
           <input id="cohortName" type="text" required placeholder="e.g. Founders Q3" autocomplete="off" />
         </div>
         <div class="field">
-          <label for="cohortTemplate">Message template <span class="hint" id="cohortTplCount">0 / 300</span></label>
+          <label for="cohortTemplate"><span id="cohortTplLabel">Message template</span> <span class="hint" id="cohortTplCount">0 / 300</span></label>
           <textarea id="cohortTemplate" maxlength="300" rows="5" placeholder="Hi {firstName}, …"></textarea>
-          <p class="hint">Use <code>{firstName}</code> to personalize. Leave blank to send bare requests without a note.</p>
+          <p class="hint" id="cohortTplHelp">Use <code>{firstName}</code> to personalize. Leave blank to send bare requests without a note.</p>
         </div>
         <div class="modal-actions">
           <button class="btn btn-ghost" id="cohortCancel" type="button">Cancel</button>

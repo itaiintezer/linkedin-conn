@@ -785,25 +785,65 @@ function countProfiles(text) {
   return seen.size;
 }
 
+/* Which campaign kind the Add List form is building. */
+function selectedListKind() {
+  const checked = $$('input[name="listKind"]').find((r) => r.checked);
+  return (checked && checked.value) === 'message' ? 'message' : 'invite';
+}
+
+/* Cohorts, cached from the last load, so switching campaign type re-filters the
+   dropdown without another round trip. */
+let cohortCache = [];
+
+function unlockListCohortName() {
+  const name = $('#listCohort');
+  if (!name) return;
+  name.value = '';
+  name.disabled = false;
+}
+
 async function loadCohortOptions() {
   const sel = $('#listCohortSelect');
   if (!sel) return;
   const current = sel.value;
-  try {
-    const cohorts = await api('/api/cohorts');
-    sel.replaceChildren(
-      el('option', { value: '', text: 'New (auto-dated)' }),
-      ...cohorts.map((c) => el('option', { value: c.name, text: c.name })),
-    );
-    sel.value = current; // preserve selection across refreshes when still present
-  } catch (_) { /* leave the default option */ }
+  try { cohortCache = await api('/api/cohorts'); } catch (_) { return; } // leave the options as they are
+  // A cohort only accepts profiles of its own kind (the API 409s otherwise), so the
+  // dropdown offers exactly the cohorts this campaign type can be added to.
+  const kind = selectedListKind();
+  const matching = cohortCache.filter((c) => (c.kind || 'invite') === kind);
+  sel.replaceChildren(
+    el('option', { value: '', text: 'New (auto-dated)' }),
+    ...matching.map((c) => el('option', { value: c.name, text: c.name })),
+  );
+  // Preserve the selection when it survived the filter; otherwise fall back to "New"
+  // and release the name field the old selection had locked.
+  const keep = matching.some((c) => c.name === current);
+  sel.value = keep ? current : '';
+  if (!keep && current) unlockListCohortName();
 }
 
 function initAddList() {
   const tpl = $('#listTemplate'), counter = $('#tplCount'), area = $('#listText');
-  const updateTplCount = () => { counter.textContent = `${tpl.value.length} / 300`; };
+  const updateTplCount = () => { counter.textContent = `${tpl.value.length} / ${tpl.maxLength}`; };
   tpl.addEventListener('input', updateTplCount);
-  updateTplCount();
+
+  // Campaign type reshapes the rail: message bodies are ~7x longer than invite notes,
+  // they're mandatory rather than optional, and only same-kind cohorts can receive them.
+  const applyKindUi = () => {
+    const msg = selectedListKind() === 'message';
+    tpl.maxLength = msg ? 2000 : 300;
+    tpl.placeholder = msg
+      ? 'Hey {firstName}, great to be connected — I wanted to share…'
+      : 'Hi {firstName}, I came across your work and…';
+    $('#tplLabel').textContent = msg ? 'Message' : 'Message template';
+    $('#tplHelp').innerHTML = msg
+      ? 'Use <code>{firstName}</code> to personalize. Required — this is the message that gets sent.'
+      : 'Use <code>{firstName}</code> to personalize. Leave blank to send without a note.';
+    updateTplCount();
+    loadCohortOptions();
+  };
+  $$('input[name="listKind"]').forEach((r) => r.addEventListener('change', applyKindUi));
+  applyKindUi();
 
   $('#listCohort').placeholder = 'e.g. Founders Q3';
 
@@ -834,26 +874,33 @@ function initAddList() {
   });
 
   // Pick an existing cohort -> prefill + lock its name, prefill its template. "New" -> unlock.
-  $('#listCohortSelect').addEventListener('change', async (e) => {
+  $('#listCohortSelect').addEventListener('change', (e) => {
     const name = e.target.value;
-    if (!name) { $('#listCohort').value = ''; $('#listCohort').disabled = false; return; }
-    try {
-      const cohorts = await api('/api/cohorts');
-      const c = cohorts.find((x) => x.name === name);
-      if (c) {
-        $('#listCohort').value = c.name; $('#listCohort').disabled = true;
-        tpl.value = c.message_template || ''; updateTplCount();
-      }
-    } catch (_) { /* ignore */ }
+    if (!name) { unlockListCohortName(); return; }
+    const c = cohortCache.find((x) => x.name === name);
+    if (c) {
+      $('#listCohort').value = c.name; $('#listCohort').disabled = true;
+      tpl.value = c.message_template || ''; updateTplCount();
+    }
   });
 
   $('#listForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const result = $('#listResult');
+    const kind = selectedListKind();
+    const template = tpl.value.trim() || undefined;
+    // The API 400s on this too, but there's no reason to make the user wait for a
+    // round trip to be told a message campaign needs a message.
+    if (kind === 'message' && !template) {
+      toast(result, 'Messages need a template — write the message that should be sent.', true);
+      tpl.focus();
+      return;
+    }
     const payload = {
       cohort: $('#listCohort').value.trim() || undefined,
+      kind,
       text: area.value,
-      message_template: tpl.value.trim() || undefined,
+      message_template: template,
     };
     try {
       const r = await api('/api/lists', { method: 'POST', body: payload });
@@ -863,7 +910,12 @@ function initAddList() {
       updateCount();
       loadCohortOptions();
     } catch (err) {
-      toast(result, `Failed: ${err.message}`, true);
+      // A cohort's kind is fixed at creation. That 409 is the one failure here the
+      // user can act on, so it gets a sentence instead of a raw error.
+      const clash = /is an? (message|invite) cohort/.exec(err.message);
+      toast(result, clash
+        ? `That cohort already exists as a ${clash[1] === 'message' ? 'message' : 'connection request'} campaign. Use a different name, or switch the campaign type.`
+        : `Failed: ${err.message}`, true);
     }
   });
 }
@@ -875,7 +927,12 @@ async function loadCohortsScreen() {
     api('/api/metrics').catch(() => []),
     api('/api/cohorts/archived').catch(() => []),
   ]);
-  renderMetricsTable(metrics);
+  // Two funnels, two tables: invites are measured on acceptance, messages on replies.
+  const msgRows = metrics.filter((m) => m.kind === 'message');
+  renderMetricsTable(metrics.filter((m) => (m.kind || 'invite') === 'invite'));
+  renderMsgMetricsTable(msgRows);
+  // The invite table only needs a heading once there's a second table to tell it from.
+  $('#inviteMetricsHead').hidden = msgRows.length === 0;
   renderCohortList(cohorts, metrics);
   renderArchivedList(archived);
 }
@@ -904,6 +961,32 @@ function renderMetricsTable(rows) {
   }));
 }
 
+/* Message cohorts: same table, reply columns. `sent` counts everything delivered
+   (replied + still awaiting); messages never expire, so there's no expiry column. */
+function renderMsgMetricsTable(rows) {
+  const body = $('#msgMetricsBody'), block = $('#msgMetricsBlock');
+  if (!body) return;
+  block.hidden = rows.length === 0;
+  if (!rows.length) { body.replaceChildren(); return; }
+  body.replaceChildren(...rows.map((m) => {
+    const pct = Math.round((m.reply_rate || 0) * 100);
+    const rateCell = el('div', { class: 'rate-cell' },
+      el('div', { class: 'rate-bar msg' }, el('i', { style: `width:${pct}%` })),
+      el('span', { class: 'rate-val', text: `${pct}%` }),
+    );
+    const median = (m.median_time_to_reply_days == null) ? '—' : m.median_time_to_reply_days.toFixed(1);
+    return el('tr', {},
+      el('td', { class: 'mono' }, m.cohort_name || '—'),
+      el('td', { class: 'num mono' }, String(m.total)),
+      el('td', { class: 'num mono' }, String(m.sent)),
+      el('td', { class: 'num mono' }, String(m.replied)),
+      el('td', { class: 'num mono' }, String(m.pending)),
+      el('td', {}, rateCell),
+      el('td', { class: 'num mono' }, median),
+    );
+  }));
+}
+
 function renderCohortList(cohorts, metrics) {
   const list = $('#cohortList'), empty = $('#cohortEmpty');
   const byName = Object.fromEntries(metrics.map((m) => [m.cohort_name, m]));
@@ -916,21 +999,27 @@ function renderCohortList(cohorts, metrics) {
 }
 
 function renderCohortCard(c, m) {
+  const kind = c.kind || 'invite';
+  const isMsg = kind === 'message';
+  // Each funnel gets its own headline rate: acceptance for invites, replies for messages.
   const stat = m
-    ? `${m.total} profiles · ${m.sent} sent · ${Math.round((m.acceptance_rate || 0) * 100)}% accepted`
+    ? (isMsg
+      ? `${m.total} profiles · ${m.sent} sent · ${Math.round((m.reply_rate || 0) * 100)}% replied`
+      : `${m.total} profiles · ${m.sent} sent · ${Math.round((m.acceptance_rate || 0) * 100)}% accepted`)
     : 'no sends yet';
   const tplText = (c.message_template && c.message_template.trim())
     ? el('div', { class: 'tpl', text: c.message_template })
-    : el('div', { class: 'tpl none', text: 'No template (bare request)' });
+    : el('div', { class: 'tpl none', text: isMsg ? 'No message set — profiles will need attention' : 'No template (bare request)' });
 
   // Archive asks in place: the card flips to a confirm state, no browser dialogs.
   const card = el('div', {
-    class: 'cohort-card',
+    class: 'cohort-card' + (isMsg ? ' is-message' : ''),
     onclick: () => { if (!card.classList.contains('is-confirming')) openCohortEditor(c); },
   },
     el('div', { class: 'cc-main' },
       el('div', { class: 'name' },
         el('span', { text: c.name }),
+        el('span', { class: `tag kind-tag ${kind}`, text: isMsg ? 'messages' : 'invites' }),
         el('button', {
           class: 'btn btn-ghost cohort-archive', type: 'button', title: 'Archive cohort',
           onclick: (e) => { e.stopPropagation(); card.classList.add('is-confirming'); },
@@ -982,11 +1071,18 @@ function renderArchivedList(archived) {
 }
 
 function openCohortEditor(c) {
+  $('#cohortResult').hidden = true; // stale toast from a previous open
   $('#cohortFormTitle').textContent = c ? `Edit “${c.name}”` : 'New cohort';
   $('#cohortName').value = c ? (c.name || '') : '';
   $('#cohortName').disabled = !!c; // name is the key; edit templates, not names
+  // Kind is chosen once, at creation: its profiles are already queued as that kind
+  // and the API refuses to flip it.
+  const kindSel = $('#cohortKind');
+  kindSel.value = c ? (c.kind || 'invite') : 'invite';
+  kindSel.disabled = !!c;
+  $('#cohortKindHelp').hidden = !c;
   $('#cohortTemplate').value = c ? (c.message_template || '') : '';
-  updateCohortTplCount();
+  applyCohortKindUi();
   $('#cohortModal').hidden = false;
   (c ? $('#cohortTemplate') : $('#cohortName')).focus();
 }
@@ -994,28 +1090,53 @@ function openCohortEditor(c) {
 function closeCohortModal() { $('#cohortModal').hidden = true; }
 
 function updateCohortTplCount() {
-  $('#cohortTplCount').textContent = `${$('#cohortTemplate').value.length} / 300`;
+  const tpl = $('#cohortTemplate');
+  $('#cohortTplCount').textContent = `${tpl.value.length} / ${tpl.maxLength}`;
+}
+
+/* Same rules as the Add List rail: longer, mandatory text for message cohorts. */
+function applyCohortKindUi() {
+  const msg = $('#cohortKind').value === 'message';
+  const tpl = $('#cohortTemplate');
+  tpl.maxLength = msg ? 2000 : 300;
+  tpl.placeholder = msg ? 'Hey {firstName}, great to be connected — …' : 'Hi {firstName}, …';
+  $('#cohortTplLabel').textContent = msg ? 'Message' : 'Message template';
+  $('#cohortTplHelp').innerHTML = msg
+    ? 'Use <code>{firstName}</code> to personalize. Required — this is the message that gets sent.'
+    : 'Use <code>{firstName}</code> to personalize. Leave blank to send bare requests without a note.';
+  updateCohortTplCount();
 }
 
 function initCohorts() {
   $('#cohortTemplate').addEventListener('input', updateCohortTplCount);
+  $('#cohortKind').addEventListener('change', applyCohortKindUi);
   $('#cohortModalClose').addEventListener('click', closeCohortModal);
   $('#cohortCancel').addEventListener('click', closeCohortModal);
   $('#cohortModal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeCohortModal(); });
   $('#cohortForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const payload = {
-      name: $('#cohortName').value.trim(),
-      message_template: $('#cohortTemplate').value.trim() || undefined,
-    };
+    const result = $('#cohortResult');
+    const kind = $('#cohortKind').value === 'message' ? 'message' : 'invite';
+    const template = $('#cohortTemplate').value.trim() || undefined;
+    const payload = { name: $('#cohortName').value.trim(), kind, message_template: template };
     if (!payload.name) return;
+    // A message cohort with no message has nothing to send: every profile in it would
+    // land in "needs attention". Catch it here rather than at send time.
+    if (kind === 'message' && !template) {
+      toast(result, 'Messages need a template — write the message that should be sent.', true);
+      $('#cohortTemplate').focus();
+      return;
+    }
     try {
       await api('/api/cohorts', { method: 'POST', body: payload });
       $('#cohortForm').reset();
       $('#cohortName').disabled = false;
+      $('#cohortKind').disabled = false;
       closeCohortModal();
       loadCohortsScreen();
-    } catch (_) { /* ignore */ }
+    } catch (err) {
+      toast(result, `Failed: ${err.message}`, true);
+    }
   });
 }
 
