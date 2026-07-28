@@ -394,12 +394,39 @@
           <p class="panel-sub">Pacing and limits</p>
         </div>
       </div>
+      <!-- Grouped by what each number paces: the two engines have independent caps,
+           while the working-hours window (and pause / halt) governs both. -->
       <form id="settingsForm" class="form-grid settings-grid card-surface">
-        <div class="field"><label for="setWeeklyCap">Weekly cap</label><input id="setWeeklyCap" type="number" min="0" /></div>
-        <div class="field"><label for="setBatchSize">Batch size</label><input id="setBatchSize" type="number" min="1" /></div>
-        <div class="field"><label for="setBatchesPerDay">Batches / day</label><input id="setBatchesPerDay" type="number" min="0" /></div>
+        <div class="section-divider span-all">
+          <span>
+            <span class="kind-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M15.5 20v-1.6a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20" stroke-linecap="round"/><circle cx="8.75" cy="7.5" r="3.5"/><path d="M18.5 7.5h4M20.5 5.5v4" stroke-linecap="round"/></svg>
+            </span>
+            Connection requests
+          </span>
+        </div>
+        <div class="field"><label for="setWeeklyCap">Weekly cap <span class="hint">invites</span></label><input id="setWeeklyCap" type="number" min="0" /></div>
+        <div class="field"><label for="setBatchSize">Batch size <span class="hint">invites</span></label><input id="setBatchSize" type="number" min="1" /></div>
+        <div class="field"><label for="setBatchesPerDay">Batches / day <span class="hint">invites</span></label><input id="setBatchesPerDay" type="number" min="0" /></div>
+
+        <div class="section-divider span-all is-msg">
+          <span>
+            <span class="kind-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="m3.9 7 8.1 5.8L20.1 7" stroke-linecap="round"/></svg>
+            </span>
+            Messages
+          </span>
+        </div>
+        <div class="field"><label for="setMsgWeeklyCap">Weekly cap <span class="hint">messages</span></label><input id="setMsgWeeklyCap" type="number" min="0" /></div>
+        <div class="field"><label for="setMsgBatchSize">Batch size <span class="hint">messages</span></label><input id="setMsgBatchSize" type="number" min="1" /></div>
+        <div class="field"><label for="setMsgBatchesPerDay">Batches / day <span class="hint">messages</span></label><input id="setMsgBatchesPerDay" type="number" min="0" /></div>
+        <div class="field"><label for="setReplyChecks">Reply checks / day <span class="hint">1–24</span></label><input id="setReplyChecks" type="number" min="1" max="24" /></div>
+
+        <div class="section-divider span-all"><span>Both engines</span></div>
         <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" min="0" max="23" /></div>
         <div class="field"><label for="setEnd">Workday end hour</label><input id="setEnd" type="number" min="0" max="23" /></div>
+        <p class="hint span-all settings-note">Invites and messages are paced independently but share this window — and one pause, one halt. A captcha or lost session stops both.</p>
+
         <div class="field span-all">
           <button class="btn btn-green" type="submit">Save settings</button>
         </div>

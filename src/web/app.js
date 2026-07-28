@@ -791,8 +791,8 @@ function selectedListKind() {
   return (checked && checked.value) === 'message' ? 'message' : 'invite';
 }
 
-/* Cohorts, cached from the last load, so switching campaign type re-filters the
-   dropdown without another round trip. */
+/* Cohorts as of the last load — the dropdown only carries names, so picking one needs
+   the full row (its template, its kind) without a second round trip. */
 let cohortCache = [];
 
 function unlockListCohortName() {
@@ -1147,6 +1147,10 @@ async function loadSettings() {
     $('#setWeeklyCap').value = s.weekly_cap ?? '';
     $('#setBatchSize').value = s.batch_size ?? '';
     $('#setBatchesPerDay').value = s.batches_per_day ?? '';
+    $('#setMsgWeeklyCap').value = s.msg_weekly_cap ?? '';
+    $('#setMsgBatchSize').value = s.msg_batch_size ?? '';
+    $('#setMsgBatchesPerDay').value = s.msg_batches_per_day ?? '';
+    $('#setReplyChecks').value = s.reply_checks_per_day ?? '';
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
     loadLogs();
@@ -1242,6 +1246,10 @@ function initSettings() {
       weekly_cap: num('#setWeeklyCap'),
       batch_size: num('#setBatchSize'),
       batches_per_day: num('#setBatchesPerDay'),
+      msg_weekly_cap: num('#setMsgWeeklyCap'),
+      msg_batch_size: num('#setMsgBatchSize'),
+      msg_batches_per_day: num('#setMsgBatchesPerDay'),
+      reply_checks_per_day: num('#setReplyChecks'),
       workday_start_hour: num('#setStart'),
       workday_end_hour: num('#setEnd'),
     };
