@@ -4,6 +4,7 @@ import { Mutex } from '../core/mutex.js';
 import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending } from './scheduler-service.js';
 import { runSenderOnce, type SenderOptions } from './sender.js';
 import { runAcceptanceCheck } from './acceptance-checker.js';
+import { runReplyCheck } from './reply-checker.js';
 import { log } from '../core/log.js';
 
 /**
@@ -122,6 +123,28 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Reply pass, at most once per slot (slot math shared with acceptance checks via
+   * acceptanceSlot — it is a generic day-slicer). The gate reads the PERSISTED
+   * replies_checked_at, which runReplyCheck stamps only on a clean, non-empty read — a
+   * bailed-out pass leaves the stamp untouched so the next 30-minute tick retries
+   * (acceptance-checker lesson). Queues behind in-flight browser work rather than being
+   * dropped, for the same reason the acceptance tick does.
+   */
+  async runReplyTick(now: Date = new Date()): Promise<void> {
+    const s = this.repos.settings.get();
+    const app = this.repos.appState.get();
+    if (s.paused || app.guardrail_tripped === 1) return;
+    const slot = acceptanceSlot(now, s.reply_checks_per_day);
+    if (app.replies_checked_at
+      && acceptanceSlot(new Date(app.replies_checked_at), s.reply_checks_per_day) === slot) return;
+    try {
+      await this.browserLock.run(() => runReplyCheck(this.repos, this.driver, now));
+    } catch (err) {
+      this.handleTickError('replies', err);
+    }
+  }
+
   start(): void {
     // Recover rows stranded in 'sending' by a mid-send crash BEFORE re-sorting: a fresh
     // process has nothing genuinely in flight (the browser is in-process), so any 'sending'
@@ -141,6 +164,8 @@ export class Orchestrator {
     // Every 30 min: the slot gate decides whether a pass is actually due, so a tick that
     // finds the current slot already checked is a cheap no-op (and a failed pass retries here).
     this.timers.push(setInterval(() => { void this.runAcceptanceTick(); }, 30 * 60 * 1000));
+    // Same cadence and the same slot-gate reasoning for the messaging inbox scan.
+    this.timers.push(setInterval(() => { void this.runReplyTick(); }, 30 * 60 * 1000));
   }
 
   stop(): void { this.timers.forEach(clearInterval); this.timers = []; }

@@ -240,6 +240,27 @@ test('an acceptance-tick browser error is caught and never rejects the tick', as
   await expect(orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0))).resolves.toBeUndefined();
 });
 
+/* ---------- reply cadence ---------- */
+
+test('reply tick runs at most once per slot and stamps replies_checked_at on success', async () => {
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-07-28T00:00:00.000Z');
+  const c = repos.cohorts.create('M', 'hi', true, 'message');
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/k', null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-27T10:00:00.000Z', full_name: 'Keren Tevet' });
+  driver.inboxRows = [{ name: 'Keren Tevet', snippet: 'Keren: hey', youSentLast: false }];
+
+  const orch = new Orchestrator(repos, driver);
+  const morning = new Date(2026, 6, 28, 9, 0);
+  await orch.runReplyTick(morning);
+  expect(repos.profiles.findById(p.id)!.status).toBe('replied');
+  expect(repos.appState.get().replies_checked_at).not.toBeNull();
+
+  // Same slot again: must not re-read (make a second read fail loudly if attempted).
+  driver.inboxError = 'should not be called';
+  await orch.runReplyTick(new Date(2026, 6, 28, 9, 20));
+  expect(repos.appState.get().failure_streak).toBe(0);
+});
+
 test('start() recovers a profile stranded in sending by a mid-send crash', () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/mid', null);
