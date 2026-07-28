@@ -1539,8 +1539,13 @@ Replace the Task-6 stubs. Import `MAX_MESSAGE` from `../core/message.js`.
       return Array.from(document.querySelectorAll(rowSel)).map((li) => {
         const name = (li.querySelector(nameSel)?.textContent || '').trim();
         const snippet = (li.querySelector(snipSel)?.textContent || '').trim();
-        return { name, snippet, youSentLast: /^you:/i.test(snippet) };
-      }).filter((r) => r.name);
+        // Thread href when the row exposes one: the reply matcher prefers it over the
+        // display name, which renders differently here than on the profile page
+        // ("Keren Tevet" vs the profile's "Keren (Yosef) Tevet") — verified live.
+        const href = li.querySelector('a[href*="/messaging/thread/"]')?.getAttribute('href') ?? null;
+        const threadUrl = href ? new URL(href, 'https://www.linkedin.com').href : undefined;
+        return { name, snippet, youSentLast: /^you:/i.test(snippet), ...(threadUrl ? { threadUrl } : {}) };
+      }).filter((r) => r.name || r.threadUrl);
     }, { rowSel: SEL.inboxRow, nameSel: SEL.inboxRowName, snipSel: SEL.inboxRowSnippet });
   }
 ```
