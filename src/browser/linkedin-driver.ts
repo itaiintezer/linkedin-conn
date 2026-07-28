@@ -366,7 +366,19 @@ export class LinkedInDriver implements BrowserDriver {
       // 4) Type like a human; the send button flips enabled only when text registered.
       const text = applyFirstName(message, firstName ?? null, MAX_MESSAGE);
       await box.click();
-      await page.keyboard.type(text, { delay: rand(25, 60) });
+      // Type line by line, inserting breaks with Shift+Enter. keyboard.type() maps '\n'
+      // to a bare ENTER keypress, and if the classic msg-form treats Enter as "send" a
+      // multi-line template would send TRUNCATED at the first newline and then type the
+      // remainder into a fresh composer — two bad, user-visible messages. Shift+Enter is
+      // the near-universal newline gesture in chat composers; if LinkedIn ignored it the
+      // worst case is a message whose line breaks are missing (cosmetic), which is
+      // strictly better than a premature send plus a stray second message. \r\n and lone
+      // \r are folded to \n first so Windows-authored templates split the same way.
+      const lines = text.replace(/\r\n?/g, '\n').split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (i > 0) await page.keyboard.press('Shift+Enter');
+        if (lines[i]) await page.keyboard.type(lines[i], { delay: rand(25, 60) });
+      }
       await sleep(rand(800, 1600));
       const send = page.locator(SEL.msgSendButton).last();
       if (await send.isDisabled().catch(() => true)) {
