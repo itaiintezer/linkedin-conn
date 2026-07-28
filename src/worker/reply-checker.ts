@@ -29,15 +29,125 @@ export interface ReplyRunResult {
  * base64-ish and both sides come from LinkedIn's own hrefs, so folding case could only
  * ever merge two genuinely different conversations — and this key is the one signal
  * strong enough to override a name match.
+ *
+ * 'new' is rejected: /messaging/thread/new/?recipient=... is the compose placeholder, so
+ * every profile whose send happened in a fresh composer would otherwise share one key.
  */
-function threadKey(u: string): string | null {
-  const m = /\/thread\/([^/?#]+)/.exec(u.trim());
-  return m ? m[1] : null;
+export function threadKey(u: string): string | null {
+  const id = /\/thread\/([^/?#]+)/.exec(u.trim())?.[1];
+  if (!id || id.toLowerCase() === 'new') return null;
+  return id;
 }
 
 type MatchVia = 'thread' | 'canonical' | 'containment';
 interface RowMatch { row: InboxRow; profile: Profile; via: MatchVia; }
 interface PendingName { profile: Profile; canon: string; tokens: string[]; }
+/** A tier hit. `via` travels WITH the candidate — inferring it from bucket sizes breaks
+ *  the moment candidates are filtered (e.g. by the thread veto below). */
+interface Candidate { profile: Profile; via: MatchVia; }
+
+/** Matching keys over the pending set. Built once per pass; pure, so the row-resolution
+ *  policy can be unit-tested without a database or a browser. */
+export interface PendingIndex {
+  byThreadKey: Map<string, Profile[]>;
+  byCanonical: Map<string, Profile[]>;
+  names: PendingName[];
+  /** Own thread key per profile id — present only when the profile has a usable one.
+   *  This is the evidence behind the veto: it says which conversation IS this contact. */
+  threadKeyOf: Map<number, string>;
+  /** Pending profiles with no usable key at all — reported by the caller. */
+  unmatchable: Profile[];
+}
+
+/**
+ * Index the pending set. Keys are only ever stored when non-empty: an empty canonical
+ * name ('(Bot)', ' ', ', CISSP' all canonicalize to '') would act as a wildcard.
+ */
+export function buildPendingIndex(pending: Profile[]): PendingIndex {
+  const index: PendingIndex = {
+    byThreadKey: new Map(), byCanonical: new Map(), names: [],
+    threadKeyOf: new Map(), unmatchable: [],
+  };
+  for (const p of pending) {
+    const tkey = p.thread_url ? threadKey(p.thread_url) : null;
+    if (tkey) {
+      index.byThreadKey.set(tkey, [...(index.byThreadKey.get(tkey) ?? []), p]);
+      index.threadKeyOf.set(p.id, tkey);
+    }
+    const canon = p.full_name ? canonicalName(p.full_name) : '';
+    if (canon) {
+      index.byCanonical.set(canon, [...(index.byCanonical.get(canon) ?? []), p]);
+      index.names.push({ profile: p, canon, tokens: nameTokens(canon) });
+    }
+    if (!tkey && !canon) index.unmatchable.push(p);
+  }
+  return index;
+}
+
+/**
+ * What one inbox row means, as a pure decision over the index:
+ *   'match'       — exactly one pending profile, safe to upgrade.
+ *   'ambiguous'   — several pending profiles fit; upgrade nobody.
+ *   'not_a_reply' — the row matched, but the last message is still ours ("You:").
+ *   'none'        — no pending profile fits this row.
+ * `candidates` are the profiles this row pointed at (used for the "no row matched this
+ * contact at all" health signal), `vetoed` the ones ruled OUT by thread evidence.
+ */
+export interface RowResolution {
+  outcome: 'match' | 'ambiguous' | 'not_a_reply' | 'none';
+  candidates: Profile[];
+  vetoed: Profile[];
+  profile?: Profile;
+  via?: MatchVia;
+}
+
+export function resolveRow(row: InboxRow, index: PendingIndex): RowResolution {
+  const rowThread = row.threadUrl ? threadKey(row.threadUrl) : null;
+
+  // Tier 1 — thread id: exact, name-independent, unique per conversation.
+  const threadHits = rowThread ? index.byThreadKey.get(rowThread) ?? [] : [];
+  if (threadHits.length > 0) return verdict(row, threadHits.map((p) => ({ profile: p, via: 'thread' as const })), []);
+  // No pending profile has this thread id — fall through to name matching rather than
+  // giving up (thread_url may simply not have been recorded at send time).
+
+  const canon = canonicalName(row.name);
+  if (!canon) return { outcome: 'none', candidates: [], vetoed: [] }; // '' is not a key
+
+  // Tiers 2+3 — exact canonical name and one-omitted-token containment, resolved as a
+  // UNION: a looser hit on a DIFFERENT profile is a real ambiguity, not something the
+  // exact tier may short-circuit past.
+  const rowTokens = nameTokens(canon);
+  const hits: Candidate[] = [
+    ...(index.byCanonical.get(canon) ?? []).map((p) => ({ profile: p, via: 'canonical' as const })),
+    ...index.names
+      .filter((pn) => pn.canon !== canon && tokensContained(rowTokens, pn.tokens))
+      .map((pn) => ({ profile: pn.profile, via: 'containment' as const })),
+  ];
+
+  // Negative evidence: if we know which conversation a candidate IS, and this row is a
+  // different conversation, the row is definitively not them — however well the names
+  // match. Without this, a same-name stranger's thread reads as the contact's reply, and
+  // it becomes the dominant false-upgrade path once every row carries an href.
+  const kept: Candidate[] = [];
+  const vetoed: Profile[] = [];
+  for (const c of hits) {
+    const own = index.threadKeyOf.get(c.profile.id);
+    if (rowThread && own && own !== rowThread) vetoed.push(c.profile);
+    else kept.push(c);
+  }
+  return verdict(row, kept, vetoed);
+}
+
+/** Shared tail of both tiers, so `youSentLast` is applied in exactly ONE place — and
+ *  before the ambiguity verdict, since a row that cannot upgrade anyone should not be
+ *  reported as an ambiguity risk either. */
+function verdict(row: InboxRow, candidates: Candidate[], vetoed: Profile[]): RowResolution {
+  const profiles = candidates.map((c) => c.profile);
+  if (candidates.length === 0) return { outcome: 'none', candidates: [], vetoed };
+  if (row.youSentLast) return { outcome: 'not_a_reply', candidates: profiles, vetoed };
+  if (candidates.length > 1) return { outcome: 'ambiguous', candidates: profiles, vetoed };
+  return { outcome: 'match', candidates: profiles, vetoed, profile: candidates[0].profile, via: candidates[0].via };
+}
 
 /**
  * One reply pass: a single navigation to the messaging inbox, then match conversation
@@ -53,14 +163,18 @@ interface PendingName { profile: Profile; canon: string; tokens: string[]; }
  *      miss a real reply. A thread hit therefore also OUTRANKS any name hit.
  *   2) canonical full name — Unicode-normalized, parentheticals/credential suffixes/
  *      exotic whitespace stripped (see core/name-match.ts).
- *   3) token containment — the row's canonical tokens are an order-preserving
- *      subsequence of the profile's, or vice versa. Matches a dropped middle name
- *      without merging "Jon A Smith" into "Jon B Smith".
+ *   3) token containment — one omitted interior token, nothing looser (see
+ *      core/name-match.ts). Matches a dropped middle name without merging
+ *      "Jon A Smith" into "Jon B Smith".
  *
  * The name tiers (2)+(3) are resolved as a UNION, not as fallbacks: a row that hits one
- * profile exactly and another by containment is ambiguous and upgrades nobody. False
- * "replied" is irreversible and permanently strands the real contact, so every
- * uncertainty resolves to "leave it pending".
+ * profile exactly and another by containment is ambiguous and upgrades nobody. They are
+ * also subject to a VETO — a known-but-different thread id proves the row is somebody
+ * else, whatever the names say. False "replied" is irreversible and permanently strands
+ * the real contact, so every uncertainty resolves to "leave it pending".
+ *
+ * The row -> profile decision itself lives in `resolveRow` (pure, unit-tested directly);
+ * this function only does I/O, grouping and reporting.
  */
 export async function runReplyCheck(
   repos: Repos,
@@ -95,26 +209,12 @@ export async function runReplyCheck(
   }
 
   // --- Build the matching index over pending profiles ---------------------------------
-  // Keys are only ever indexed when they are non-empty: an empty canonical name ('(Bot)',
-  // ' ', ', CISSP' all canonicalize to '') would otherwise act as a wildcard.
-  const byThreadKey = new Map<string, Profile[]>();
-  const byCanonical = new Map<string, Profile[]>();
-  const pendingNames: PendingName[] = [];
-  for (const p of pending) {
-    const tkey = p.thread_url ? threadKey(p.thread_url) : null;
-    if (tkey) byThreadKey.set(tkey, [...(byThreadKey.get(tkey) ?? []), p]);
-    const canon = p.full_name ? canonicalName(p.full_name) : '';
-    if (canon) {
-      byCanonical.set(canon, [...(byCanonical.get(canon) ?? []), p]);
-      pendingNames.push({ profile: p, canon, tokens: nameTokens(canon) });
-    }
-    if (!tkey && !canon) {
-      // Currently unmatchable by any key — logged once (this function runs once per
-      // pass) so a silently-stuck contact shows up somewhere instead of nowhere.
-      log.debug('replies', 'pending profile has no usable thread id or name — unmatchable', {
-        profile: p.id, url: p.profile_url, full_name: p.full_name,
-      });
-    }
+  const index = buildPendingIndex(pending);
+  for (const p of index.unmatchable) {
+    // Logged once per pass so a silently-stuck contact shows up somewhere, not nowhere.
+    log.debug('replies', 'pending profile has no usable thread id or name — unmatchable', {
+      profile: p.id, url: p.profile_url, full_name: p.full_name,
+    });
   }
 
   // --- Resolve each inbox row to at most one profile, or flag it ambiguous ------------
@@ -122,47 +222,25 @@ export async function runReplyCheck(
   // Profiles some row pointed at (even a You-prefixed or ambiguous one): the complement
   // of this set is the real "no inbox row matched this contact" signal.
   const seenIds = new Set<number>();
+  // REPORTING set, not a veto: a profile flagged ambiguous by row B can still be upgraded
+  // by a clean exact row A. That is deliberate — better evidence should win.
   const ambiguousIds = new Set<number>();
   for (const row of rows) {
-    const tkey = row.threadUrl ? threadKey(row.threadUrl) : null;
-    const threadHits = tkey ? byThreadKey.get(tkey) ?? [] : [];
-    if (threadHits.length > 0) {
-      for (const p of threadHits) seenIds.add(p.id);
-      if (threadHits.length > 1) {
-        // Two pending profiles recorded the same conversation — one of them is wrong and
-        // we cannot tell which, so neither is upgraded.
-        for (const p of threadHits) ambiguousIds.add(p.id);
-        log.warn('replies', 'ambiguous — two pending profiles share a thread id', {
-          thread: tkey, profiles: threadHits.map((p) => p.id),
-        });
-        continue;
-      }
-      if (!row.youSentLast) clean.push({ row, profile: threadHits[0], via: 'thread' });
-      continue;
+    const res = resolveRow(row, index);
+    for (const p of res.candidates) seenIds.add(p.id);
+    if (res.vetoed.length > 0) {
+      log.debug('replies', 'name match vetoed — row is a different conversation', {
+        name: row.name, thread: row.threadUrl, profiles: res.vetoed.map((p) => p.id),
+      });
     }
-    // No pending profile has this thread id captured — fall through to name matching
-    // rather than giving up (thread_url may simply not have been recorded at send time).
-
-    const canon = canonicalName(row.name);
-    if (!canon) continue; // an unnamed row is not a key — never match on ''
-
-    const rowTokens = nameTokens(canon);
-    const exact = byCanonical.get(canon) ?? [];
-    const contained = pendingNames.filter((pn) => pn.canon !== canon && tokensContained(rowTokens, pn.tokens));
-    // Union of both name tiers: a looser hit on a DIFFERENT profile is a genuine
-    // ambiguity, not something the exact tier is allowed to short-circuit past.
-    const candidates = [...exact, ...contained.map((pn) => pn.profile)];
-    if (candidates.length === 0) continue; // no match at all
-    for (const p of candidates) seenIds.add(p.id);
-    if (candidates.length > 1) {
-      for (const p of candidates) ambiguousIds.add(p.id);
-      log.warn('replies', 'ambiguous display name — leaving pending', {
-        name: row.name, canonical: canon, profiles: candidates.map((c) => c.id),
+    if (res.outcome === 'ambiguous') {
+      for (const p of res.candidates) ambiguousIds.add(p.id);
+      log.warn('replies', 'ambiguous inbox row — leaving pending', {
+        name: row.name, thread: row.threadUrl, profiles: res.candidates.map((p) => p.id),
       });
       continue;
     }
-    if (row.youSentLast) continue; // matched, but the last word is still ours
-    clean.push({ row, profile: candidates[0], via: exact.length === 1 ? 'canonical' : 'containment' });
+    if (res.outcome === 'match') clean.push({ row, profile: res.profile!, via: res.via! });
   }
 
   // --- Double-counting guard: 2+ rows resolving to the same profile is ambiguous —

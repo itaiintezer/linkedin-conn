@@ -13,40 +13,29 @@
  *     display order, and collapsing it onto the surname merges different people.
  */
 
-/** Zero-width characters: deleted outright. Replacing them with a space would split a
- *  token ("Ke<ZWSP>ren Tevet" -> "ke ren tevet") and lose the match. NBSP is excluded
- *  on purpose — it IS a real space and is handled by the whitespace collapse below. */
-const ZERO_WIDTH = /[​‌‍﻿]/g;
+/** Zero-width and invisible-formatting characters: deleted outright. Replacing them with
+ *  a space would split a token ("Ke<ZWSP>ren Tevet" -> "ke ren tevet") and lose the
+ *  match. All of these survive NFKC and turn up in scraped names. NBSP is excluded on
+ *  purpose — it IS a real space and is handled by the whitespace collapse below. */
+const ZERO_WIDTH = /[​‌‍⁠­﻿]/g;
 
-/** Post-comma tails that are honorifics/credentials rather than a given name. Compared
- *  after stripping dots and lowercasing, so "Ph.D." -> "phd". */
-const CREDENTIAL_WORDS = new Set([
-  'jr', 'sr', 'ii', 'iii', 'iv', 'v', 'phd', 'md', 'do', 'dds', 'dvm', 'jd', 'esq',
-  'mba', 'emba', 'msc', 'ms', 'ma', 'mph', 'mfa', 'llm', 'bsc', 'bs', 'ba', 'bcom',
-  'edd', 'psyd', 'rn', 'pe', 'cpa', 'cfa', 'pmp', 'cissp', 'cism', 'cisa', 'crisc',
-  'cgeit', 'ccsp', 'oscp', 'ceh', 'gcih', 'cka', 'ccna', 'ccnp', 'mcse', 'itil',
-  'prince2', 'six sigma', 'lion', 'mcp', 'sscp', 'cipp', 'cipm', 'fca', 'aca',
+/** Post-nominal letters: decorations that are never part of the person's name. Compared
+ *  after stripping dots/spaces and lowercasing, so "Ph.D." -> "phd". This is an explicit
+ *  allow-list on purpose. An earlier "short ASCII all-caps acronym" heuristic looked
+ *  harmless but could only ever fire on a single-token head — i.e. exactly the
+ *  "Surname, GIVEN" shape — so it silently merged "Cohen, DAVID" with "Cohen, RACHEL". */
+const POST_NOMINALS = new Set([
+  'phd', 'md', 'do', 'dds', 'dvm', 'jd', 'esq', 'mba', 'emba', 'msc', 'ms', 'ma',
+  'mph', 'mfa', 'llm', 'bsc', 'bs', 'ba', 'bcom', 'edd', 'psyd', 'rn', 'pe', 'cpa',
+  'cfa', 'pmp', 'cissp', 'cism', 'cisa', 'crisc', 'cgeit', 'ccsp', 'oscp', 'ceh',
+  'gcih', 'cka', 'ccna', 'ccnp', 'mcse', 'itil', 'prince2', 'mcp', 'sscp', 'cipp',
+  'cipm', 'fca', 'aca',
 ]);
 
-/** Does a post-comma tail look like credentials rather than part of the person's name?
- *  Every comma-separated piece must qualify, either by being a known credential word or
- *  by being a short ASCII all-caps acronym ("CISSP", "MBA"). Deliberately narrow:
- *   - a bare initial ("Cohen, D") is NOT a credential — 'D' and 'R' would collide;
- *   - the all-caps test is restricted to ASCII letters because caseless scripts
- *     (Hebrew, Arabic, CJK) trivially satisfy `x === x.toUpperCase()` and a Hebrew
- *     "Surname, Given" would otherwise lose the given name. */
-function looksLikeCredentialTail(tail: string): boolean {
-  const parts = tail.split(',').map((t) => t.trim()).filter(Boolean);
-  if (parts.length === 0) return false;
-  return parts.every((part) => {
-    const word = part.replace(/[.\s]/g, '').toLowerCase();
-    if (!word) return false;
-    if (CREDENTIAL_WORDS.has(word)) return true;
-    const letters = part.replace(/[^A-Za-z0-9]/g, '');
-    return letters.length >= 2 && letters.length <= 6
-      && /[A-Z]/.test(letters) && letters === letters.toUpperCase();
-  });
-}
+/** Generational suffixes. These are KEPT as ordinary tokens: they distinguish a father
+ *  from a son, and both sides of every comparison come from LinkedIn — the inbox renders
+ *  the suffix just like the profile title does — so dropping one is pure downside. */
+const GENERATIONAL = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'v']);
 
 export function canonicalName(raw: string): string {
   let s = raw.normalize('NFKC');
@@ -57,18 +46,23 @@ export function canonicalName(raw: string): string {
   // one-token name that loosely matches far too much.
   s = s.replace(/[()]/g, ' ');
 
-  const comma = s.indexOf(',');
-  if (comma >= 0) {
-    const head = s.slice(0, comma);
-    const tail = s.slice(comma + 1);
-    // Only drop the tail when the head is already a full name (>= 2 tokens) or the tail
-    // is clearly a credential. Otherwise keep both halves — "Cohen, David" is a person.
-    if (head.trim().split(/\s+/).filter(Boolean).length >= 2 || looksLikeCredentialTail(tail)) {
-      s = head;
-    } else {
-      s = s.replace(/,/g, ' ');
-    }
+  // Post-comma pieces are judged one at a time. Dropping the whole tail unconditionally
+  // (the original `split(',')[0]`) collapsed every "Surname, Given" display name onto the
+  // surname and merged different people.
+  const [head, ...tail] = s.split(',');
+  const headTokens = head.trim().split(/\s+/).filter(Boolean).length;
+  const kept = [head];
+  for (const piece of tail) {
+    const trimmed = piece.trim();
+    if (!trimmed) continue;
+    const word = trimmed.replace(/[.\s]/g, '').toLowerCase();
+    if (GENERATIONAL.has(word)) { kept.push(word); continue; }  // keep, normalized
+    if (POST_NOMINALS.has(word)) continue;                      // decoration: drop
+    // Anything else is a name unless the head is already a full name, in which case the
+    // tail is a role/headline ("Keren Tevet, Head of Security").
+    if (headTokens < 2) kept.push(trimmed);
   }
+  s = kept.join(' ');
 
   // Collapse remaining whitespace (JS \s covers NBSP and the other exotic spaces) and
   // lowercase. Note the zero-widths are already gone, so nothing here can split a token.
@@ -81,17 +75,24 @@ export function nameTokens(canonical: string): string[] {
 }
 
 /**
- * The loose tier: is one token list an order-preserving subsequence of the other?
- * Matches "Keren Tevet" against "Keren Yosef Tevet" (dropped middle name — the live
- * rendering-drift case) while rejecting "Jon A Smith" vs "Jon B Smith" and
- * "Ana Maria Garcia Lopez" vs "Ana Sofia Perez Lopez", which a first+last key merged.
- *
- * Both sides need at least two tokens: a single-token name ("Keren") would otherwise be
- * contained in every pending contact who shares that token.
+ * The loose tier, scoped to exactly one thing: ONE INTERIOR TOKEN WAS OMITTED. That is
+ * the whole observed failure mode ("Keren (Yosef) Tevet" in the profile title vs.
+ * "Keren Tevet" in the inbox), so the test is deliberately no wider than it:
+ *   - both sides need >= 2 tokens — "Keren" alone is contained in every pending Keren;
+ *   - the token-count gap is at most 1 — rejects "Ana Lopez" vs "Ana Maria Garcia Lopez";
+ *   - the first AND last tokens must be equal — rejects an appended surname or word
+ *     ("David Cohen" vs "David Cohen Levi", "Acme Recruiting" vs "Acme Recruiting Team");
+ *   - and the shorter list must still be an order-preserving subsequence of the longer —
+ *     rejects "Jon A Smith" vs "Jon B Smith" and reordered tokens.
+ * Everything this rejects is at worst a missed reply, which the thread-id tier recovers
+ * and the next pass retries. A false accept is irreversible.
  */
 export function tokensContained(a: string[], b: string[]): boolean {
   if (a.length < 2 || b.length < 2) return false;
   const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+  if (longer.length - shorter.length > 1) return false;
+  if (shorter[0] !== longer[0]) return false;
+  if (shorter[shorter.length - 1] !== longer[longer.length - 1]) return false;
   let i = 0;
   for (const token of longer) {
     if (i < shorter.length && shorter[i] === token) i++;

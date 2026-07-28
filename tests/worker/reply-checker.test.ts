@@ -113,7 +113,7 @@ test('canonical-name fallback matches despite a parenthetical nickname/middle na
   expect(repos.profiles.findById(p.id)!.status).toBe('replied');
 });
 
-test('first+last token fallback matches when canonical full names differ only by a middle token', async () => {
+test('token containment matches when canonical full names differ only by a middle token', async () => {
   const p = seedSentMsg('https://www.linkedin.com/in/k', 'Keren Yosef Tevet');
   driver.inboxRows = [{ name: 'Keren Tevet', snippet: 'Keren: hi', youSentLast: false }];
   const res = await runReplyCheck(repos, driver, NOW);
@@ -229,8 +229,10 @@ test('a thread_url hit still applies when a same-name stranger row also resolves
   driver.inboxRows = [
     // The real conversation — name rendered differently, but the thread id is definitive.
     { name: 'K. Tevet', snippet: 'sounds good', youSentLast: false, threadUrl: 'https://www.linkedin.com/messaging/thread/2-real/' },
-    // A different person who merely shares the display name captured at send time.
-    { name: 'Keren Tevet', snippet: 'who is this?', youSentLast: false, threadUrl: 'https://www.linkedin.com/messaging/thread/2-stranger/' },
+    // A different person who merely shares the display name captured at send time. No
+    // thread href on this row, so the thread-id veto cannot filter it out — the
+    // group-level "a thread hit outranks name hits" rule is what has to save this pass.
+    { name: 'Keren Tevet', snippet: 'who is this?', youSentLast: false },
   ];
   const res = await runReplyCheck(repos, driver, NOW);
   expect(res.replied).toBe(1);
@@ -282,6 +284,54 @@ test('a relative thread href from the row anchor matches the absolute stored thr
   const res = await runReplyCheck(repos, driver, NOW);
   expect(res.replied).toBe(1);
   expect(repos.profiles.findById(p.id)!.status).toBe('replied');
+});
+
+// --- CRITICAL 1: a known conversation vetoes name matches from other conversations ---
+
+test('a same-name row from a DIFFERENT thread never credits a contact whose thread we know', async () => {
+  const p = seedSentMsg('https://www.linkedin.com/in/k', 'Keren Tevet', {
+    thread_url: 'https://www.linkedin.com/messaging/thread/2-real/',
+  });
+  driver.inboxRows = [{
+    name: 'Keren Tevet', snippet: 'who is this?', youSentLast: false,
+    threadUrl: '/messaging/thread/2-stranger/',
+  }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+  expect(eventCount(p.id)).toBe(0);
+});
+
+test('the real conversation being still You-prefixed does not let a same-name stranger reply for it', async () => {
+  const p = seedSentMsg('https://www.linkedin.com/in/k', 'Keren Tevet', {
+    thread_url: 'https://www.linkedin.com/messaging/thread/2-real/',
+  });
+  driver.inboxRows = [
+    { name: 'Keren Tevet', snippet: 'You: hi Keren', youSentLast: true, threadUrl: '/messaging/thread/2-real/' },
+    { name: 'Keren Tevet', snippet: 'Keren: hey!', youSentLast: false, threadUrl: '/messaging/thread/2-stranger/' },
+  ];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(res.ambiguous).toBe(0); // nothing was at risk — do not cry ambiguity
+  expect(res.unmatched).toBe(0); // and we are not blind to this contact either
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+});
+
+test('the placeholder /thread/new/ href is not treated as a shared thread id', async () => {
+  const a = seedSentMsg('https://www.linkedin.com/in/a', 'Aaa One', {
+    thread_url: 'https://www.linkedin.com/messaging/thread/new/?recipient=aaa',
+  });
+  const b = seedSentMsg('https://www.linkedin.com/in/b', 'Bbb Two', {
+    thread_url: 'https://www.linkedin.com/messaging/thread/new/?recipient=bbb',
+  });
+  driver.inboxRows = [{
+    name: 'Bbb Two', snippet: 'Bbb: hi', youSentLast: false,
+    threadUrl: '/messaging/thread/new/?recipient=bbb',
+  }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(1); // matched by name, not by a bogus shared key
+  expect(repos.profiles.findById(b.id)!.status).toBe('replied');
+  expect(repos.profiles.findById(a.id)!.status).toBe('sent');
 });
 
 test('thread ids are compared verbatim — a case-different id is a different conversation', async () => {

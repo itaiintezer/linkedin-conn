@@ -15,11 +15,38 @@ test('an unbalanced open paren drops the paren, not the rest of the name', () =>
   expect(canonicalName('Keren Tevet)')).toBe('keren tevet');
 });
 
-test('drops post-comma credential suffixes', () => {
+test('drops post-comma post-nominal credentials', () => {
   expect(canonicalName('Keren Tevet, CISSP')).toBe('keren tevet');
   expect(canonicalName('Keren Tevet, CISSP, CISM')).toBe('keren tevet');
-  expect(canonicalName('Smith, Jr.')).toBe('smith');
   expect(canonicalName('Nguyen, Ph.D.')).toBe('nguyen');
+  // A role/headline after a full name is noise too.
+  expect(canonicalName('Keren Tevet, Head of Security')).toBe('keren tevet');
+});
+
+test('keeps generational suffixes as tokens — Jr. and Sr. are different people', () => {
+  // IMPORTANT 4: both sides of the comparison come from LinkedIn, which renders the
+  // suffix in the inbox as well as the profile title, so stripping it only merges
+  // a father and son.
+  expect(canonicalName('John Smith, Jr.')).toBe('john smith jr');
+  expect(canonicalName('John Smith, Sr.')).toBe('john smith sr');
+  expect(canonicalName('John Smith, Jr.')).not.toBe(canonicalName('John Smith, Sr.'));
+  expect(canonicalName('John Smith Jr')).toBe(canonicalName('John Smith, Jr.'));
+  expect(canonicalName('Smith, Jr.')).toBe('smith jr');
+  expect(canonicalName('John Smith, III')).toBe('john smith iii');
+  // A generational suffix survives even alongside a dropped credential.
+  expect(canonicalName('John Smith, Jr., CISSP')).toBe('john smith jr');
+});
+
+test('an all-caps given name after a comma is not a credential', () => {
+  // CRITICAL 2: the generic "short ASCII all-caps" heuristic only ever fired on a
+  // single-token head — i.e. exactly the "Surname, Given" shape — so it re-merged the
+  // very people the bounded comma rule protects.
+  expect(canonicalName('Cohen, DAVID')).toBe('cohen david');
+  expect(canonicalName('Cohen, RACHEL')).toBe('cohen rachel');
+  expect(canonicalName('Cohen, DAVID')).not.toBe(canonicalName('Cohen, RACHEL'));
+  expect(canonicalName('Kim, MIN')).not.toBe(canonicalName('Kim, JUN'));
+  expect(canonicalName('Ng, WEI')).not.toBe(canonicalName('Ng, LI'));
+  expect(canonicalName("O'Brien, SEAN")).not.toBe(canonicalName("O'Brien, MARY"));
 });
 
 test('keeps a post-comma tail that is a real name — surname-first display names', () => {
@@ -42,6 +69,8 @@ test('names made only of decorations canonicalize to empty (callers must skip em
 });
 
 test('zero-width characters are deleted, not turned into a token break', () => {
+  expect(canonicalName('Keren⁠Tevet')).toBe('kerentevet'); // U+2060 word joiner
+  expect(canonicalName('Ke­ren Tevet')).toBe('keren tevet'); // U+00AD soft hyphen
   expect(canonicalName('Keren​Tevet')).toBe('kerentevet'); // ZWSP inside one word
   expect(canonicalName('Ke​ren Tevet')).toBe('keren tevet'); // ZWSP mid-token
   expect(canonicalName('Keren‌‍Tevet')).toBe('kerentevet'); // ZWNJ + ZWJ
@@ -82,6 +111,15 @@ test('tokensContained rejects same-first-and-last strangers', () => {
     nameTokens('ana maria garcia lopez'),
     nameTokens('ana sofia perez lopez'),
   )).toBe(false);
+});
+
+test('tokensContained rejects an extra surname or a longer org-style name', () => {
+  // IMPORTANT 3: containment must mean "a middle token was omitted", not "one name is
+  // a prefix of a longer, different name".
+  expect(tokensContained(nameTokens('ana lopez'), nameTokens('ana maria garcia lopez'))).toBe(false);
+  expect(tokensContained(nameTokens('david cohen'), nameTokens('david cohen levi'))).toBe(false);
+  expect(tokensContained(nameTokens('acme recruiting'), nameTokens('acme recruiting team'))).toBe(false);
+  expect(tokensContained(nameTokens('keren tevet'), nameTokens('keren tevet cohen'))).toBe(false);
 });
 
 test('tokensContained requires two tokens on both sides and preserves order', () => {
