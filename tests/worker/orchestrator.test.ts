@@ -2,7 +2,7 @@ import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
-import { refreshLoginCache, Orchestrator } from '../../src/worker/orchestrator.js';
+import { refreshLoginCache, Orchestrator, acceptanceSlot } from '../../src/worker/orchestrator.js';
 
 let repos: Repos; let driver: FakeDriver;
 const NOW = new Date('2026-06-30T10:00:00.000Z');
@@ -125,6 +125,117 @@ test('start() rebuilds the whole scheduled backlog, not just overdue slots', () 
   orch.start();
   orch.stop(); // clear the timers start() registered so the test process exits
   expect(repos.profiles.findById(p.id)!.scheduled_for).not.toBe(futureIso);
+});
+
+/* ---------- acceptance cadence ----------
+   Slots are computed in LOCAL time (the operator thinks in local days), so these tests
+   build dates with the local constructor to stay timezone-independent. */
+
+test('one check per day: every hour of the same day is the same slot', () => {
+  expect(acceptanceSlot(new Date(2026, 6, 28, 0, 5), 1))
+    .toBe(acceptanceSlot(new Date(2026, 6, 28, 23, 55), 1));
+});
+
+test('two checks per day: the day splits at noon', () => {
+  const morning = acceptanceSlot(new Date(2026, 6, 28, 9, 0), 2);
+  const noon = acceptanceSlot(new Date(2026, 6, 28, 12, 0), 2);
+  const evening = acceptanceSlot(new Date(2026, 6, 28, 23, 0), 2);
+  expect(morning).not.toBe(noon);
+  expect(noon).toBe(evening);
+});
+
+test('slots never collide across days', () => {
+  expect(acceptanceSlot(new Date(2026, 6, 28, 9, 0), 2))
+    .not.toBe(acceptanceSlot(new Date(2026, 6, 29, 9, 0), 2));
+});
+
+test('a nonsensical checks-per-day falls back to one check per day', () => {
+  for (const n of [0, -3, NaN]) {
+    expect(acceptanceSlot(new Date(2026, 6, 28, 1, 0), n))
+      .toBe(acceptanceSlot(new Date(2026, 6, 28, 22, 0), n));
+  }
+});
+
+/** One pending invite, logged in — enough for a real acceptance pass to run. */
+function seedPending(slug: string): number {
+  const c = repos.cohorts.getOrCreate('A', 'hi', true);
+  const p = repos.profiles.add(c.id, `https://www.linkedin.com/in/${slug}`, null);
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-01T00:00:00.000Z' });
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-07-01T00:00:00.000Z');
+  return p.id;
+}
+
+// THE BUG: the old tick marked the day done BEFORE attempting, so a pass that bailed out
+// (logged out, read error, empty read) cost a full day of detection with no retry.
+test('a pass that bailed out is retried on the next tick, not tomorrow', async () => {
+  const id = seedPending('a');
+  const orch = new Orchestrator(repos, driver);
+
+  driver.connections = []; // empty read -> fail-safe, changes nothing, stamps nothing
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
+  expect(repos.profiles.findById(id)!.status).toBe('sent');
+
+  driver.connections = ['https://www.linkedin.com/in/a']; // next tick, 30 min later: page renders
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 30));
+  expect(repos.profiles.findById(id)!.status).toBe('accepted');
+});
+
+test('a successful pass is not repeated within the same slot', async () => {
+  seedPending('a');
+  driver.connections = ['https://www.linkedin.com/in/a'];
+  const orch = new Orchestrator(repos, driver);
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
+
+  // Someone else accepts moments later; the next tick in the same slot must stay dark.
+  const late = seedPending('b');
+  driver.connections = ['https://www.linkedin.com/in/a', 'https://www.linkedin.com/in/b'];
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 30));
+  expect(repos.profiles.findById(late)!.status).toBe('sent');
+});
+
+test('acceptance_checks_per_day=2 runs a second pass after noon', async () => {
+  repos.settings.update({ acceptance_checks_per_day: 2 });
+  seedPending('a');
+  driver.connections = ['https://www.linkedin.com/in/a'];
+  const orch = new Orchestrator(repos, driver);
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
+
+  const afternoon = seedPending('b');
+  driver.connections = ['https://www.linkedin.com/in/a', 'https://www.linkedin.com/in/b'];
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 14, 0));
+  expect(repos.profiles.findById(afternoon)!.status).toBe('accepted');
+});
+
+test('acceptance_checks_per_day=1 does not run a second pass later the same day', async () => {
+  repos.settings.update({ acceptance_checks_per_day: 1 });
+  seedPending('a');
+  driver.connections = ['https://www.linkedin.com/in/a'];
+  const orch = new Orchestrator(repos, driver);
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
+
+  const later = seedPending('b');
+  driver.connections = ['https://www.linkedin.com/in/a', 'https://www.linkedin.com/in/b'];
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 22, 0));
+  expect(repos.profiles.findById(later)!.status).toBe('sent');
+});
+
+test('a new day re-opens the first slot', async () => {
+  seedPending('a');
+  driver.connections = ['https://www.linkedin.com/in/a'];
+  const orch = new Orchestrator(repos, driver);
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
+
+  const tomorrow = seedPending('b');
+  driver.connections = ['https://www.linkedin.com/in/a', 'https://www.linkedin.com/in/b'];
+  await orch.runAcceptanceTick(new Date(2026, 6, 29, 9, 0));
+  expect(repos.profiles.findById(tomorrow)!.status).toBe('accepted');
+});
+
+test('an acceptance-tick browser error is caught and never rejects the tick', async () => {
+  seedPending('a');
+  driver.readLoginState = async () => { throw new Error('some transient browser failure'); };
+  const orch = new Orchestrator(repos, driver);
+  await expect(orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0))).resolves.toBeUndefined();
 });
 
 test('start() recovers a profile stranded in sending by a mid-send crash', () => {

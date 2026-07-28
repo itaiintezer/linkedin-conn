@@ -43,7 +43,7 @@ Each card:
 - **Next batch** — how many go out next and at what time.
 - **Sent** — requests delivered.
 - **Accepted** — people who accepted. "checked …" shows when acceptance was last verified
-  (The Machine checks about once a day — see §6).
+  (The Machine checks twice a day by default — see §6).
 - **Skipped** — terminal skips that will never be retried, with a reason each:
   already connected, requires their email to connect, profile no longer exists
   (the LinkedIn URL 404s — deleted account or renamed slug), composer
@@ -61,13 +61,24 @@ row you can:
 Or use **Retry all** to requeue everything at once.
 
 ## 6. How acceptance tracking works
-About once a day, The Machine opens two LinkedIn pages in the background:
-1. **Sent invitations** — anything still listed here is **pending** (not yet accepted).
-2. **Recent connections** — anyone here that you sent a request to is marked **accepted**.
+The Machine opens **one** LinkedIn page in the background — **Recent connections** — and
+compares it against **every** profile still sitting in **Pending**. Anyone who shows up
+there is marked **accepted**. That's the only way a profile leaves Pending.
 
-A sent request that is no longer pending and not found in recent connections is marked
-**expired**. This read is lightweight and does **not** count against your weekly send cap.
-The "checked …" time on the Accepted card tells you when this last ran.
+Absence proves nothing, so absence never marks anything: a pending request that isn't in
+recent connections just stays pending. (Inferring "expired" from absence is what used to
+mislabel still-valid invites.) **Expired** now comes only from the optional age backstop —
+`expiry_days`, off by default.
+
+**How often:** `acceptance_checks_per_day` (default **2**). The day is split into that many
+equal slots and one successful check runs per slot — so 2 means roughly one in the morning
+and one in the afternoon, not two in a row. If a check can't complete (logged out, LinkedIn
+read error, page rendered empty) nothing is recorded and it simply retries on the next
+30-minute tick, still inside the same slot. The "checked …" time on the Accepted card tells
+you when a check last succeeded.
+
+This read is lightweight and does **not** count against your weekly send cap. **Recheck now**
+on the Accepted card forces a pass immediately, ignoring slots and even a pause.
 
 ## 7. Safety
 - If LinkedIn shows a **captcha or security check**, The Machine pauses itself and shows a red
