@@ -427,7 +427,18 @@ export class LinkedInDriver implements BrowserDriver {
     }
   }
 
-  /** One-page inbox scan (no scrolling: same top-slice tradeoff as the acceptance read). */
+  /**
+   * One-page inbox scan (no scrolling: same top-slice tradeoff as the acceptance read).
+   *
+   * IMPORTANT, verified live 2026-07-29 (scripts/probe-thread-id.ts): conversation rows
+   * carry NO anchor and NO conversation-id attribute — they are div click targets with
+   * ember-generated ids only, and a thread id appears solely in the address bar once a
+   * conversation is open. So `threadUrl` below is effectively always absent, and the reply
+   * matcher's thread-id tier (and its veto) are INERT in production: name matching does
+   * the real work. The extraction is kept because it costs nothing and starts working the
+   * day LinkedIn renders hrefs again — but do not rely on it, and do not "fix" the matcher
+   * by loosening names on the assumption that thread ids will catch mistakes.
+   */
   async readInboxSnapshot(): Promise<InboxRow[]> {
     const page = await this.session.page();
     await page.goto(URLS.messaging, { waitUntil: 'domcontentloaded' });
@@ -440,9 +451,9 @@ export class LinkedInDriver implements BrowserDriver {
       return Array.from(document.querySelectorAll(rowSel)).map((li) => {
         const name = (li.querySelector(nameSel)?.textContent || '').trim();
         const snippet = (li.querySelector(snipSel)?.textContent || '').trim();
-        // Thread href when the row exposes one: the reply matcher prefers it over the
-        // display name, which renders differently here than on the profile page
-        // ("Keren Tevet" vs the profile's "Keren (Yosef) Tevet") — verified live.
+        // Thread href IF the row ever exposes one (see the method comment: it currently
+        // never does). When present it is the matcher's strongest key, since a display
+        // name can render differently here than in the profile title.
         const href = li.querySelector('a[href*="/messaging/thread/"]')?.getAttribute('href') ?? null;
         const threadUrl = href ? new URL(href, 'https://www.linkedin.com').href : undefined;
         return { name, snippet, youSentLast: /^you:/i.test(snippet), ...(threadUrl ? { threadUrl } : {}) };
