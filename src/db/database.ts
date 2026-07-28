@@ -71,4 +71,71 @@ export function runMigrations(db: DB): void {
   if (cohortCols.length > 0 && !cohortCols.includes('archived')) {
     db.exec('ALTER TABLE cohorts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
   }
+  // --- Message campaigns (2026-07-28) ---
+  if (cohortCols.length > 0 && !cohortCols.includes('kind')) {
+    db.exec("ALTER TABLE cohorts ADD COLUMN kind TEXT NOT NULL DEFAULT 'invite'");
+  }
+  if (cols.length > 0 && !cols.includes('msg_weekly_cap')) {
+    db.exec('ALTER TABLE settings ADD COLUMN msg_weekly_cap INTEGER NOT NULL DEFAULT 200');
+    db.exec('ALTER TABLE settings ADD COLUMN msg_batch_size INTEGER NOT NULL DEFAULT 5');
+    db.exec('ALTER TABLE settings ADD COLUMN msg_batches_per_day INTEGER NOT NULL DEFAULT 4');
+    db.exec('ALTER TABLE settings ADD COLUMN reply_checks_per_day INTEGER NOT NULL DEFAULT 2');
+  }
+  if (appCols.length > 0 && !appCols.includes('replies_checked_at')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN replies_checked_at TEXT');
+  }
+  // profiles: kind/full_name/thread_url/replied_at + UNIQUE(profile_url) -> UNIQUE(profile_url, kind).
+  // SQLite cannot alter a column-level UNIQUE, so rebuild the table once. Detection: the
+  // kind column is absent exactly on pre-messaging databases. IDs are preserved, so
+  // send_log/profile_events FKs stay valid; FKs are suspended for the swap.
+  if (profileCols.length > 0 && !profileCols.includes('kind')) {
+    // Re-read live columns here (not the stale profileCols snapshot above): the
+    // priority/skip_reason ALTERs and the already_connected backfill just ran against
+    // this same table, so the live shape can have columns/data profileCols doesn't know
+    // about. Only carry over columns that actually exist right now; anything absent
+    // (e.g. a minimal legacy fixture missing first_name) falls back to profiles_new's
+    // own column default.
+    const liveCols = (db.prepare('PRAGMA table_info(profiles)').all() as { name: string }[]).map((c) => c.name);
+    const legacyColumnOrder = [
+      'id', 'cohort_id', 'profile_url', 'first_name', 'custom_message', 'status',
+      'attempts', 'last_error', 'skip_reason', 'scheduled_for', 'sent_at', 'accepted_at',
+      'resolved_at', 'priority', 'created_at',
+    ];
+    const carryCols = legacyColumnOrder.filter((c) => liveCols.includes(c));
+    db.exec('PRAGMA foreign_keys = OFF;');
+    db.exec(`
+      CREATE TABLE profiles_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cohort_id INTEGER NOT NULL REFERENCES cohorts(id),
+        kind TEXT NOT NULL DEFAULT 'invite',
+        profile_url TEXT NOT NULL,
+        first_name TEXT,
+        full_name TEXT,
+        custom_message TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        skip_reason TEXT,
+        scheduled_for TEXT,
+        sent_at TEXT,
+        accepted_at TEXT,
+        replied_at TEXT,
+        resolved_at TEXT,
+        thread_url TEXT,
+        priority INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (profile_url, kind)
+      );
+    `);
+    db.exec(
+      `INSERT INTO profiles_new (${carryCols.join(', ')}) SELECT ${carryCols.join(', ')} FROM profiles;`,
+    );
+    db.exec(`
+      DROP TABLE profiles;
+      ALTER TABLE profiles_new RENAME TO profiles;
+      CREATE INDEX IF NOT EXISTS idx_profiles_status ON profiles(status);
+      CREATE INDEX IF NOT EXISTS idx_profiles_cohort ON profiles(cohort_id);
+    `);
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
 }

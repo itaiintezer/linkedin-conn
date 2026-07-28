@@ -1,5 +1,5 @@
 import type { Page } from 'playwright-core';
-import type { BrowserDriver, SendOutcome, LoginSnapshot, CheckpointScan } from '../types.js';
+import type { BrowserDriver, SendOutcome, LoginSnapshot, CheckpointScan, InboxRow } from '../types.js';
 import { CloakSession } from './cloak-session.js';
 import { SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
@@ -317,6 +317,9 @@ export class LinkedInDriver implements BrowserDriver {
   private async readFirstName(page: Page): Promise<string | undefined> {
     return (await this.readFullName(page))?.split(/\s+/)[0];
   }
+
+  async sendMessage(): Promise<SendOutcome> { throw new Error('not implemented (Task 10)'); }
+  async readInboxSnapshot(): Promise<InboxRow[]> { throw new Error('not implemented (Task 10)'); }
 
   /**
    * DEPRECATED / diagnostic-only. The sent-invitations list is very large and only its
