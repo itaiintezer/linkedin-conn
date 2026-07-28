@@ -311,6 +311,8 @@ test('message pass: a profile without any message text goes to needs_attention, 
   await run(new Date('2026-06-29T10:00:00Z'));
   expect(repos.profiles.findById(p.id)!.status).toBe('needs_attention');
   expect(driver.msgLog).toHaveLength(0);
+  // The row consumed a slot, so the Attention modal must not show it as attempts: 0.
+  expect(repos.profiles.findById(p.id)!.attempts).toBe(1);
 });
 
 test('message pass: checkpoint trips the shared guardrail and halts', async () => {

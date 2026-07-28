@@ -447,8 +447,14 @@ export class LinkedInDriver implements BrowserDriver {
       await captureEvidence(page, 'checkpoint', { during: 'inbox read' });
       throw new Error('checkpoint detected during inbox read');
     }
-    return page.evaluate(({ rowSel, nameSel, snipSel }) => {
-      return Array.from(document.querySelectorAll(rowSel)).map((li) => {
+    return page.evaluate(({ listSel, rowSel, nameSel, snipSel }) => {
+      // Scope rows to the conversation list when it is present, so a listitem rendered
+      // outside the inbox (overlays, the "other" tab's stale DOM) can't enter the snapshot.
+      // Falls back to the document on purpose: the list's BEM class is more brittle than
+      // the row class, and a hard scope would turn a class rename into an empty read —
+      // which the reply checker treats as "page didn't render" and retries forever.
+      const root: ParentNode = document.querySelector(listSel) ?? document;
+      return Array.from(root.querySelectorAll(rowSel)).map((li) => {
         const name = (li.querySelector(nameSel)?.textContent || '').trim();
         const snippet = (li.querySelector(snipSel)?.textContent || '').trim();
         // Thread href IF the row ever exposes one (see the method comment: it currently
@@ -458,7 +464,10 @@ export class LinkedInDriver implements BrowserDriver {
         const threadUrl = href ? new URL(href, 'https://www.linkedin.com').href : undefined;
         return { name, snippet, youSentLast: /^you:/i.test(snippet), ...(threadUrl ? { threadUrl } : {}) };
       }).filter((r) => r.name || r.threadUrl);
-    }, { rowSel: SEL.inboxRow, nameSel: SEL.inboxRowName, snipSel: SEL.inboxRowSnippet });
+    }, {
+      listSel: SEL.inboxList, rowSel: SEL.inboxRow,
+      nameSel: SEL.inboxRowName, snipSel: SEL.inboxRowSnippet,
+    });
   }
 
   /**

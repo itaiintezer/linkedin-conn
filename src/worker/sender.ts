@@ -275,7 +275,14 @@ async function attemptMessage(
   // never fall through to an empty send if a row slips past (imports, manual edits).
   const text = selectNoteSource(p.custom_message, cohort.message_template);
   if (text === null) {
-    repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'message cohort has no template or custom message' });
+    // Count the attempt even though we never reach LinkedIn: this row consumed one of
+    // today's message slots, so an Attention entry reading attempts: 0 would misreport a
+    // campaign that is silently draining. `contacted: false` still suppresses the
+    // inter-send delay — the pacing guarantee is about LinkedIn contacts, not attempts.
+    repos.profiles.setStatus(p.id, 'needs_attention', {
+      attempts: p.attempts + 1,
+      last_error: 'message cohort has no template or custom message',
+    });
     logVerdict(p, 'needs attention: no message text');
     return { halted: false, contacted: false };
   }

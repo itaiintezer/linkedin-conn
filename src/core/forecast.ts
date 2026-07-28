@@ -1,15 +1,23 @@
-import type { Settings, CampaignKind } from '../types.js';
+import type { Settings } from '../types.js';
 import { dailyTargetFor } from './daily-budget.js';
-import { capsFor } from './caps.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Average sends per *sending day*, clamped by the weekly cap. 0 => never. */
-function dailySendRate(s: Settings, kind: CampaignKind = 'invite'): number {
-  const dailyTarget = dailyTargetFor(s, kind);
+/**
+ * Average sends per *sending day*, clamped by the weekly cap. 0 => never.
+ *
+ * Reads the plain `weekly_cap` / `batch_size` / `batches_per_day` fields. This whole
+ * module is kind-agnostic on purpose: callers that want message pacing hand in a
+ * REMAPPED Settings whose invite fields carry the msg_* values (see the msg_next_batch
+ * caller in api/server.ts). Do not reintroduce a `kind` parameter here — a caller that
+ * passed kind: 'message' with raw settings would read msg batch sizes against the
+ * INVITE weekly cap, which is the bug the remap exists to prevent.
+ */
+function dailySendRate(s: Settings): number {
+  const dailyTarget = dailyTargetFor(s, 'invite');
   const sendingDaysPerWeek = s.weekdays_only ? 5 : 7;
   if (dailyTarget <= 0 || sendingDaysPerWeek <= 0) return 0;
-  const weeklyThroughput = Math.min(capsFor(s, kind).weeklyCap, dailyTarget * sendingDaysPerWeek);
+  const weeklyThroughput = Math.min(s.weekly_cap, dailyTarget * sendingDaysPerWeek);
   return weeklyThroughput / sendingDaysPerWeek;
 }
 

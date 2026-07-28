@@ -6,7 +6,7 @@ import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { INCIDENTS_DIR } from '../config.js';
 import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
-import type { BrowserDriver, CampaignKind } from '../types.js';
+import type { BrowserDriver, CampaignKind, ProfileStatus } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
 import { estimateQueueCompletion, nextBatchForecast, orderUpcoming } from '../core/forecast.js';
@@ -57,13 +57,34 @@ export function buildServer(
   app.register(fastifyStatic, { root: incidentsDir, prefix: '/incidents/', decorateReply: false });
 
   app.post('/api/profiles', async (req, reply) => {
-    const { url, cohort, message } = req.body as { url: string; cohort?: string; message?: string };
+    const { url, cohort, message, kind: kindRaw } =
+      req.body as { url: string; cohort?: string; message?: string; kind?: string };
     const normalized = normalizeProfileUrl(url ?? '');
     if (!normalized) return reply.code(400).send({ error: 'invalid linkedin profile url' });
+    const kind: CampaignKind = kindRaw === 'message' ? 'message' : 'invite';
     const cohortName = (cohort && cohort.trim()) || defaultCohortName(new Date());
-    const c = repos.cohorts.getOrCreate(cohortName, null, true);
-    const p = repos.profiles.add(c.id, normalized, message ?? null);
-    return { id: p.id, profile_url: p.profile_url };
+    // Same fixed-kind rule as /api/lists, and for the same reason: an invite row inside a
+    // message cohort would be picked up by the INVITE sender, which resolves its text from
+    // the DM template and truncates it to a 300-char connection note. Mis-kinding here
+    // sends a mangled DM to a real person, so it must fail loudly rather than default.
+    const existing = repos.cohorts.findByName(cohortName);
+    if (existing && existing.kind !== kind) {
+      return reply.code(409).send({ error: `cohort "${cohortName}" is a ${existing.kind} cohort` });
+    }
+    const note = message?.trim() || undefined;
+    const max = kind === 'message' ? MAX_MESSAGE : MAX_NOTE;
+    if (note && note.length > max) {
+      return reply.code(400).send({ error: `message too long (max ${max} characters)` });
+    }
+    // A DM has nothing to send without a body. Unlike /api/lists (which only has the
+    // cohort template to work with), a single-profile add may carry its own text, so
+    // either source satisfies the rule — see selectNoteSource for the precedence.
+    if (kind === 'message' && !note && !existing?.message_template?.trim()) {
+      return reply.code(400).send({ error: 'message campaigns require a message template or a per-contact message' });
+    }
+    const c = repos.cohorts.getOrCreate(cohortName, null, true, kind);
+    const p = repos.profiles.add(c.id, normalized, note ?? null, kind);
+    return { id: p.id, profile_url: p.profile_url, kind: p.kind };
   });
 
   app.post('/api/lists', async (req, reply) => {
@@ -278,7 +299,8 @@ export function buildServer(
   // Manual trigger: promote up to batch_size queued profiles to due-now and run one
   // sender batch immediately. Respects pause/login/guardrail (runSenderOnce returns early).
   // Guarded by the shared browser lock so it can't drive the page while the periodic
-  // sender or the acceptance reader is already running. Useful for sending on demand.
+  // sender, the acceptance reader or the reply reader is already running. Useful for
+  // sending on demand.
   app.post('/api/run-now', async () => {
     const now = new Date();
     const dueIso = new Date(now.getTime() - 1000).toISOString();
@@ -332,16 +354,29 @@ export function buildServer(
   // Problem profiles for the Attention tab: failed + needs_attention with their errors.
   app.get('/api/attention', async () =>
     repos.db.prepare(`
-      SELECT p.id, p.profile_url, p.status, p.last_error, p.attempts,
+      SELECT p.id, p.profile_url, p.kind, p.status, p.last_error, p.attempts,
              p.sent_at, p.scheduled_for, c.name AS cohort_name
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       WHERE p.status IN ('failed','needs_attention')
       ORDER BY p.id DESC
     `).all());
 
+  // Retry re-queues the profile for a FRESH send, so it is only ever valid for a profile
+  // that never landed a send. Retrying a `replied`/`accepted`/`sent` row would message the
+  // same person a second time; retrying a queued/scheduled/sending row would just fight the
+  // scheduler. Mirrors the bulk /api/retry (failed + needs_attention) plus `skipped`, which
+  // the Attention modal's Dismiss button produces and the operator may want to undo.
+  const RETRYABLE_STATUSES = new Set<ProfileStatus>(['failed', 'needs_attention', 'skipped']);
+
   app.post('/api/profiles/:id/retry', async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
-    if (!repos.profiles.findById(id)) return reply.code(404).send({ error: 'profile not found' });
+    const p = repos.profiles.findById(id);
+    if (!p) return reply.code(404).send({ error: 'profile not found' });
+    if (!RETRYABLE_STATUSES.has(p.status)) {
+      return reply.code(409).send({
+        error: `cannot retry a ${p.status} profile — retry only applies to failed, needs_attention or skipped`,
+      });
+    }
     repos.profiles.setStatus(id, 'queued', { scheduled_for: null, last_error: null, skip_reason: null });
     return { ok: true };
   });

@@ -33,7 +33,16 @@ export function recordFailure(repos: Repos, detail: string, now: Date): boolean 
   return false;
 }
 
-/** A clean send resets the failure streak. */
+/**
+ * Resets the consecutive-failure streak. Called by every clean LinkedIn interaction —
+ * not just sends: the acceptance and reply readers call it too, so a successful READ
+ * clears a streak that failing SENDS accumulated.
+ *
+ * Tradeoff (pre-existing, deliberate for now): that makes the guardrail forgiving, since
+ * a twice-daily read can keep resetting a send path that is quietly failing below the
+ * threshold — but it also stops a transient send blip from halting the whole engine while
+ * LinkedIn is demonstrably still reachable.
+ */
 export function recordSuccess(repos: Repos): void {
   repos.appState.resetFailureStreak();
 }

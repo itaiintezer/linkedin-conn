@@ -20,8 +20,8 @@ process.on('uncaughtException', (err) => {
 
 const repos = new Repos(openDatabase(DB_PATH));
 const driver = new LinkedInDriver();
-// One lock shared between the scheduler and the API so the periodic sender, the daily
-// acceptance reader and the manual "run now" trigger never drive the browser at once.
+// One lock shared between the scheduler and the API so the periodic sender, the acceptance
+// reader, the reply reader and the manual "run now" trigger never drive the browser at once.
 const browserLock = new Mutex();
 const orchestrator = new Orchestrator(repos, driver, browserLock);
 const app = buildServer(repos, driver, browserLock);

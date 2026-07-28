@@ -1,8 +1,8 @@
 /**
  * A minimal async mutex for serializing browser-driving work.
  *
- * The sender, the acceptance reader and the "run now" trigger all drive a single
- * shared browser page. Running two of them at once makes their concurrent
+ * The sender, the acceptance reader, the reply reader and the "run now" trigger all
+ * drive a single shared browser page. Running two of them at once makes their concurrent
  * `page.goto` calls abort each other (net::ERR_ABORTED). This mutex ensures only
  * one such operation touches the page at a time.
  *
