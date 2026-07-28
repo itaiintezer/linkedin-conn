@@ -1,8 +1,9 @@
 import type { Repos } from '../db/repositories.js';
-import type { BrowserDriver, Profile, Settings } from '../types.js';
+import type { BrowserDriver, Profile, Settings, CampaignKind } from '../types.js';
 import { selectNoteSource } from '../core/message.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { pickDue } from '../core/schedule.js';
+import { capsFor } from '../core/caps.js';
 import { isTripped, tripCheckpoint, tripLoginLost, recordFailure, recordSuccess } from './guardrail.js';
 import { log } from '../core/log.js';
 
@@ -38,16 +39,12 @@ export async function runSenderOnce(
   // scheduler only creates in-window slots; this guards the send side of that promise.
   if (!opts.force && !withinSendWindow(now, settings)) return;
 
-  // Capacity + due work are computed from the DB only — so idle ticks never open the browser.
-  const sentInWindow = repos.events.countSentSince(windowStartIso(now), 'invite');
-  let remaining = remainingCapacity(settings.weekly_cap, sentInWindow);
-  if (remaining <= 0) return;
-
   const clock = opts.clock ?? (() => now);
 
-  const scheduled = repos.profiles.byStatus('scheduled');
-  const due = pickDue(scheduled, now, Math.min(remaining, settings.batch_size));
-  if (due.length === 0) return; // nothing due -> stay dark
+  // Capacity + due work are computed from the DB only — so idle ticks never open the browser.
+  const invDue = dueForKind(repos, now, 'invite');
+  const msgDue = dueForKind(repos, now, 'message');
+  if (invDue.length === 0 && msgDue.length === 0) return; // nothing due -> stay dark
 
   // Cached-login gate (no browser): login only ever happens through our own browser, so
   // the cache is authoritative. Not logged in is transient — skip, the dashboard surfaces it.
@@ -59,6 +56,28 @@ export async function runSenderOnce(
   repos.appState.setLogin(snap, now.toISOString());
   if (!snap.loggedIn) { tripLoginLost(repos, now); return; }
 
+  if (invDue.length > 0) {
+    const halted = await runInvitePass(repos, driver, invDue, clock);
+    if (halted) return; // checkpoint / weekly-limit / streak trip — don't start the other pass
+  }
+  if (msgDue.length > 0) await runMessagePass(repos, driver, msgDue, clock);
+}
+
+/** Due, capacity-clamped profiles for one kind (DB only, no browser). */
+function dueForKind(repos: Repos, now: Date, kind: CampaignKind): Profile[] {
+  const caps = capsFor(repos.settings.get(), kind);
+  const sentInWindow = repos.events.countSentSince(windowStartIso(now), kind);
+  const remaining = remainingCapacity(caps.weeklyCap, sentInWindow);
+  if (remaining <= 0) return [];
+  const scheduled = repos.profiles.byStatusKind('scheduled', kind);
+  return pickDue(scheduled, now, Math.min(remaining, caps.batchSize));
+}
+
+/** One invite batch. Returns true if a halt-worthy verdict stopped the pass
+ *  (checkpoint, weekly_limit, or a repeated-failures streak trip). */
+async function runInvitePass(
+  repos: Repos, driver: BrowserDriver, due: Profile[], clock: () => Date,
+): Promise<boolean> {
   for (const p of due) {
     const cohort = repos.cohorts.findById(p.cohort_id)!;
     repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
@@ -88,7 +107,6 @@ export async function runSenderOnce(
         repos.events.recordSend(p.id, 'sent');
         recordSuccess(repos); // reset the failure streak
         logVerdict(p, 'sent — invite pending');
-        remaining--;
         break;
       case 'already':
         repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'already_connected' });
@@ -111,7 +129,7 @@ export async function runSenderOnce(
         repos.profiles.setStatus(p.id, 'queued', { last_error: null });
         repos.settings.update({ paused: 1, pause_reason: 'LinkedIn weekly invitation limit reached — resume next week' });
         logVerdict(p, 'weekly invitation limit reached — sending paused, profile requeued');
-        return;
+        return true;
       case 'not_found':
         // The profile URL 404s (deleted account / renamed slug) — a per-profile
         // verdict that can never succeed on retry. Terminal skip; does NOT touch
@@ -128,7 +146,7 @@ export async function runSenderOnce(
         const shot = outcome.evidence?.screenshot;
         const detail = `send composer unavailable${shot ? ` — screenshot: /incidents/${shot}` : ''}`;
         logVerdict(p, `skipped: ${detail}`);
-        if (recordFailure(repos, detail, clock())) return;
+        if (recordFailure(repos, detail, clock())) return true;
         break;
       }
       case 'checkpoint': {
@@ -143,7 +161,7 @@ export async function runSenderOnce(
         });
         logVerdict(p, `needs attention: checkpoint / captcha${detail ? ` — ${detail}` : ''}`);
         tripCheckpoint(repos, clock(), detail);
-        return;
+        return true;
       }
       case 'error':
       default: {
@@ -151,10 +169,89 @@ export async function runSenderOnce(
         repos.profiles.setStatus(p.id, 'failed', { last_error: outcome.error ?? 'unknown' });
         repos.events.recordEvent(p.id, 'failed');
         logVerdict(p, `failed: ${outcome.error ?? 'unknown'}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
-        if (recordFailure(repos, outcome.error ?? 'unknown', clock())) return;
+        if (recordFailure(repos, outcome.error ?? 'unknown', clock())) return true;
         break;
       }
     }
-    if (remaining <= 0) break;
   }
+  return false;
+}
+
+/** One message batch. Returns true if a halt-worthy verdict stopped the pass. */
+async function runMessagePass(
+  repos: Repos, driver: BrowserDriver, due: Profile[], clock: () => Date,
+): Promise<boolean> {
+  for (const p of due) {
+    const cohort = repos.cohorts.findById(p.cohort_id)!;
+    // Messages REQUIRE text: the API validates this at enqueue, but the engine must
+    // never fall through to an empty send if a row slips past (imports, manual edits).
+    const text = selectNoteSource(p.custom_message, cohort.message_template);
+    if (text === null) {
+      repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'message cohort has no template or custom message' });
+      logVerdict(p, 'needs attention: no message text');
+      continue;
+    }
+    repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
+    log.debug('sender', 'attempting message', { profile: p.id, url: p.profile_url });
+
+    const outcome = await driver.sendMessage(p.profile_url, text);
+    if (outcome.firstName) repos.profiles.setStatus(p.id, 'sending', { first_name: outcome.firstName });
+
+    switch (outcome.result) {
+      case 'sent':
+        repos.profiles.setStatus(p.id, 'sent', {
+          sent_at: clock().toISOString(),
+          full_name: outcome.fullName ?? null,
+          thread_url: outcome.threadUrl ?? null,
+        });
+        repos.events.recordSend(p.id, 'sent');
+        recordSuccess(repos);
+        logVerdict(p, 'message sent');
+        break;
+      case 'not_connected':
+        // Not a 1st-degree connection — per-profile, terminal, never InMail, no streak.
+        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_connected' });
+        repos.events.recordEvent(p.id, 'skipped');
+        logVerdict(p, 'skipped: not a 1st-degree connection');
+        break;
+      case 'not_found':
+        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_found' });
+        repos.events.recordEvent(p.id, 'skipped');
+        logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
+        break;
+      case 'unavailable': {
+        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'unavailable' });
+        repos.events.recordEvent(p.id, 'skipped');
+        const shot = outcome.evidence?.screenshot;
+        const detail = `message composer unavailable${shot ? ` — screenshot: /incidents/${shot}` : ''}`;
+        logVerdict(p, `skipped: ${detail}`);
+        if (recordFailure(repos, detail, clock())) return true;
+        break;
+      }
+      case 'checkpoint': {
+        const ev = outcome.evidence;
+        const detail = ev
+          ? `Checkpoint/captcha page at ${ev.pageUrl}`
+            + (ev.matched ? ` (matched "${ev.matched}")` : '')
+            + (ev.screenshot ? ` — screenshot: /incidents/${ev.screenshot}` : '')
+          : undefined;
+        repos.profiles.setStatus(p.id, 'needs_attention', {
+          last_error: ev?.matched ? `checkpoint (matched "${ev.matched}")` : 'checkpoint',
+        });
+        logVerdict(p, `needs attention: checkpoint / captcha${detail ? ` — ${detail}` : ''}`);
+        tripCheckpoint(repos, clock(), detail);
+        return true;
+      }
+      case 'error':
+      default: {
+        const shot = outcome.evidence?.screenshot;
+        repos.profiles.setStatus(p.id, 'failed', { last_error: outcome.error ?? 'unknown' });
+        repos.events.recordEvent(p.id, 'failed');
+        logVerdict(p, `failed: ${outcome.error ?? 'unknown'}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
+        if (recordFailure(repos, outcome.error ?? 'unknown', clock())) return true;
+        break;
+      }
+    }
+  }
+  return false;
 }

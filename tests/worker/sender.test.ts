@@ -267,3 +267,58 @@ test('a success between failures resets the streak (no trip)', async () => {
   expect(repos.appState.get().guardrail_tripped).toBe(0);
   expect(repos.appState.get().failure_streak).toBe(1);
 });
+
+function seedScheduledMsg(url: string, whenIso: string, cohortId: number) {
+  const p = repos.profiles.add(cohortId, url, null, 'message');
+  repos.profiles.setScheduled(p.id, whenIso);
+  return p;
+}
+
+test('message pass: sends due message profiles, stamps full_name/thread_url, counts per kind', async () => {
+  const c = repos.cohorts.create('M', 'Hey {firstName}', true, 'message');
+  seedScheduledMsg('https://www.linkedin.com/in/m1', '2026-06-29T09:00:00.000Z', c.id);
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(driver.msgLog).toHaveLength(1);
+  expect(driver.msgLog[0].message).toBe('Hey Test');
+  const [p] = repos.profiles.byStatusKind('sent', 'message');
+  expect(p.full_name).toBe('Test Person');
+  expect(p.thread_url).toContain('/messaging/thread/');
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'message')).toBe(1);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
+});
+
+test('message pass: not_connected is a terminal skip that never touches the failure streak', async () => {
+  const c = repos.cohorts.create('M', 'hi', true, 'message');
+  const p = seedScheduledMsg('https://www.linkedin.com/in/m2', '2026-06-29T09:00:00.000Z', c.id);
+  driver.msgScripted.set('https://www.linkedin.com/in/m2', 'not_connected');
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('skipped');
+  expect(row.skip_reason).toBe('not_connected');
+  expect(repos.appState.get().failure_streak).toBe(0);
+});
+
+test('message pass: a profile without any message text goes to needs_attention, not to LinkedIn', async () => {
+  const c = repos.cohorts.create('M-blank', null, true, 'message'); // no template (API forbids this; engine must still be safe)
+  const p = seedScheduledMsg('https://www.linkedin.com/in/m3', '2026-06-29T09:00:00.000Z', c.id);
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(repos.profiles.findById(p.id)!.status).toBe('needs_attention');
+  expect(driver.msgLog).toHaveLength(0);
+});
+
+test('message pass: checkpoint trips the shared guardrail and halts', async () => {
+  const c = repos.cohorts.create('M', 'hi', true, 'message');
+  seedScheduledMsg('https://www.linkedin.com/in/m4', '2026-06-29T09:00:00.000Z', c.id);
+  driver.msgScripted.set('https://www.linkedin.com/in/m4', 'checkpoint');
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(repos.appState.get().guardrail_tripped).toBe(1);
+});
+
+test('message weekly cap is independent of the invite cap', async () => {
+  repos.settings.update({ msg_weekly_cap: 1, weekly_cap: 100, msg_batch_size: 5 });
+  const c = repos.cohorts.create('M', 'hi', true, 'message');
+  seedScheduledMsg('https://www.linkedin.com/in/m5', '2026-06-29T09:00:00.000Z', c.id);
+  seedScheduledMsg('https://www.linkedin.com/in/m6', '2026-06-29T09:00:00.000Z', c.id);
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  expect(repos.profiles.byStatusKind('sent', 'message')).toHaveLength(1);
+});
