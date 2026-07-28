@@ -30,9 +30,21 @@ export async function refreshLoginCache(repos: Repos, driver: BrowserDriver, now
   repos.appState.setLogin(snap, now.toISOString());
 }
 
+/**
+ * Identify which acceptance slot a moment falls in. The day is divided into
+ * `checksPerDay` equal slots and at most one successful pass runs per slot, so
+ * checks are spread across the day (2/day = morning + afternoon) instead of
+ * bunching into consecutive ticks. Computed in LOCAL time — the operator thinks
+ * in local days. A nonsensical setting degrades to one check per day.
+ */
+export function acceptanceSlot(when: Date, checksPerDay: number): string {
+  const n = Math.min(24, Math.max(1, Math.floor(checksPerDay) || 1));
+  const slot = Math.floor((when.getHours() * n) / 24);
+  return `${when.getFullYear()}-${when.getMonth()}-${when.getDate()}#${slot}`;
+}
+
 export class Orchestrator {
   private timers: ReturnType<typeof setInterval>[] = [];
-  private lastAcceptanceDay = '';
 
   /**
    * `browserLock` is shared with the API server (run-now) so that the sender, the
@@ -77,15 +89,30 @@ export class Orchestrator {
     }
   }
 
-  /** Daily acceptance pass. Queues behind any in-flight browser work (must not be skipped). */
-  runAcceptanceTick(): void {
-    const day = new Date().toDateString();
+  /**
+   * Acceptance pass, at most once per slot (see acceptanceSlot). Queues behind any
+   * in-flight browser work (must not be skipped).
+   *
+   * The "have we already checked?" gate reads the PERSISTED `acceptance_checked_at`,
+   * which runAcceptanceCheck stamps only on a clean, non-empty read. That is the whole
+   * fix for the old bug: the tick used to mark the day done *before* attempting, so a
+   * pass that bailed out (logged out, read error, empty read) burned a full day of
+   * detection with no retry. Now a bail-out leaves the stamp untouched and the next
+   * 30-minute tick tries again.
+   */
+  async runAcceptanceTick(now: Date = new Date()): Promise<void> {
     const s = this.repos.settings.get();
-    const tripped = this.repos.appState.get().guardrail_tripped === 1;
-    if (day !== this.lastAcceptanceDay && !s.paused && !tripped) {
-      this.lastAcceptanceDay = day;
-      void this.browserLock.run(() => runAcceptanceCheck(this.repos, this.driver, new Date()))
-        .catch((err) => this.handleTickError('acceptance', err));
+    const app = this.repos.appState.get();
+    if (s.paused || app.guardrail_tripped === 1) return;
+    const slot = acceptanceSlot(now, s.acceptance_checks_per_day);
+    if (app.acceptance_checked_at
+      && acceptanceSlot(new Date(app.acceptance_checked_at), s.acceptance_checks_per_day) === slot) return;
+    try {
+      // `now` is the tick's clock, not a batch-start snapshot: a pass applies one
+      // timestamp to every verdict anyway, so there is no per-profile drift to avoid.
+      await this.browserLock.run(() => runAcceptanceCheck(this.repos, this.driver, now));
+    } catch (err) {
+      this.handleTickError('acceptance', err);
     }
   }
 
@@ -105,7 +132,9 @@ export class Orchestrator {
       void refreshLoginCache(this.repos, this.driver, new Date()).catch((err) => this.handleTickError('login-refresh', err));
     }, 10 * 1000));
 
-    this.timers.push(setInterval(() => this.runAcceptanceTick(), 30 * 60 * 1000));
+    // Every 30 min: the slot gate decides whether a pass is actually due, so a tick that
+    // finds the current slot already checked is a cheap no-op (and a failed pass retries here).
+    this.timers.push(setInterval(() => { void this.runAcceptanceTick(); }, 30 * 60 * 1000));
   }
 
   stop(): void { this.timers.forEach(clearInterval); this.timers = []; }
