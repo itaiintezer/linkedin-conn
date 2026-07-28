@@ -15,6 +15,26 @@ export interface SenderOptions {
    *  wrong halt time (the 2026-07-02 "Halted 3:56 PM" was really a 4:02 PM trip).
    *  Defaults to the batch `now` so deterministic tests are unaffected. */
   clock?: () => Date;
+  /** Delay primitive used to pace consecutive sends (settings.min_delay_ms /
+   *  max_delay_ms) — a real timer-based sleep by default. Tests inject a no-op so the
+   *  suite never actually waits the 20-90s the production settings imply. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Source of randomness for the inter-send delay. Defaults to Math.random; tests
+   *  inject a stub for deterministic delay assertions. */
+  rng?: () => number;
+}
+
+/** Real timer-based sleep — the production default for `SenderOptions.sleep`. */
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** min + floor(rng() * (max - min + 1)), the repo's existing randomized-wait idiom
+ *  (see core/schedule.ts, worker/scheduler-service.ts). Clamped so a negative/NaN
+ *  min degrades to 0 and a misconfigured max < min degrades to min — the delay can
+ *  never come out negative or NaN. */
+function randomDelayMs(min: number, max: number, rng: () => number): number {
+  const lo = Number.isFinite(min) && min > 0 ? min : 0;
+  const hi = Number.isFinite(max) && max > lo ? max : lo;
+  return lo + Math.floor(rng() * (hi - lo + 1));
 }
 
 /** Local-time working-hours + sending-day test, mirroring the scheduler. */
@@ -83,6 +103,12 @@ export async function runSenderOnce(
   if (!opts.force && !withinSendWindow(now, settings)) return;
 
   const clock = opts.clock ?? (() => now);
+  const sleep = opts.sleep ?? realSleep;
+  const rng = opts.rng ?? Math.random;
+  // One randomized-wait primitive shared by both passes and the inter-pass gap: every
+  // consecutive pair of sends against LinkedIn in this tick — whether within a pass or
+  // across the invite/message boundary — is paced the same way.
+  const delay = () => sleep(randomDelayMs(settings.min_delay_ms, settings.max_delay_ms, rng));
 
   // Capacity + due work are computed from the DB only — so idle ticks never open the browser.
   const invDue = dueForKind(repos, now, 'invite');
@@ -100,14 +126,17 @@ export async function runSenderOnce(
   if (!snap.loggedIn) { tripLoginLost(repos, now); return; }
 
   if (invDue.length > 0) {
-    const halted = await runInvitePass(repos, driver, invDue, clock);
+    const halted = await runInvitePass(repos, driver, invDue, clock, delay);
     // checkpoint / weekly-limit / streak trip — don't start the other pass. For weekly_limit
     // specifically this is a deliberate conservative choice: the account was just rate-limited
     // on invites, and paused=1 halts everything next tick anyway; messages resume with the
     // manual resume rather than being allowed to run standalone this tick.
     if (halted) return;
+    // Both passes attempted something in this tick: the last invite send and the first
+    // message send are still two consecutive actions against LinkedIn, so pace them too.
+    if (msgDue.length > 0) await delay();
   }
-  if (msgDue.length > 0) await runMessagePass(repos, driver, msgDue, clock);
+  if (msgDue.length > 0) await runMessagePass(repos, driver, msgDue, clock, delay);
 }
 
 /** Due, capacity-clamped profiles for one kind (DB only, no browser). */
@@ -121,138 +150,156 @@ function dueForKind(repos: Repos, now: Date, kind: CampaignKind): Profile[] {
 }
 
 /** One invite batch. Returns true if a halt-worthy verdict stopped the pass
- *  (checkpoint, weekly_limit, or a repeated-failures streak trip). */
+ *  (checkpoint, weekly_limit, or a repeated-failures streak trip).
+ *  `delay` paces consecutive sends — invoked between profiles, never before the first
+ *  or after the last (a trailing wait would just hold the browser lock for nothing),
+ *  and never after a halting profile (nothing follows it in this pass anyway). */
 async function runInvitePass(
-  repos: Repos, driver: BrowserDriver, due: Profile[], clock: () => Date,
+  repos: Repos, driver: BrowserDriver, due: Profile[], clock: () => Date, delay: () => Promise<void>,
 ): Promise<boolean> {
-  for (const p of due) {
-    const cohort = repos.cohorts.findById(p.cohort_id)!;
-    repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
-    log.debug('sender', 'attempting', { profile: p.id, url: p.profile_url });
-
-    // Pass the raw note template (with {firstName} intact); the driver substitutes the
-    // real name it reads from the profile at send time.
-    const note = selectNoteSource(p.custom_message, cohort.message_template);
-    let outcome = await driver.sendConnectionRequest(p.profile_url, note);
-
-    if (outcome.firstName) repos.profiles.setStatus(p.id, 'sending', { first_name: outcome.firstName });
-
-    if (outcome.result === 'note_quota') {
-      repos.settings.update({ note_quota_exhausted: 1 });
-      if (cohort.allow_no_note) {
-        outcome = await driver.sendConnectionRequest(p.profile_url, null);
-      } else {
-        repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'note quota exhausted; no-note disabled' });
-        logVerdict(p, 'needs attention: note quota exhausted, no-note disabled');
-        continue;
-      }
-    }
-
-    switch (outcome.result) {
-      case 'sent':
-        repos.profiles.setStatus(p.id, 'sent', { sent_at: clock().toISOString() });
-        repos.events.recordSend(p.id, 'sent');
-        recordSuccess(repos); // reset the failure streak
-        logVerdict(p, 'sent — invite pending');
-        break;
-      case 'already':
-        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'already_connected' });
-        repos.events.recordEvent(p.id, 'skipped');
-        logVerdict(p, 'skipped: already connected');
-        break;
-      case 'email_required':
-        // LinkedIn gates this member behind "enter their email to connect" — a
-        // per-profile verdict that can never succeed on retry. Terminal skip; does
-        // NOT touch the failure streak.
-        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'email_required' });
-        repos.events.recordEvent(p.id, 'skipped');
-        logVerdict(p, 'skipped: LinkedIn requires their email to connect');
-        break;
-      case 'weekly_limit':
-        // LinkedIn's account-level weekly invite cap: expected, resolves on its own
-        // when the window resets. Amber pause (user-resumable, clear reason) instead
-        // of the red guardrail — this is not a UI change or a block. The profile is
-        // blameless: back to the queue for after the resume.
-        repos.profiles.setStatus(p.id, 'queued', { last_error: null });
-        repos.settings.update({ paused: 1, pause_reason: 'LinkedIn weekly invitation limit reached — resume next week' });
-        logVerdict(p, 'weekly invitation limit reached — sending paused, profile requeued');
-        return true;
-      case 'not_found':
-        // The profile URL 404s (deleted account / renamed slug) — a per-profile
-        // verdict that can never succeed on retry. Terminal skip; does NOT touch
-        // the failure streak (a batch of stale imports must not halt the engine).
-        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_found' });
-        repos.events.recordEvent(p.id, 'skipped');
-        logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
-        break;
-      case 'unavailable':
-        if (handleUnavailable(repos, p, outcome, clock, 'send composer unavailable')) return true;
-        break;
-      case 'checkpoint':
-        handleCheckpoint(repos, p, outcome, clock);
-        return true;
-      case 'error':
-      default:
-        if (handleError(repos, p, outcome, clock)) return true;
-        break;
-    }
+  for (let i = 0; i < due.length; i++) {
+    const halted = await attemptInvite(repos, driver, due[i], clock);
+    if (halted) return true;
+    if (i < due.length - 1) await delay();
   }
   return false;
 }
 
-/** One message batch. Returns true if a halt-worthy verdict stopped the pass. */
-async function runMessagePass(
-  repos: Repos, driver: BrowserDriver, due: Profile[], clock: () => Date,
+/** One profile's invite attempt. Returns true if a halt-worthy verdict was hit. */
+async function attemptInvite(
+  repos: Repos, driver: BrowserDriver, p: Profile, clock: () => Date,
 ): Promise<boolean> {
-  for (const p of due) {
-    const cohort = repos.cohorts.findById(p.cohort_id)!;
-    // Messages REQUIRE text: the API validates this at enqueue, but the engine must
-    // never fall through to an empty send if a row slips past (imports, manual edits).
-    const text = selectNoteSource(p.custom_message, cohort.message_template);
-    if (text === null) {
-      repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'message cohort has no template or custom message' });
-      logVerdict(p, 'needs attention: no message text');
-      continue;
-    }
-    repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
-    log.debug('sender', 'attempting message', { profile: p.id, url: p.profile_url });
+  const cohort = repos.cohorts.findById(p.cohort_id)!;
+  repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
+  log.debug('sender', 'attempting', { profile: p.id, url: p.profile_url });
 
-    const outcome = await driver.sendMessage(p.profile_url, text);
-    if (outcome.firstName) repos.profiles.setStatus(p.id, 'sending', { first_name: outcome.firstName });
+  // Pass the raw note template (with {firstName} intact); the driver substitutes the
+  // real name it reads from the profile at send time.
+  const note = selectNoteSource(p.custom_message, cohort.message_template);
+  let outcome = await driver.sendConnectionRequest(p.profile_url, note);
 
-    switch (outcome.result) {
-      case 'sent':
-        repos.profiles.setStatus(p.id, 'sent', {
-          sent_at: clock().toISOString(),
-          full_name: outcome.fullName ?? null,
-          thread_url: outcome.threadUrl ?? null,
-        });
-        repos.events.recordSend(p.id, 'sent');
-        recordSuccess(repos);
-        logVerdict(p, 'message sent');
-        break;
-      case 'not_connected':
-        // Not a 1st-degree connection — per-profile, terminal, never InMail, no streak.
-        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_connected' });
-        repos.events.recordEvent(p.id, 'skipped');
-        logVerdict(p, 'skipped: not a 1st-degree connection');
-        break;
-      case 'not_found':
-        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_found' });
-        repos.events.recordEvent(p.id, 'skipped');
-        logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
-        break;
-      case 'unavailable':
-        if (handleUnavailable(repos, p, outcome, clock, 'message composer unavailable')) return true;
-        break;
-      case 'checkpoint':
-        handleCheckpoint(repos, p, outcome, clock);
-        return true;
-      case 'error':
-      default:
-        if (handleError(repos, p, outcome, clock)) return true;
-        break;
+  if (outcome.firstName) repos.profiles.setStatus(p.id, 'sending', { first_name: outcome.firstName });
+
+  if (outcome.result === 'note_quota') {
+    repos.settings.update({ note_quota_exhausted: 1 });
+    if (cohort.allow_no_note) {
+      outcome = await driver.sendConnectionRequest(p.profile_url, null);
+    } else {
+      repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'note quota exhausted; no-note disabled' });
+      logVerdict(p, 'needs attention: note quota exhausted, no-note disabled');
+      return false;
     }
   }
+
+  switch (outcome.result) {
+    case 'sent':
+      repos.profiles.setStatus(p.id, 'sent', { sent_at: clock().toISOString() });
+      repos.events.recordSend(p.id, 'sent');
+      recordSuccess(repos); // reset the failure streak
+      logVerdict(p, 'sent — invite pending');
+      return false;
+    case 'already':
+      repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'already_connected' });
+      repos.events.recordEvent(p.id, 'skipped');
+      logVerdict(p, 'skipped: already connected');
+      return false;
+    case 'email_required':
+      // LinkedIn gates this member behind "enter their email to connect" — a
+      // per-profile verdict that can never succeed on retry. Terminal skip; does
+      // NOT touch the failure streak.
+      repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'email_required' });
+      repos.events.recordEvent(p.id, 'skipped');
+      logVerdict(p, 'skipped: LinkedIn requires their email to connect');
+      return false;
+    case 'weekly_limit':
+      // LinkedIn's account-level weekly invite cap: expected, resolves on its own
+      // when the window resets. Amber pause (user-resumable, clear reason) instead
+      // of the red guardrail — this is not a UI change or a block. The profile is
+      // blameless: back to the queue for after the resume.
+      repos.profiles.setStatus(p.id, 'queued', { last_error: null });
+      repos.settings.update({ paused: 1, pause_reason: 'LinkedIn weekly invitation limit reached — resume next week' });
+      logVerdict(p, 'weekly invitation limit reached — sending paused, profile requeued');
+      return true;
+    case 'not_found':
+      // The profile URL 404s (deleted account / renamed slug) — a per-profile
+      // verdict that can never succeed on retry. Terminal skip; does NOT touch
+      // the failure streak (a batch of stale imports must not halt the engine).
+      repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_found' });
+      repos.events.recordEvent(p.id, 'skipped');
+      logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
+      return false;
+    case 'unavailable':
+      return handleUnavailable(repos, p, outcome, clock, 'send composer unavailable');
+    case 'checkpoint':
+      handleCheckpoint(repos, p, outcome, clock);
+      return true;
+    case 'error':
+    default:
+      return handleError(repos, p, outcome, clock);
+  }
+}
+
+/** One message batch. Returns true if a halt-worthy verdict stopped the pass.
+ *  `delay` paces consecutive sends — see runInvitePass for the same contract. */
+async function runMessagePass(
+  repos: Repos, driver: BrowserDriver, due: Profile[], clock: () => Date, delay: () => Promise<void>,
+): Promise<boolean> {
+  for (let i = 0; i < due.length; i++) {
+    const halted = await attemptMessage(repos, driver, due[i], clock);
+    if (halted) return true;
+    if (i < due.length - 1) await delay();
+  }
   return false;
+}
+
+/** One profile's message attempt. Returns true if a halt-worthy verdict was hit. */
+async function attemptMessage(
+  repos: Repos, driver: BrowserDriver, p: Profile, clock: () => Date,
+): Promise<boolean> {
+  const cohort = repos.cohorts.findById(p.cohort_id)!;
+  // Messages REQUIRE text: the API validates this at enqueue, but the engine must
+  // never fall through to an empty send if a row slips past (imports, manual edits).
+  const text = selectNoteSource(p.custom_message, cohort.message_template);
+  if (text === null) {
+    repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'message cohort has no template or custom message' });
+    logVerdict(p, 'needs attention: no message text');
+    return false;
+  }
+  repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
+  log.debug('sender', 'attempting message', { profile: p.id, url: p.profile_url });
+
+  const outcome = await driver.sendMessage(p.profile_url, text);
+  if (outcome.firstName) repos.profiles.setStatus(p.id, 'sending', { first_name: outcome.firstName });
+
+  switch (outcome.result) {
+    case 'sent':
+      repos.profiles.setStatus(p.id, 'sent', {
+        sent_at: clock().toISOString(),
+        full_name: outcome.fullName ?? null,
+        thread_url: outcome.threadUrl ?? null,
+      });
+      repos.events.recordSend(p.id, 'sent');
+      recordSuccess(repos);
+      logVerdict(p, 'message sent');
+      return false;
+    case 'not_connected':
+      // Not a 1st-degree connection — per-profile, terminal, never InMail, no streak.
+      repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_connected' });
+      repos.events.recordEvent(p.id, 'skipped');
+      logVerdict(p, 'skipped: not a 1st-degree connection');
+      return false;
+    case 'not_found':
+      repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_found' });
+      repos.events.recordEvent(p.id, 'skipped');
+      logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
+      return false;
+    case 'unavailable':
+      return handleUnavailable(repos, p, outcome, clock, 'message composer unavailable');
+    case 'checkpoint':
+      handleCheckpoint(repos, p, outcome, clock);
+      return true;
+    case 'error':
+    default:
+      return handleError(repos, p, outcome, clock);
+  }
 }

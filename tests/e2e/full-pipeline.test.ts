@@ -45,8 +45,10 @@ test('happy path: list -> schedule -> send -> accept -> metrics', async () => {
   expect(repos.profiles.byStatus('queued')).toHaveLength(0);
 
   // 3. Run the sender once, after the scheduled time. All 3 fit in one batch (batch_size 5).
+  // No-op sleep: this batch has 3 profiles (2 inter-send gaps), and this suite must not
+  // actually wait the real min_delay_ms/max_delay_ms (20-90s by default).
   const sendNow = new Date(planNow.getTime() + 2 * 60_000);
-  await runSenderOnce(repos, driver, sendNow);
+  await runSenderOnce(repos, driver, sendNow, { sleep: async () => {} });
   expect(driver.sentLog).toHaveLength(3);
   // driver substitutes {firstName} with the live name it reads (FakeDriver uses 'Test')
   expect(driver.sentLog.every((s) => s.message === 'Hi Test')).toBe(true);
@@ -101,7 +103,7 @@ test('per-contact custom message overrides the cohort template', async () => {
 
   const planNow = new Date('2026-06-29T09:00:00');
   planAndAssignToday(repos, planNow, () => 0);
-  await runSenderOnce(repos, driver, new Date(planNow.getTime() + 2 * 60_000));
+  await runSenderOnce(repos, driver, new Date(planNow.getTime() + 2 * 60_000), { sleep: async () => {} });
 
   const dave = driver.sentLog.find((s) => s.url === 'https://www.linkedin.com/in/qa-dave');
   expect(dave?.message).toBe('Loved your talk, Test!'); // custom msg used, {firstName}->live name

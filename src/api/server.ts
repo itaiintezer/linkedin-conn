@@ -216,6 +216,11 @@ export function buildServer(
     defaultLog.info('api', 'run-now', { promoted: candidates.length });
     for (const p of candidates) repos.profiles.setScheduled(p.id, dueIso);
     // force: a manual trigger may run outside working hours by design.
+    // Deliberately NOT skipping the inter-send delay here: this hits the same LinkedIn
+    // account through the same automation, so a "Run batch now" that fires several sends
+    // back-to-back is exactly the burst pattern min_delay_ms/max_delay_ms exist to prevent.
+    // The endpoint already awaits the whole batch today, so a slower manual trigger
+    // (safety over responsiveness) is an acceptable trade — no separate "fast" path.
     await browserLock.tryRun(() => runSenderOnce(repos, driver, now, { force: true, clock: () => new Date() }));
     return { ok: true, promoted: candidates.length };
   });

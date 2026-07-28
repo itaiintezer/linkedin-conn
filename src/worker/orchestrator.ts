@@ -2,7 +2,7 @@ import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { Mutex } from '../core/mutex.js';
 import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending } from './scheduler-service.js';
-import { runSenderOnce } from './sender.js';
+import { runSenderOnce, type SenderOptions } from './sender.js';
 import { runAcceptanceCheck } from './acceptance-checker.js';
 import { log } from '../core/log.js';
 
@@ -50,11 +50,17 @@ export class Orchestrator {
    * `browserLock` is shared with the API server (run-now) so that the sender, the
    * acceptance reader and the manual trigger never drive the single browser page
    * concurrently — concurrent navigations abort each other (net::ERR_ABORTED).
+   *
+   * `senderOptions` forwards only the delay primitives (`sleep`/`rng`) into every
+   * periodic sender tick — production leaves this empty so runSenderOnce falls back to
+   * the real timer-based sleep; tests inject a no-op so a multi-profile batch in a
+   * periodic tick never performs a real 20-90s wait.
    */
   constructor(
     private repos: Repos,
     private driver: BrowserDriver,
     private browserLock: Mutex = new Mutex(),
+    private senderOptions: Pick<SenderOptions, 'sleep' | 'rng'> = {},
   ) {}
 
   /**
@@ -82,7 +88,7 @@ export class Orchestrator {
         requeueOverdue(this.repos, now);
         // Live clock: a batch runs for minutes, so per-profile timestamps (sent_at,
         // guardrail trips) must not all be stamped with the batch-start `now`.
-        return runSenderOnce(this.repos, this.driver, now, { clock: () => new Date() });
+        return runSenderOnce(this.repos, this.driver, now, { clock: () => new Date(), ...this.senderOptions });
       });
     } catch (err) {
       this.handleTickError('sender', err);

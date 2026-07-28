@@ -55,7 +55,9 @@ test('overlapping sender ticks never run two batches against the browser at once
     return { result: 'sent', firstName: 'T' };
   };
 
-  const orch = new Orchestrator(repos, driver);
+  // No-op sleep: this batch has 2 due profiles (1 inter-send gap), and this test must not
+  // actually wait the real min_delay_ms/max_delay_ms (20-90s by default).
+  const orch = new Orchestrator(repos, driver, undefined, { sleep: async () => {} });
   // Fire two sender ticks concurrently (the 60s timer firing mid-batch, or Run-now
   // overlapping the timer). The guard must drop the second so only one batch runs.
   await Promise.all([orch.runSenderTick(NOW), orch.runSenderTick(NOW)]);
