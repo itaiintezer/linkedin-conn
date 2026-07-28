@@ -82,7 +82,7 @@ export function buildServer(
     const now = new Date();
     const queueRemaining = (counts.queued ?? 0) + (counts.scheduled ?? 0);
     const scheduledRows = repos.profiles.byStatus('scheduled');
-    const weekly_sent = repos.events.countSentSince(windowStartIso(now));
+    const weekly_sent = repos.events.countSentSince(windowStartIso(now), 'invite');
     const weeklyRemaining = remainingCapacity(s.weekly_cap, weekly_sent);
     return {
       paused: s.paused,

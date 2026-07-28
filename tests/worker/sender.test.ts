@@ -28,7 +28,7 @@ test('sends due profiles, records sent status + event, respects remaining cap', 
   expect(driver.sentLog).toHaveLength(2);
   expect(driver.sentLog[0].message).toBe('Hi Test'); // driver substitutes the live name it reads ('Test')
   expect(repos.profiles.byStatus('sent')).toHaveLength(2);
-  expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(2);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(2);
 });
 
 test('already-connected -> skipped with reason, not counted as sent', async () => {
@@ -40,7 +40,7 @@ test('already-connected -> skipped with reason, not counted as sent', async () =
   expect(row.status).toBe('skipped');
   expect(row.skip_reason).toBe('already_connected');
   expect(row.last_error).toBeNull();
-  expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(0);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
 });
 
 test('email_required -> skipped with reason, terminal, no failure streak', async () => {
@@ -55,7 +55,7 @@ test('email_required -> skipped with reason, terminal, no failure streak', async
   // A per-profile verdict, not an automation failure: streak untouched, no guardrail.
   expect(repos.appState.get().failure_streak).toBe(0);
   expect(repos.appState.get().guardrail_tripped).toBe(0);
-  expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(0);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
 });
 
 test('not_found -> skipped with reason not_found, terminal, no failure streak', async () => {
@@ -71,7 +71,7 @@ test('not_found -> skipped with reason not_found, terminal, no failure streak', 
   // streak untouched, no guardrail (three dead imports in a row must not halt).
   expect(repos.appState.get().failure_streak).toBe(0);
   expect(repos.appState.get().guardrail_tripped).toBe(0);
-  expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(0);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
 });
 
 test('unavailable evidence flows into the guardrail detail when the streak trips', async () => {

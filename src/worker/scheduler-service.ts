@@ -40,7 +40,7 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   windowEnd.setHours(s.workday_end_hour, 0, 0, 0);
   if (now.getTime() >= windowEnd.getTime()) return;
 
-  const sentInWindow = repos.events.countSentSince(windowStartIso(now));
+  const sentInWindow = repos.events.countSentSince(windowStartIso(now), 'invite');
   const weeklyRemaining = remainingCapacity(s.weekly_cap, sentInWindow);
   if (weeklyRemaining <= 0) return;
 

@@ -39,7 +39,7 @@ export async function runSenderOnce(
   if (!opts.force && !withinSendWindow(now, settings)) return;
 
   // Capacity + due work are computed from the DB only — so idle ticks never open the browser.
-  const sentInWindow = repos.events.countSentSince(windowStartIso(now));
+  const sentInWindow = repos.events.countSentSince(windowStartIso(now), 'invite');
   let remaining = remainingCapacity(settings.weekly_cap, sentInWindow);
   if (remaining <= 0) return;
 
