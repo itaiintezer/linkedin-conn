@@ -185,10 +185,81 @@ test('migrates a pre-kind database: adds kind columns and rebuilds profiles uniq
 test('fresh database has message settings defaults and replies_checked_at', () => {
   const db = openDatabase(':memory:');
   const s = db.prepare('SELECT * FROM settings WHERE id = 1').get() as any;
-  expect(s.msg_weekly_cap).toBe(200);
+  expect(s.msg_weekly_cap).toBe(250);
   expect(s.msg_batch_size).toBe(5);
-  expect(s.msg_batches_per_day).toBe(4);
+  expect(s.msg_batches_per_day).toBe(6);
   expect(s.reply_checks_per_day).toBe(2);
   const a = db.prepare('SELECT * FROM app_state WHERE id = 1').get() as any;
   expect(a.replies_checked_at).toBeNull();
+});
+
+test('profiles rebuild preserves send_log FK integrity', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE cohorts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+      message_template TEXT, allow_no_note INTEGER NOT NULL DEFAULT 0,
+      archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE profiles (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cohort_id INTEGER NOT NULL REFERENCES cohorts(id), profile_url TEXT NOT NULL UNIQUE,
+      first_name TEXT, custom_message TEXT, status TEXT NOT NULL DEFAULT 'queued',
+      attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, skip_reason TEXT,
+      scheduled_for TEXT, sent_at TEXT, accepted_at TEXT, resolved_at TEXT,
+      priority INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE send_log (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      profile_id INTEGER NOT NULL REFERENCES profiles(id), outcome TEXT NOT NULL,
+      at TEXT NOT NULL DEFAULT (datetime('now')));
+    INSERT INTO cohorts (name) VALUES ('old');
+    INSERT INTO profiles (cohort_id, profile_url, status) VALUES (1, 'https://www.linkedin.com/in/x', 'accepted');
+    INSERT INTO send_log (profile_id, outcome) VALUES (1, 'sent');
+  `);
+  db.exec('PRAGMA foreign_keys = ON;');
+  runMigrations(db);
+  const joined = db
+    .prepare('SELECT send_log.id AS log_id, profiles.id AS profile_id FROM send_log JOIN profiles ON profiles.id = send_log.profile_id')
+    .all();
+  expect(joined).toHaveLength(1);
+  expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+});
+
+test('runMigrations recovers from a stale profiles_new left by an interrupted rebuild', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE cohorts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+      message_template TEXT, allow_no_note INTEGER NOT NULL DEFAULT 0,
+      archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE profiles (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cohort_id INTEGER NOT NULL REFERENCES cohorts(id), profile_url TEXT NOT NULL UNIQUE,
+      first_name TEXT, custom_message TEXT, status TEXT NOT NULL DEFAULT 'queued',
+      attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, skip_reason TEXT,
+      scheduled_for TEXT, sent_at TEXT, accepted_at TEXT, resolved_at TEXT,
+      priority INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    -- Simulate a crash right after CREATE TABLE profiles_new in a prior migration attempt.
+    CREATE TABLE profiles_new (id INTEGER PRIMARY KEY);
+    INSERT INTO cohorts (name) VALUES ('old');
+    INSERT INTO profiles (cohort_id, profile_url, status) VALUES (1, 'https://www.linkedin.com/in/x', 'accepted');
+  `);
+  expect(() => runMigrations(db)).not.toThrow();
+  const row = db.prepare('SELECT * FROM profiles WHERE id = 1').get() as any;
+  expect(row.status).toBe('accepted');
+  expect(row.kind).toBe('invite');
+});
+
+test('runMigrations restores PRAGMA foreign_keys = ON after the profiles rebuild', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE cohorts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+      message_template TEXT, allow_no_note INTEGER NOT NULL DEFAULT 0,
+      archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE TABLE profiles (id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cohort_id INTEGER NOT NULL REFERENCES cohorts(id), profile_url TEXT NOT NULL UNIQUE,
+      first_name TEXT, custom_message TEXT, status TEXT NOT NULL DEFAULT 'queued',
+      attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, skip_reason TEXT,
+      scheduled_for TEXT, sent_at TEXT, accepted_at TEXT, resolved_at TEXT,
+      priority INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    INSERT INTO cohorts (name) VALUES ('old');
+    INSERT INTO profiles (cohort_id, profile_url, status) VALUES (1, 'https://www.linkedin.com/in/x', 'accepted');
+  `);
+  runMigrations(db);
+  const fk = db.prepare('PRAGMA foreign_keys').get() as any;
+  expect(fk.foreign_keys).toBe(1);
 });

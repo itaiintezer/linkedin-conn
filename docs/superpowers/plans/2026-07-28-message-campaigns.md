@@ -98,9 +98,9 @@ test('migrates a pre-kind database: adds kind columns and rebuilds profiles uniq
 test('fresh database has message settings defaults and replies_checked_at', () => {
   const db = openDatabase(':memory:');
   const s = db.prepare('SELECT * FROM settings WHERE id = 1').get() as any;
-  expect(s.msg_weekly_cap).toBe(200);
+  expect(s.msg_weekly_cap).toBe(250);
   expect(s.msg_batch_size).toBe(5);
-  expect(s.msg_batches_per_day).toBe(4);
+  expect(s.msg_batches_per_day).toBe(6);
   expect(s.reply_checks_per_day).toBe(2);
   const a = db.prepare('SELECT * FROM app_state WHERE id = 1').get() as any;
   expect(a.replies_checked_at).toBeNull();
@@ -200,9 +200,9 @@ CREATE TABLE IF NOT EXISTS profiles (
 Settings — add after `acceptance_checks_per_day`:
 
 ```sql
-  msg_weekly_cap INTEGER NOT NULL DEFAULT 200,
+  msg_weekly_cap INTEGER NOT NULL DEFAULT 250,
   msg_batch_size INTEGER NOT NULL DEFAULT 5,
-  msg_batches_per_day INTEGER NOT NULL DEFAULT 4,
+  msg_batches_per_day INTEGER NOT NULL DEFAULT 6,
   -- Reply-check passes per day (messages funnel), same slot mechanism as acceptance.
   reply_checks_per_day INTEGER NOT NULL DEFAULT 2,
 ```
@@ -225,9 +225,9 @@ Append inside `runMigrations`, after the existing cohort `archived` block:
     db.exec("ALTER TABLE cohorts ADD COLUMN kind TEXT NOT NULL DEFAULT 'invite'");
   }
   if (cols.length > 0 && !cols.includes('msg_weekly_cap')) {
-    db.exec('ALTER TABLE settings ADD COLUMN msg_weekly_cap INTEGER NOT NULL DEFAULT 200');
+    db.exec('ALTER TABLE settings ADD COLUMN msg_weekly_cap INTEGER NOT NULL DEFAULT 250');
     db.exec('ALTER TABLE settings ADD COLUMN msg_batch_size INTEGER NOT NULL DEFAULT 5');
-    db.exec('ALTER TABLE settings ADD COLUMN msg_batches_per_day INTEGER NOT NULL DEFAULT 4');
+    db.exec('ALTER TABLE settings ADD COLUMN msg_batches_per_day INTEGER NOT NULL DEFAULT 6');
     db.exec('ALTER TABLE settings ADD COLUMN reply_checks_per_day INTEGER NOT NULL DEFAULT 2');
   }
   if (appCols.length > 0 && !appCols.includes('replies_checked_at')) {
@@ -1601,7 +1601,7 @@ test('GET /api/status exposes per-kind counts, caps, and replies_checked_at', as
   const body = res.json();
   expect(body.counts).toBeDefined();
   expect(body.msg_counts).toBeDefined();
-  expect(body.msg_weekly_cap).toBe(200);
+  expect(body.msg_weekly_cap).toBe(250);
   expect(body).toHaveProperty('replies_checked_at');
   expect(body.forecast.msg_next_batch !== undefined).toBe(true);
 });
@@ -2195,7 +2195,7 @@ git commit -m "feat(ui): message pacing + reply-check settings"
 
 - [ ] **Step 1: Update `API.md`** — document: `kind` on `POST /api/lists` and `POST /api/cohorts`; the `kind` query filter on `GET /api/profiles`; new `GET /api/status` fields (`msg_counts`, `msg_weekly_sent`, `msg_weekly_cap`, `replies_checked_at`, `forecast.msg_next_batch`); `POST /api/recheck-replies`; new settings keys; the `replied` status and `not_connected` skip reason. Follow the file's existing format.
 
-- [ ] **Step 2: Update `README.md`** — a "Message campaigns" section: what it does (messages to existing 1st-degree connections), the kind toggle on Add List, separate caps (defaults 200/week, 5×4), reply checking (default 2/day, upgrade-only), the not-connected skip, and that checkpoints halt both engines.
+- [ ] **Step 2: Update `README.md`** — a "Message campaigns" section: what it does (messages to existing 1st-degree connections), the kind toggle on Add List, separate caps (defaults 250/week, 5×6 — research-calibrated 2026-07-28, ramp to 8 batches/day after clean weeks), reply checking (default 2/day, upgrade-only), the not-connected skip, and that checkpoints halt both engines.
 
 - [ ] **Step 3: Full verification**
 

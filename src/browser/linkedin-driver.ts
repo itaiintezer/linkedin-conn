@@ -318,8 +318,8 @@ export class LinkedInDriver implements BrowserDriver {
     return (await this.readFullName(page))?.split(/\s+/)[0];
   }
 
-  async sendMessage(): Promise<SendOutcome> { throw new Error('not implemented (Task 10)'); }
-  async readInboxSnapshot(): Promise<InboxRow[]> { throw new Error('not implemented (Task 10)'); }
+  async sendMessage(): Promise<SendOutcome> { throw new Error('not implemented (pending Task 10)'); }
+  async readInboxSnapshot(): Promise<InboxRow[]> { throw new Error('not implemented (pending Task 10)'); }
 
   /**
    * DEPRECATED / diagnostic-only. The sent-invitations list is very large and only its

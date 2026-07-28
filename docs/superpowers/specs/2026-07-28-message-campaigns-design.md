@@ -71,8 +71,12 @@ Verified against the real logged-in session with a consented test send
   targeted fallback when a display name is ambiguous in the inbox scan.
 - `profiles.replied_at TEXT` — message-funnel analog of `accepted_at`.
 - New `skip_reason`: `'not_connected'`.
-- Settings additions: `msg_weekly_cap` (default 200), `msg_batch_size` (default 5),
-  `msg_batches_per_day` (default 4), `reply_checks_per_day` (default 2).
+- Settings additions: `msg_weekly_cap` (default 250), `msg_batch_size` (default 5),
+  `msg_batches_per_day` (default 6 → 30/day), `reply_checks_per_day` (default 2).
+  Defaults calibrated 2026-07-28 from vendor-limit research (PhantomBuster, Waalaxy,
+  et al.): DMs to 1st-degrees are consistently rated lower-risk than invites
+  (consensus safe range 40–150/day aged accounts); 30/day is the cautious ramp-in
+  end, with headroom to raise batches/day to 8 (40/day) after clean weeks.
   `app_state.replies_checked_at` mirrors `acceptance_checked_at`.
 - Statuses reused verbatim; `replied` is a new terminal status reached only from `sent`,
   only by upgrade (a reply can never be un-detected — same one-way principle the

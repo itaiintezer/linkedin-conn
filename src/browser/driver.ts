@@ -34,8 +34,8 @@ export class FakeDriver implements BrowserDriver {
       ? this.evidence : undefined;
     return { result, firstName: this.firstName, ...(evidence ? { evidence } : {}) };
   }
-  async sendMessage(): Promise<SendOutcome> { throw new Error('not implemented (Task 6)'); }
-  async readInboxSnapshot(): Promise<InboxRow[]> { throw new Error('not implemented (Task 6)'); }
+  async sendMessage(): Promise<SendOutcome> { throw new Error('not implemented (pending Task 6)'); }
+  async readInboxSnapshot(): Promise<InboxRow[]> { throw new Error('not implemented (pending Task 6)'); }
   async readPendingInvites() { return this.pending; }
   async readRecentConnections() { return this.connections; }
   async checkpointScan(): Promise<CheckpointScan> {

@@ -62,9 +62,9 @@ CREATE TABLE IF NOT EXISTS settings (
   -- Acceptance passes per day, spread across equal slots of the day (2 = morning +
   -- afternoon). Honored by Orchestrator.runAcceptanceTick via acceptanceSlot().
   acceptance_checks_per_day INTEGER NOT NULL DEFAULT 2,
-  msg_weekly_cap INTEGER NOT NULL DEFAULT 200,
+  msg_weekly_cap INTEGER NOT NULL DEFAULT 250,
   msg_batch_size INTEGER NOT NULL DEFAULT 5,
-  msg_batches_per_day INTEGER NOT NULL DEFAULT 4,
+  msg_batches_per_day INTEGER NOT NULL DEFAULT 6,
   -- Reply-check passes per day (messages funnel), same slot mechanism as acceptance.
   reply_checks_per_day INTEGER NOT NULL DEFAULT 2,
   note_quota_exhausted INTEGER NOT NULL DEFAULT 0,
