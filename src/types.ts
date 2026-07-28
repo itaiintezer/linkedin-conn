@@ -10,8 +10,6 @@ export type SkipReason = 'already_connected' | 'email_required' | 'not_found' | 
 
 export type EventType = 'sent' | 'accepted' | 'expired' | 'skipped' | 'failed';
 
-export type AccountType = 'unknown' | 'free' | 'premium' | 'salesnav';
-
 export interface Cohort {
   id: number;
   name: string;
@@ -48,7 +46,6 @@ export interface Settings {
   batch_size: number;
   batches_per_day: number;
   acceptance_checks_per_day: number;
-  account_type: AccountType;
   note_quota_exhausted: number;
   min_delay_ms: number;
   max_delay_ms: number;

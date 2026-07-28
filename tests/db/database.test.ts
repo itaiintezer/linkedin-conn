@@ -36,6 +36,33 @@ test('runMigrations leaves unknown-account users not onboarded', () => {
   expect((db.prepare('SELECT onboarded FROM settings WHERE id = 1').get() as any).onboarded).toBe(0);
 });
 
+test('runMigrations drops the legacy account_type column', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), weekly_cap INTEGER NOT NULL DEFAULT 100, account_type TEXT NOT NULL DEFAULT 'unknown');`);
+  db.exec(`INSERT INTO settings (id, account_type) VALUES (1, 'premium');`);
+  runMigrations(db);
+  const cols = (db.prepare('PRAGMA table_info(settings)').all() as any[]).map((c) => c.name);
+  expect(cols).not.toContain('account_type');
+  // Dropping the dead column must not disturb the settings that matter.
+  expect((db.prepare('SELECT weekly_cap FROM settings WHERE id = 1').get() as any).weekly_cap).toBe(100);
+});
+
+test('runMigrations is idempotent once account_type is gone', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), account_type TEXT NOT NULL DEFAULT 'unknown');`);
+  db.exec(`INSERT INTO settings (id, account_type) VALUES (1, 'free');`);
+  runMigrations(db);
+  expect(() => runMigrations(db)).not.toThrow();
+  const cols = (db.prepare('PRAGMA table_info(settings)').all() as any[]).map((c) => c.name);
+  expect(cols).not.toContain('account_type');
+});
+
+test('a fresh settings table has no account_type column', () => {
+  const db = openDatabase(':memory:');
+  const cols = (db.prepare('PRAGMA table_info(settings)').all() as any[]).map((c) => c.name);
+  expect(cols).not.toContain('account_type');
+});
+
 test('opens in-memory db and creates all tables', () => {
   const db = openDatabase(':memory:');
   const rows = db

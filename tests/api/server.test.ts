@@ -122,6 +122,18 @@ test('POST /api/settings accepts onboarded', async () => {
   expect(repos.settings.get().onboarded).toBe(1);
 });
 
+// account_type was removed entirely; an old client still sending it must not error or
+// resurrect the field.
+test('POST /api/settings ignores the removed account_type key', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/settings',
+    payload: { account_type: 'premium', weekly_cap: 33 },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(repos.settings.get().weekly_cap).toBe(33);
+  expect(repos.settings.get()).not.toHaveProperty('account_type');
+});
+
 test('GET /api/login-status reads the cache without touching the browser', async () => {
   repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-30T08:00:00.000Z');
   const res = await app.inject({ method: 'GET', url: '/api/login-status' });

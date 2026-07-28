@@ -930,7 +930,6 @@ async function loadSettings() {
     $('#setBatchesPerDay').value = s.batches_per_day ?? '';
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
-    $('#setAccountType').value = s.account_type || 'unknown';
     loadLogs();
   } catch (_) { /* ignore */ }
 }
@@ -1026,7 +1025,6 @@ function initSettings() {
       batches_per_day: num('#setBatchesPerDay'),
       workday_start_hour: num('#setStart'),
       workday_end_hour: num('#setEnd'),
-      account_type: $('#setAccountType').value,
     };
     Object.keys(patch).forEach((k) => patch[k] === undefined && delete patch[k]);
     try {
@@ -1043,7 +1041,6 @@ function initWizard() {
   const wiz = $('#setupWizard');
   if (!wiz) return;
   let pollId = null;
-  const showStep = (n) => $$('#setupWizard [data-step]').forEach((s) => { s.hidden = s.dataset.step !== String(n); });
 
   const startLoginPoll = () => {
     if (pollId) return;
@@ -1053,7 +1050,7 @@ function initWizard() {
         $('#wizLoginState').innerHTML = loggedIn
           ? '<span class="led on"></span>Connected'
           : '<span class="led off"></span>Waiting for login…';
-        $('#wizNext').disabled = !loggedIn;
+        $('#wizFinish').disabled = !loggedIn;
       } catch (_) { /* keep waiting */ }
     }, 2000);
   };
@@ -1064,10 +1061,8 @@ function initWizard() {
     try { await api('/api/login', { method: 'POST' }); } catch (_) { /* surfaced via poll */ }
     startLoginPoll();
   });
-  $('#wizNext').addEventListener('click', () => showStep(2));
   $('#wizFinish').addEventListener('click', async () => {
-    const account_type = $('#wizAccountType').value;
-    try { await api('/api/settings', { method: 'POST', body: { account_type, onboarded: 1 } }); } catch (_) { /* ignore */ }
+    try { await api('/api/settings', { method: 'POST', body: { onboarded: 1 } }); } catch (_) { /* ignore */ }
     stopLoginPoll();
     wiz.hidden = true;
     refreshLogin();
@@ -1075,7 +1070,7 @@ function initWizard() {
   });
 
   api('/api/settings').then((s) => {
-    if (!s.onboarded) { wiz.hidden = false; showStep(1); startLoginPoll(); }
+    if (!s.onboarded) { wiz.hidden = false; startLoginPoll(); }
   }).catch(() => { /* if settings unreachable, don't block the app */ });
 }
 

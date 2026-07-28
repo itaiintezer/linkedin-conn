@@ -24,31 +24,14 @@
         <span>Welcome to The Machine</span>
       </div>
 
-      <div class="wizard-step" data-step="1">
-        <span class="wizard-eyebrow">Step 1 of 2</span>
+      <div class="wizard-step">
+        <span class="wizard-eyebrow">One-time setup</span>
         <h2>Connect your LinkedIn</h2>
         <p>The Machine sends from your own LinkedIn session in a managed browser window. Open it and log in once — your password is never seen or stored.</p>
         <button class="btn btn-green" type="button" id="wizConnectBtn">Open LinkedIn login</button>
         <div class="wizard-state" id="wizLoginState"><span class="led off"></span>Not connected yet</div>
         <div class="wizard-actions">
-          <button class="btn btn-green" type="button" id="wizNext" disabled>Continue</button>
-        </div>
-      </div>
-
-      <div class="wizard-step" data-step="2" hidden>
-        <span class="wizard-eyebrow">Step 2 of 2</span>
-        <h2>Your LinkedIn plan</h2>
-        <p>This tunes sending limits and note quotas to match what your account allows.</p>
-        <div class="field">
-          <label for="wizAccountType">Account type</label>
-          <select id="wizAccountType">
-            <option value="free">Free</option>
-            <option value="premium">Premium</option>
-            <option value="salesnav">Sales Navigator</option>
-          </select>
-        </div>
-        <div class="wizard-actions">
-          <button class="btn btn-green" type="button" id="wizFinish">Finish setup</button>
+          <button class="btn btn-green" type="button" id="wizFinish" disabled>Finish setup</button>
         </div>
       </div>
     </div>
@@ -290,7 +273,7 @@
       <div class="panel-head">
         <div class="panel-title">
           <h2>Settings</h2>
-          <p class="panel-sub">Pacing, limits, and account profile</p>
+          <p class="panel-sub">Pacing and limits</p>
         </div>
       </div>
       <form id="settingsForm" class="form-grid settings-grid card-surface">
@@ -299,15 +282,6 @@
         <div class="field"><label for="setBatchesPerDay">Batches / day</label><input id="setBatchesPerDay" type="number" min="0" /></div>
         <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" min="0" max="23" /></div>
         <div class="field"><label for="setEnd">Workday end hour</label><input id="setEnd" type="number" min="0" max="23" /></div>
-        <div class="field">
-          <label for="setAccountType">Account type</label>
-          <select id="setAccountType">
-            <option value="unknown">Unknown</option>
-            <option value="free">Free</option>
-            <option value="premium">Premium</option>
-            <option value="salesnav">Sales Navigator</option>
-          </select>
-        </div>
         <div class="field span-all">
           <button class="btn btn-green" type="submit">Save settings</button>
         </div>

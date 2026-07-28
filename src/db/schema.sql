@@ -56,7 +56,6 @@ CREATE TABLE IF NOT EXISTS settings (
   -- Acceptance passes per day, spread across equal slots of the day (2 = morning +
   -- afternoon). Honored by Orchestrator.runAcceptanceTick via acceptanceSlot().
   acceptance_checks_per_day INTEGER NOT NULL DEFAULT 2,
-  account_type TEXT NOT NULL DEFAULT 'unknown',
   note_quota_exhausted INTEGER NOT NULL DEFAULT 0,
   min_delay_ms INTEGER NOT NULL DEFAULT 20000,
   max_delay_ms INTEGER NOT NULL DEFAULT 90000,

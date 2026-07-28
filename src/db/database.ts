@@ -25,8 +25,12 @@ export function runMigrations(db: DB): void {
   // the settings table. table_info returns [] for a missing table.
   if (cols.length > 0 && !cols.includes('onboarded')) {
     db.exec('ALTER TABLE settings ADD COLUMN onboarded INTEGER NOT NULL DEFAULT 0');
-    // Don't show the wizard to users who already configured an account type.
-    db.exec("UPDATE settings SET onboarded = 1 WHERE account_type != 'unknown'");
+    // Don't show the wizard to users who had already configured the (since-removed)
+    // account type. Guarded because the column is dropped further down: a database old
+    // enough to lack `onboarded` still has it, a newer one has neither.
+    if (cols.includes('account_type')) {
+      db.exec("UPDATE settings SET onboarded = 1 WHERE account_type != 'unknown'");
+    }
   }
   // Note: new tables (e.g. app_state) need no migration here — schema.sql's
   // `CREATE TABLE IF NOT EXISTS` runs on every openDatabase and back-fills them.
@@ -36,6 +40,13 @@ export function runMigrations(db: DB): void {
   }
   if (cols.length > 0 && !cols.includes('expiry_days')) {
     db.exec('ALTER TABLE settings ADD COLUMN expiry_days INTEGER NOT NULL DEFAULT 0');
+  }
+  // account_type (free/premium/salesnav) was collected by the setup wizard but never read
+  // by anything — limits always came from weekly_cap/batch_size. Removed 2026-07-28; drop
+  // the dead column so the schema matches the code. Must run after the onboarded back-fill
+  // above, which is the last thing that read it.
+  if (cols.includes('account_type')) {
+    db.exec('ALTER TABLE settings DROP COLUMN account_type');
   }
   // Guard on table presence: openDatabase runs schema.sql (which creates app_state) first,
   // but isolated migration tests may operate on a settings-only DB. table_info returns []
