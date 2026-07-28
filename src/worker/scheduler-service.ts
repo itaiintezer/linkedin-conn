@@ -1,5 +1,5 @@
 import type { Repos } from '../db/repositories.js';
-import type { CampaignKind } from '../types.js';
+import type { CampaignKind, Settings } from '../types.js';
 import { planDailyBatches, assignSchedule } from '../core/schedule.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
@@ -43,12 +43,11 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   if (now.getTime() >= windowEnd.getTime()) return;
 
   for (const kind of ['invite', 'message'] as CampaignKind[]) {
-    planKind(repos, now, kind, windowEnd, rng);
+    planKind(repos, s, now, kind, windowEnd, rng);
   }
 }
 
-function planKind(repos: Repos, now: Date, kind: CampaignKind, windowEnd: Date, rng: () => number): void {
-  const s = repos.settings.get();
+function planKind(repos: Repos, s: Settings, now: Date, kind: CampaignKind, windowEnd: Date, rng: () => number): void {
   const caps = capsFor(s, kind);
   const sentInWindow = repos.events.countSentSince(windowStartIso(now), kind);
   const weeklyRemaining = remainingCapacity(caps.weeklyCap, sentInWindow);
@@ -60,6 +59,11 @@ function planKind(repos: Repos, now: Date, kind: CampaignKind, windowEnd: Date, 
   const batchSize = Math.max(1, caps.batchSize);
   const dailyBudget = dailyRemainingFor(repos, s, now, kind);
   if (dailyBudget <= 0) return;
+
+  // Check the queue before drawing any rng values: an empty per-kind queue should cost
+  // zero rng draws, so one kind's emptiness never shifts the other kind's rng sequence.
+  const queuedAll = repos.profiles.queuedByPriorityKind(kind);
+  if (queuedAll.length === 0) return;
 
   const allTimes = planDailyBatches(now, {
     startHour: s.workday_start_hour, endHour: s.workday_end_hour, count: caps.batchesPerDay,
@@ -79,7 +83,7 @@ function planKind(repos: Repos, now: Date, kind: CampaignKind, windowEnd: Date, 
   const budget = Math.min(weeklyRemaining, dailyBudget, slotCapacity);
   if (budget <= 0) return;
 
-  const queued = repos.profiles.queuedByPriorityKind(kind).slice(0, budget);
+  const queued = queuedAll.slice(0, budget);
   if (queued.length === 0) return;
 
   const assignments = assignSchedule(queued.map((p) => p.id), times, batchSize);

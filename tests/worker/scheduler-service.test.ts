@@ -276,3 +276,17 @@ test('planAndAssignToday schedules invite and message queues independently with 
   expect(repos.profiles.byStatusKind('scheduled', 'invite')).toHaveLength(2);   // 1 batch x 2
   expect(repos.profiles.byStatusKind('scheduled', 'message')).toHaveLength(3);  // 1 batch x 3
 });
+
+test('a capacity-exhausted kind does not affect scheduling of the other kind', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 50; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  const msg = repos.cohorts.create('M', 'hi', true, 'message');
+  for (let i = 0; i < 10; i++) repos.profiles.add(msg.id, `https://www.linkedin.com/in/m${i}`, null, 'message');
+  repos.settings.update({ msg_weekly_cap: 0 }); // message capacity fully exhausted
+  let i = 0; const seq = [0.1, 0.35, 0.6, 0.85]; // same seq as the invite-only 20-cap baseline
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => seq[(i++) % seq.length]);
+  // Invites schedule exactly as they would with no message cohort present (4 batches * 5 = 20).
+  expect(repos.profiles.byStatusKind('scheduled', 'invite')).toHaveLength(20);
+  expect(repos.profiles.byStatusKind('scheduled', 'message')).toHaveLength(0);
+  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(10);
+});
