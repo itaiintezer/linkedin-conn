@@ -28,12 +28,14 @@ Verified against the real logged-in session with a consented test send
 
 1. **Profile top card is the new obfuscated-class React UI.** No `h1` on the page; the
    profile name is an `h2` with hashed classes. Do not rely on any hashed class name.
-2. **1st-degree gate:** a `<p>` whose exact text is `· 1st` sits within a few ancestor
-   levels of the name `h2`. Detection: capped ancestor walk (≤8 levels) from the name
-   element, looking for a `p` matching `/^·\s*1st$/`. The walk cap prevents matching
-   right-rail badges of *other* profiles. No badge found ⇒ **skip `not_connected`**
-   (fail-safe direction: the gate refusing wrongly costs one skip, sending wrongly
-   costs an InMail).
+2. **1st-degree gate:** the primary gate is the invite driver's production-proven
+   `isAlreadyConnected` signal — profile rendered (name readable) + no Pending badge +
+   no Connect affordance anywhere (top card, custom-invite anchor, or under "More") —
+   AND the `/messaging/compose/` deep link must be present. The `· 1st` badge `<p>`
+   (verified live via capped ancestor walk from the name `h2`) exists but the invite
+   driver documents degree text as unreliable across page variants (both tokens can
+   render), so it is not load-bearing. Gate fails ⇒ **skip `not_connected`**
+   (fail-safe direction: refusing wrongly costs one skip, sending wrongly risks InMail).
 3. **Compose deep link:** the Message control is an
    `<a href="/messaging/compose/?profileUrn=…&recipient=…">`. Navigating to that URL
    (like the invite flow's `custom-invite` route) opens the **classic messaging UI with
@@ -93,7 +95,8 @@ under the same browser mutex. The message pass mirrors `runSenderOnce`:
 1. Capacity from `msg_weekly_cap` minus message sends in the rolling window (message and
    invite send counts are tracked separately in `send_log`/events).
 2. For each due profile: goto profile URL → 404 ⇒ skip `not_found` → run the 1st-degree
-   gate ⇒ no badge ⇒ skip `not_connected` → read name (`full_name`, `{firstName}`) →
+   gate (`isAlreadyConnected` must be true) ⇒ otherwise skip `not_connected` → read name
+   (`full_name`, `{firstName}`) →
    extract compose href (absent ⇒ skip `not_connected`) → navigate → type template →
    verify send-button enablement → send → verify the three structural signals →
    status `sent`, record event, stamp `sent_at`, capture `thread_url`.
@@ -105,8 +108,9 @@ under the same browser mutex. The message pass mirrors `runSenderOnce`:
 (default 2/day) — one navigation to `/messaging/`, scan the conversation list, match
 rows to `sent` message-profiles by `full_name`; a matching row whose snippet lacks the
 `You:` prefix ⇒ status `replied`, stamp `replied_at`. Ambiguous names (two pending
-contacts sharing a display name) fall back to opening each stored `thread_url` and
-reading the last event's author. Stamp `replies_checked_at` only after a clean,
+contacts sharing a display name) are logged and left pending — fail-safe, no state
+change; the stored `thread_url` enables a per-thread fallback later if it ever matters
+in practice. Stamp `replies_checked_at` only after a clean,
 non-empty read (the acceptance-checker lesson: a failed pass must not burn the slot).
 
 ## UX
