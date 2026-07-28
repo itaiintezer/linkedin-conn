@@ -34,6 +34,7 @@ export function openDatabase(path: string): DB {
     const profileCols = (db.prepare('PRAGMA table_info(profiles)').all() as { name: string }[]).map((c) => c.name);
     const backupPath = `${path}.pre-kind-backup`;
     if (profileCols.length > 0 && !profileCols.includes('kind') && !existsSync(backupPath)) {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); // fold the WAL in — a bare file copy misses it
       copyFileSync(path, backupPath);
     }
   }
@@ -175,7 +176,7 @@ export function runMigrations(db: DB): void {
       `);
       db.exec('COMMIT');
     } catch (e) {
-      db.exec('ROLLBACK');
+      try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
       throw e;
     } finally {
       db.exec('PRAGMA foreign_keys = ON;');

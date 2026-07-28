@@ -77,6 +77,9 @@ Verified against the real logged-in session with a consented test send
   et al.): DMs to 1st-degrees are consistently rated lower-risk than invites
   (consensus safe range 40–150/day aged accounts); 30/day is the cautious ramp-in
   end, with headroom to raise batches/day to 8 (40/day) after clean weeks.
+  Note: at these defaults the weekly cap (250) never binds (30/day × 5 = 150) —
+  deliberate: daily pacing is the operative rail for messages, the weekly cap is a
+  pure backstop that stays meaningful through the documented ramp to 40/day.
   `app_state.replies_checked_at` mirrors `acceptance_checked_at`.
 - Statuses reused verbatim; `replied` is a new terminal status reached only from `sent`,
   only by upgrade (a reply can never be un-detected — same one-way principle the
