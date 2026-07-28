@@ -98,7 +98,10 @@ database (`data/`) and browser profile (`.linkedin-profile/`) next to its own fi
   Resolve it in the browser window, then click **Resume**.
 - If LinkedIn reports its own weekly invitation limit, The Machine pauses (amber banner)
   and requeues the profile it was about to send.
-- Acceptance tracking reads two list pages ~once/day; it does not consume your weekly cap.
+- Acceptance tracking reads the Recent connections page twice a day by default
+  (`acceptance_checks_per_day`, one successful pass per equal slot of the day) and marks
+  anyone found there accepted. Absence never marks anything — "expired" comes only from the
+  optional `expiry_days` age backstop. This read does not consume your weekly cap.
 
 ## API (localhost)
 
