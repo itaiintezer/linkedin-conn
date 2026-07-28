@@ -3,7 +3,7 @@ import type { BrowserDriver, SendOutcome, LoginSnapshot, CheckpointScan, InboxRo
 import { CloakSession } from './cloak-session.js';
 import { SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
-import { applyFirstName } from '../core/message.js';
+import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 import { detectCheckpoint } from '../core/checkpoint.js';
 import { captureEvidence } from './evidence.js';
 import { scrollToLoad } from './auto-scroll.js';
@@ -318,8 +318,125 @@ export class LinkedInDriver implements BrowserDriver {
     return (await this.readFullName(page))?.split(/\s+/)[0];
   }
 
-  async sendMessage(): Promise<SendOutcome> { throw new Error('not implemented (pending Task 10)'); }
-  async readInboxSnapshot(): Promise<InboxRow[]> { throw new Error('not implemented (pending Task 10)'); }
+  /**
+   * Send a direct message to an existing 1st-degree connection.
+   * Flow (live-verified 2026-07-28): profile page → 1st-degree gate (the production-proven
+   * isAlreadyConnected signal — NOT the degree badge, which renders unreliably) → navigate
+   * to the profile's own /messaging/compose/ deep link → type into the classic msg-form →
+   * Send → verify structurally (composer cleared + our text present in the thread).
+   * Anything not clearly a 1st-degree connection is 'not_connected' — never InMail.
+   */
+  async sendMessage(url: string, message: string): Promise<SendOutcome> {
+    const page = await this.session.page();
+    try {
+      // 1) Profile pre-visit: name capture + gates.
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      await sleep(rand(1500, 3500));
+      if (isNotFoundUrl(page.url())) return this.notFoundOutcome(page);
+      const fullName = await this.readFullName(page);
+      const firstName = fullName?.split(/\s+/)[0];
+      {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
+      }
+      // 1st-degree gate: must be an existing connection (fail-safe: skip, never InMail).
+      if (!(await this.isAlreadyConnected(page, url))) {
+        return { result: 'not_connected', firstName, fullName };
+      }
+      // 2) The Message control is an anchor to the compose route; its absence on a
+      //    connection's profile means messaging is unavailable for them — skip.
+      const composeHref = await page.locator(SEL.msgComposeLink).first()
+        .getAttribute('href').catch(() => null);
+      if (!composeHref) return { result: 'not_connected', firstName, fullName };
+
+      // 3) Compose route → classic msg-form overlay with stable selectors.
+      await page.goto(new URL(composeHref, 'https://www.linkedin.com').href, { waitUntil: 'domcontentloaded' });
+      await sleep(rand(3000, 5000));
+      const box = page.locator(SEL.msgBox).last();
+      if (!(await box.isVisible().catch(() => false))) {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
+        const ev = await captureEvidence(page, 'msg-composer-unavailable', {});
+        return {
+          result: 'unavailable', firstName, fullName,
+          evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+        };
+      }
+
+      // 4) Type like a human; the send button flips enabled only when text registered.
+      const text = applyFirstName(message, firstName ?? null, MAX_MESSAGE);
+      await box.click();
+      await page.keyboard.type(text, { delay: rand(25, 60) });
+      await sleep(rand(800, 1600));
+      const send = page.locator(SEL.msgSendButton).last();
+      if (await send.isDisabled().catch(() => true)) {
+        // errorOutcome captures the evidence snapshot itself.
+        return this.errorOutcome(page, 'send button never enabled after typing', firstName);
+      }
+      await send.click();
+      await sleep(rand(3000, 5000));
+
+      // 5) Structural confirmation: composer cleared + our text is in the thread.
+      //    Both sides are whitespace-normalized: the rendered thread collapses the
+      //    newlines of a multi-line template, so comparing raw sent text against
+      //    normalized DOM text would report "not confirmed" for a message that DID send
+      //    (a false 'error' costs a failure-streak point and invites a duplicate send).
+      //    The composer is read as the LAST match, the same one we typed into.
+      //
+      //    NOTE: the needles are normalized HERE, in Node, and the callback declares no
+      //    named inner function on purpose. Under tsx/esbuild (`npm start`), keep-names
+      //    rewrites a named inner binding to `__name(fn, "fn")`, and `__name` does not
+      //    exist inside the page — the callback would throw ReferenceError at runtime.
+      const sent30 = text.replace(/\s+/g, ' ').trim().slice(0, 30);
+      const sent40 = text.replace(/\s+/g, ' ').trim().slice(0, 40);
+      const confirmed = await page.evaluate(({ boxSel, evSel, sent30: s30, sent40: s40 }) => {
+        const boxes = document.querySelectorAll(boxSel);
+        const box = boxes[boxes.length - 1];
+        const boxText = (box?.textContent || '').replace(/\s+/g, ' ').trim();
+        const cleared = !boxText.includes(s30);
+        const events = Array.from(document.querySelectorAll(evSel))
+          .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim());
+        const inThread = events.some((e) => e.includes(s40));
+        const failed = /failed to send|couldn.t send|message not sent/i.test(document.body.textContent || '');
+        return { cleared, inThread, failed };
+      }, { boxSel: SEL.msgBox, evSel: SEL.msgEvent, sent30, sent40 });
+
+      if (confirmed.failed || !(confirmed.cleared && confirmed.inThread)) {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
+        return this.errorOutcome(page, 'message send not confirmed (composer/thread state)', firstName);
+      }
+      const threadUrl = /\/messaging\/thread\//.test(page.url()) ? page.url() : undefined;
+      return { result: 'sent', firstName, fullName, ...(threadUrl ? { threadUrl } : {}) };
+    } catch (e) {
+      const scan = await this.scanCheckpoint(page);
+      if (scan.hit) return this.checkpointOutcome(page, scan);
+      return this.errorOutcome(page, (e as Error).message);
+    }
+  }
+
+  /** One-page inbox scan (no scrolling: same top-slice tradeoff as the acceptance read). */
+  async readInboxSnapshot(): Promise<InboxRow[]> {
+    const page = await this.session.page();
+    await page.goto(URLS.messaging, { waitUntil: 'domcontentloaded' });
+    await sleep(rand(3000, 5000));
+    if ((await this.scanCheckpoint(page)).hit) {
+      await captureEvidence(page, 'checkpoint', { during: 'inbox read' });
+      throw new Error('checkpoint detected during inbox read');
+    }
+    return page.evaluate(({ rowSel, nameSel, snipSel }) => {
+      return Array.from(document.querySelectorAll(rowSel)).map((li) => {
+        const name = (li.querySelector(nameSel)?.textContent || '').trim();
+        const snippet = (li.querySelector(snipSel)?.textContent || '').trim();
+        // Thread href when the row exposes one: the reply matcher prefers it over the
+        // display name, which renders differently here than on the profile page
+        // ("Keren Tevet" vs the profile's "Keren (Yosef) Tevet") — verified live.
+        const href = li.querySelector('a[href*="/messaging/thread/"]')?.getAttribute('href') ?? null;
+        const threadUrl = href ? new URL(href, 'https://www.linkedin.com').href : undefined;
+        return { name, snippet, youSentLast: /^you:/i.test(snippet), ...(threadUrl ? { threadUrl } : {}) };
+      }).filter((r) => r.name || r.threadUrl);
+    }, { rowSel: SEL.inboxRow, nameSel: SEL.inboxRowName, snipSel: SEL.inboxRowSnippet });
+  }
 
   /**
    * DEPRECATED / diagnostic-only. The sent-invitations list is very large and only its
