@@ -39,6 +39,16 @@
   --teal:       #0d9488;   --plum:      #9d4edd;
   --neutral:    #6c7670;   --neutral-bg:#f0efe9;
 
+  /* --- campaign-kind identity (teal = message campaigns) ---
+     Status colours above are global (queued slate → scheduled blue → sent violet →
+     terminal-success emerald) and mean the same thing in both engines. Teal never
+     encodes a status: it marks "this belongs to the messages side" — the messages
+     conveyor line, its kind chips, badges and toggles. */
+  --teal-700:   #0b7a70;
+  --teal-100:   #c3e6e1;
+  --teal-50:    #e4f4f1;
+  --teal-glow:  rgba(13, 148, 136, 0.20);
+
   /* --- type --- */
   --display: "Fraunces", "Iowan Old Style", Georgia, serif;
   --sans:    "Hanken Grotesk", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
@@ -256,6 +266,12 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
   animation: cardIn .5s cubic-bezier(.2,.7,.3,1) both;
 }
 .engine .label { font-size: 11.5px; font-weight: 600; letter-spacing: 0.7px; text-transform: uppercase; color: var(--ink-3); }
+/* Kind mark in front of an engine's "this week" label — the one place each engine
+   says out loud which campaign kind it runs. */
+.engine .label { display: inline-flex; align-items: center; gap: 7px; }
+.kind-ico { display: inline-grid; place-items: center; flex: none; color: var(--brand); }
+.kind-ico svg { width: 13px; height: 13px; }
+.engine-msg .kind-ico { color: var(--teal); }
 
 /* pace row */
 .engine-top { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; }
@@ -356,6 +372,56 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 @media (prefers-reduced-motion: reduce) {
   .dotflow i { animation: none; opacity: 0; }
 }
+
+/* ---------- Messages engine (the second conveyor) ----------
+   Same anatomy as the invite engine, deliberately so: two stacked machines of the
+   same make. Only the conveyor itself is re-tinted teal (engine identity); the
+   station pucks keep the global status palette, because `sent` is violet and a
+   terminal success is emerald everywhere else in the app too. */
+.engine-msg { margin-top: 16px; }
+.engine-msg .flowline { background: repeating-linear-gradient(90deg, var(--teal-100) 0 9px, transparent 9px 20px); }
+.engine-msg .dotflow i { background: var(--teal); box-shadow: 0 0 0 4px var(--teal-glow); }
+.engine-msg .fuelbar > i { background: linear-gradient(90deg, var(--teal), #3fbfb1); }
+
+/* Message stations: `sent` mirrors the invite engine's `pending` (same status, same
+   violet); `replied` mirrors `accepted` (the funnel's happy ending). */
+.station.sent    .puck { border-color: #ddccf3; } .station.sent    .n { color: var(--violet); }
+.station.replied .puck { border-color: var(--brand-100); background: var(--brand-50); } .station.replied .n { color: var(--brand-700); }
+
+/* Collapsed engine: someone who only sends invites gets a slim placeholder instead
+   of a dead conveyor — the sheet's dashed "nothing here yet" idiom (cf. .cohort-new). */
+.engine.is-idle {
+  padding: 11px 14px; background: transparent; box-shadow: none;
+  border-style: dashed; border-color: #d4cfc2; animation: none;
+}
+.engine.is-idle .engine-top, .engine.is-idle .track, .engine.is-idle .engine-state { display: none; }
+.engine-idle { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
+.engine-idle-mark {
+  display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; flex: none;
+  background: var(--teal-50); color: var(--teal-700);
+}
+.engine-idle-label { font-size: 11.5px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase; color: var(--ink-3); }
+.engine-idle-sub { font-size: 13.5px; color: var(--ink-faint); }
+.engine-idle-cta { margin-left: auto; padding: 5px 13px; font-size: 12.5px; }
+
+/* Recheck button inherits its engine's identity colour. */
+.engine-msg .recheck-btn:hover { color: var(--teal-700); border-color: var(--teal-100); background: var(--teal-50); }
+.engine-msg .recheck-btn:focus-visible,
+.engine-msg .station.is-drill:focus-visible .puck { outline-color: var(--teal); }
+
+/* ---------- Campaign-kind markers ----------
+   Invites are the default and stay neutral; message rows/cohorts carry the teal
+   identity so a mixed list is scannable without reading a word. */
+.kind-mark {
+  display: inline-grid; place-items: center; flex: none;
+  width: 20px; height: 20px; border-radius: 6px;
+  background: var(--line-soft); color: var(--ink-3);
+}
+.kind-mark svg { width: 12px; height: 12px; }
+.kind-mark.message { background: var(--teal-50); color: var(--teal-700); }
+.qg-head .kind-mark { width: 22px; height: 22px; }
+.tag.kind-tag { text-transform: none; letter-spacing: 0.1px; }
+.tag.kind-tag.message { background: var(--teal-50); color: var(--teal-700); }
 
 /* ---------- Tables ---------- */
 .table-wrap {
@@ -798,6 +864,7 @@ body > .drawer {
   padding: 10px 24px; border-bottom: 1px solid var(--line-soft);
 }
 .drawer-row:hover { background: var(--bg-wash); }
+.drawer-slug-cell { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .drawer-slug { min-width: 0; font-family: var(--mono); font-size: 13px; font-weight: 500;
   color: var(--brand-700); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-slug:hover { text-decoration: underline; }
