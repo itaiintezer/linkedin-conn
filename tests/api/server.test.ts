@@ -666,3 +666,47 @@ test('POST /api/settings accepts the message pacing keys', async () => {
   expect(res.json().msg_weekly_cap).toBe(150);
   expect(res.json().reply_checks_per_day).toBe(1);
 });
+
+test('POST /api/cohorts enforces the same template rules as /api/lists', async () => {
+  // A direct API caller (agent/script) must not be able to create a message cohort with
+  // no text — the UI guards this client-side, which doesn't protect the API.
+  const blank = await app.inject({ method: 'POST', url: '/api/cohorts', payload: { name: 'MsgNoTpl', kind: 'message' } });
+  expect(blank.statusCode).toBe(400);
+  expect(repos.cohorts.findByName('MsgNoTpl')).toBeUndefined();
+
+  const tooLong = await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'MsgLong', kind: 'message', message_template: 'x'.repeat(2001) },
+  });
+  expect(tooLong.statusCode).toBe(400);
+
+  const ok = await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'MsgOk', kind: 'message', message_template: 'Hey {firstName}' },
+  });
+  expect(ok.statusCode).toBe(200);
+  expect(repos.cohorts.findByName('MsgOk')!.kind).toBe('message');
+
+  // Invite cohorts keep their 300-char limit and may still have no template at all.
+  const bareInvite = await app.inject({ method: 'POST', url: '/api/cohorts', payload: { name: 'InvBare' } });
+  expect(bareInvite.statusCode).toBe(200);
+  const inviteLong = await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'InvLong', message_template: 'x'.repeat(301) },
+  });
+  expect(inviteLong.statusCode).toBe(400);
+});
+
+test('editing an existing message cohort without restating kind still enforces its template', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'MsgEdit', kind: 'message', message_template: 'Hey {firstName}' },
+  });
+  // The UI's edit form omits `kind` (it's frozen); blanking the template must still 400
+  // rather than silently leaving a message cohort unsendable.
+  const blanked = await app.inject({
+    method: 'POST', url: '/api/cohorts', payload: { name: 'MsgEdit', message_template: '   ' },
+  });
+  expect(blanked.statusCode).toBe(400);
+  expect(repos.cohorts.findByName('MsgEdit')!.message_template).toBe('Hey {firstName}');
+});

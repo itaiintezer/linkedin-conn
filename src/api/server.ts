@@ -195,10 +195,22 @@ export function buildServer(
     if (existing && existing.kind !== kind && kindRaw !== undefined) {
       return reply.code(409).send({ error: `cohort "${name}" is a ${existing.kind} cohort` });
     }
-    const allowNoNote = deriveAllowNoNote(message_template);
-    const c = repos.cohorts.getOrCreate(name, message_template ?? null, allowNoNote, kind);
+    // Same template rules as /api/lists — a message cohort with no text would queue
+    // profiles the sender can only route to needs_attention, and the UI's client-side
+    // guard doesn't protect direct API callers (agents, scripts).
+    const effectiveKind = existing && kindRaw === undefined ? existing.kind : kind;
+    const template = message_template?.trim() || undefined;
+    if (effectiveKind === 'message' && !template) {
+      return reply.code(400).send({ error: 'message cohorts require a message template' });
+    }
+    const max = effectiveKind === 'message' ? MAX_MESSAGE : MAX_NOTE;
+    if (template && template.length > max) {
+      return reply.code(400).send({ error: `template too long (max ${max} characters)` });
+    }
+    const allowNoNote = deriveAllowNoNote(template);
+    const c = repos.cohorts.getOrCreate(name, template ?? null, allowNoNote, kind);
     repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
-      .run(message_template ?? null, allowNoNote ? 1 : 0, c.id);
+      .run(template ?? null, allowNoNote ? 1 : 0, c.id);
     return repos.cohorts.findById(c.id);
   });
 
