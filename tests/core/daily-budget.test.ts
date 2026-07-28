@@ -19,6 +19,10 @@ test('dailyTargetFor: batches_per_day * max(1, batch_size)', () => {
   expect(dailyTargetFor(settings({ batch_size: 0 }), 'invite')).toBe(4); // 4 * max(1,0)
 });
 
+test('dailyTargetFor: message kind is 0 when msg_batches_per_day is 0', () => {
+  expect(dailyTargetFor(settings({ msg_batches_per_day: 0 }), 'message')).toBe(0);
+});
+
 test('committedToday counts scheduled rows plus profiles sent today', () => {
   const repos = new Repos(openDatabase(':memory:'));
   const c = repos.cohorts.create('C', null, true);
@@ -51,4 +55,21 @@ test('daily budget is computed per kind from that kind caps and rows', () => {
   expect(dailyTargetFor(s, 'message')).toBe(20);
   expect(dailyRemainingFor(repos, s, now, 'invite')).toBe(5);   // 6 - 1 scheduled invite
   expect(dailyRemainingFor(repos, s, now, 'message')).toBe(19); // 20 - 1 scheduled message
+});
+
+test('committedToday excludes same-day sent rows of the other kind', () => {
+  const repos = new Repos(openDatabase(':memory:'));
+  const inv = repos.cohorts.create('I', null, true);
+  const msg = repos.cohorts.create('M', 'hi', true, 'message');
+  const pi = repos.profiles.add(inv.id, 'https://www.linkedin.com/in/i1', null);
+  const pm = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/m1', null, 'message');
+  const now = new Date(2026, 6, 28, 12, 0); // local noon, 2026-07-28
+  repos.profiles.setStatus(pi.id, 'sent', { sent_at: new Date(2026, 6, 28, 9, 0).toISOString() });
+  // Message profile also sent today, but must not leak into the invite kind's count.
+  repos.profiles.setStatus(pm.id, 'sent', { sent_at: new Date(2026, 6, 28, 9, 0).toISOString() });
+  const s = repos.settings.get();
+  expect(committedToday(repos, now, 'invite')).toBe(1);
+  expect(dailyRemainingFor(repos, s, now, 'invite')).toBe(dailyTargetFor(s, 'invite') - 1);
+  // Sanity: the message send is still counted on its own kind.
+  expect(committedToday(repos, now, 'message')).toBe(1);
 });
