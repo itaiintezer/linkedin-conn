@@ -148,7 +148,7 @@ export function buildServer(
 
   app.get('/api/metrics', async () => {
     const rows = repos.db.prepare(`
-      SELECT p.cohort_id, c.name AS cohort_name, p.status, p.sent_at, p.accepted_at
+      SELECT p.cohort_id, c.name AS cohort_name, p.kind, p.status, p.sent_at, p.accepted_at, p.replied_at
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       WHERE c.archived = 0
     `).all() as unknown as MetricRow[];

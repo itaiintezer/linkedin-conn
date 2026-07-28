@@ -1,4 +1,5 @@
-const MAX_NOTE = 300;
+export const MAX_NOTE = 300;
+export const MAX_MESSAGE = 2000;
 
 /**
  * Choose the note source by precedence (custom message -> cohort template -> none),
@@ -12,9 +13,10 @@ export function selectNoteSource(customMessage: string | null, template: string 
   return null;
 }
 
-/** Substitute {firstName} (falling back to 'there') and truncate to the 300-char limit. */
-export function applyFirstName(text: string, firstName: string | null): string {
-  return text.replace(/\{firstName\}/g, (firstName ?? '').trim() || 'there').slice(0, MAX_NOTE);
+/** Substitute {firstName} (falling back to 'there') and truncate to the length limit
+ *  (300 for invite notes; pass MAX_MESSAGE for direct messages). */
+export function applyFirstName(text: string, firstName: string | null, max: number = MAX_NOTE): string {
+  return text.replace(/\{firstName\}/g, (firstName ?? '').trim() || 'there').slice(0, max);
 }
 
 /**

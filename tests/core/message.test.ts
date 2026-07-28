@@ -43,3 +43,9 @@ test('truncates to 300 characters (LinkedIn note limit)', () => {
   const long = 'x'.repeat(400);
   expect(resolveMessage(long, null, 'Jane')!.length).toBe(300);
 });
+
+test('applyFirstName honors a custom max length (messages are 2000, notes 300)', () => {
+  const long = 'x'.repeat(2500);
+  expect(applyFirstName(long, 'A').length).toBe(300);
+  expect(applyFirstName(long, 'A', 2000).length).toBe(2000);
+});
