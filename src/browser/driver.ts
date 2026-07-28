@@ -1,6 +1,8 @@
 import type { BrowserDriver, SendOutcome, SendResult, SendEvidence, LoginSnapshot, CheckpointScan, InboxRow } from '../types.js';
-import { applyFirstName } from '../core/message.js';
+import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 export type { BrowserDriver };
+
+const slug = (url: string) => url.match(/\/in\/([^/?#]+)/)?.[1] ?? 'x';
 
 /** In-memory driver for testing workers without a real browser. */
 export class FakeDriver implements BrowserDriver {
@@ -17,6 +19,16 @@ export class FakeDriver implements BrowserDriver {
   firstName = 'Test';
   /** Records the note as actually sent (after {firstName} substitution). */
   sentLog: { url: string; message: string | null }[] = [];
+  /** Scripted per-URL message outcomes; default 'sent'. */
+  msgScripted = new Map<string, SendResult>();
+  /** Records messages "sent" (after {firstName} substitution). */
+  msgLog: { url: string; message: string }[] = [];
+  /** Full name this fake "reads" from profiles. */
+  fullName = 'Test Person';
+  /** Inbox rows returned by readInboxSnapshot. */
+  inboxRows: InboxRow[] = [];
+  /** When set, readInboxSnapshot throws (read-failure paths). */
+  inboxError: string | null = null;
 
   browserOpen() { return this.open; }
   async readLoginState(): Promise<LoginSnapshot> {
@@ -34,8 +46,27 @@ export class FakeDriver implements BrowserDriver {
       ? this.evidence : undefined;
     return { result, firstName: this.firstName, ...(evidence ? { evidence } : {}) };
   }
-  async sendMessage(): Promise<SendOutcome> { throw new Error('not implemented (pending Task 6)'); }
-  async readInboxSnapshot(): Promise<InboxRow[]> { throw new Error('not implemented (pending Task 6)'); }
+  async sendMessage(url: string, message: string): Promise<SendOutcome> {
+    this.open = true;
+    const text = applyFirstName(message, this.firstName, MAX_MESSAGE);
+    this.msgLog.push({ url, message: text });
+    const result = this.msgScripted.get(url) ?? 'sent';
+    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable')
+      ? this.evidence : undefined;
+    return {
+      result,
+      firstName: this.firstName,
+      fullName: this.fullName,
+      ...(result === 'sent' ? { threadUrl: `https://www.linkedin.com/messaging/thread/fake-${slug(url)}/` } : {}),
+      ...(evidence ? { evidence } : {}),
+    };
+  }
+
+  async readInboxSnapshot(): Promise<InboxRow[]> {
+    this.open = true;
+    if (this.inboxError) throw new Error(this.inboxError);
+    return this.inboxRows;
+  }
   async readPendingInvites() { return this.pending; }
   async readRecentConnections() { return this.connections; }
   async checkpointScan(): Promise<CheckpointScan> {
