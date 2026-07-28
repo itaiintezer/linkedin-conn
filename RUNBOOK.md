@@ -45,8 +45,9 @@ Each card:
 - **Accepted** — people who accepted. "checked …" shows when acceptance was last verified
   (The Machine checks about once a day — see §6).
 - **Skipped** — terminal skips that will never be retried, with a reason each:
-  already connected, requires their email to connect, composer unavailable, or
-  dismissed by you.
+  already connected, requires their email to connect, profile no longer exists
+  (the LinkedIn URL 404s — deleted account or renamed slug), composer
+  unavailable, or dismissed by you.
 - **Needs attention** — anything that failed. Click it to open the **Attention** tab.
 
 **Up next** lists the next 10 profiles to be processed. **View more** shows the rest.
@@ -76,6 +77,9 @@ The "checked …" time on the Accepted card tells you when this last ran.
   page (no challenge), it was a false alarm — just re-check to resume.
 - You can **Pause** / **Resume** anytime from the dashboard.
 - The Machine caps sends per week (default 100) and per day to stay well within safe limits.
+- If LinkedIn itself says the **weekly invitation limit** is reached, The Machine pauses with
+  that reason (amber banner, not red) and requeues the profile it was about to send. Click
+  **Resume** once the limit resets (LinkedIn lifts it about a week after it was hit).
 
 ## 8. Troubleshooting
 - **Dashboard says "not logged in"** → click **Connect LinkedIn** and log in again.

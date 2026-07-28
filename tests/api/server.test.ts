@@ -197,6 +197,33 @@ test('GET /api/incidents lists captured evidence newest first with screenshot ur
   expect(img.body).toBe('png');
 });
 
+test('GET /api/incidents?since= excludes evidence captured before the cutoff', async () => {
+  const dir = mkdtempSync(pathJoin(tmpdir(), 'incidents-api-'));
+  const { captureEvidence } = await import('../../src/browser/evidence.js');
+  const page = {
+    url: () => 'https://www.linkedin.com/x',
+    title: async () => 'x',
+    content: async () => '<html></html>',
+    screenshot: async () => Buffer.from('png'),
+  };
+  // A stale incident from days earlier must not be offered for a fresh halt.
+  await captureEvidence(page, 'email-required', {}, dir, new Date('2026-07-22T11:12:13Z'));
+  await captureEvidence(page, 'composer-unavailable', {}, dir, new Date('2026-07-27T15:15:05Z'));
+  const a = buildServer(repos, new FakeDriver(), new Mutex(), undefined, { incidentsDir: dir });
+
+  const fresh = JSON.parse(
+    (await a.inject({ method: 'GET', url: '/api/incidents?since=2026-07-27T15:05:08Z' })).body,
+  );
+  expect(fresh).toHaveLength(1);
+  expect(fresh[0].tag).toBe('composer-unavailable');
+
+  // A cutoff later than every capture -> nothing (the banner shows no stale link).
+  const none = JSON.parse(
+    (await a.inject({ method: 'GET', url: '/api/incidents?since=2026-07-28T00:00:00Z' })).body,
+  );
+  expect(none).toHaveLength(0);
+});
+
 test('POST /api/run-now is skipped (no send) while the shared browser lock is held', async () => {
   const driver = new FakeDriver();
   const lock = new Mutex();

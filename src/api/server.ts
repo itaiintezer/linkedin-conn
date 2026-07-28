@@ -295,9 +295,16 @@ export function buildServer(
 
   // Halt/failure evidence captured by the sender (meta only; files under /incidents/).
   app.get('/api/incidents', async (req) => {
-    const limitRaw = Number((req.query as { limit?: string }).limit);
+    const q = req.query as { limit?: string; since?: string };
+    const limitRaw = Number(q.limit);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(Math.floor(limitRaw), 100) : 20;
-    return listIncidents(incidentsDir, limit).map((m) => ({
+    // since=ISO: only evidence captured at/after the cutoff — lets the halt banner
+    // ask for "this trip's" incident instead of whatever happens to be newest.
+    const since = q.since ? Date.parse(q.since) : NaN;
+    return listIncidents(incidentsDir, limit)
+      .filter((m) => !Number.isFinite(since)
+        || (typeof m.capturedAt === 'string' && Date.parse(m.capturedAt) >= since))
+      .map((m) => ({
       ...m,
       screenshot: m.screenshot ? `/incidents/${m.screenshot}` : null,
       html: m.html ? `/incidents/${m.html}` : null,

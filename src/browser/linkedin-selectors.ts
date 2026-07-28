@@ -89,3 +89,16 @@ export function customInviteUrl(slug: string): string {
 export function profileSlug(profileUrl: string): string | null {
   return profileUrl.match(/\/in\/([^/?#]+)/)?.[1] ?? null;
 }
+
+/**
+ * LinkedIn redirects dead /in/<slug> URLs (deleted account or renamed vanity slug)
+ * to linkedin.com/404/ — verified live 2026-07-27. Matched on the pathname so a
+ * slug that merely contains "404" can't false-positive.
+ */
+export function isNotFoundUrl(url: string): boolean {
+  try {
+    return /^\/404\/?$/.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}

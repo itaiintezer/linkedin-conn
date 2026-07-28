@@ -30,7 +30,8 @@ export class FakeDriver implements BrowserDriver {
     const note = message === null ? null : applyFirstName(message, this.firstName);
     this.sentLog.push({ url, message: note });
     const result = this.scripted.get(url) ?? 'sent';
-    const evidence = (result === 'checkpoint' || result === 'error') ? this.evidence : undefined;
+    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable')
+      ? this.evidence : undefined;
     return { result, firstName: this.firstName, ...(evidence ? { evidence } : {}) };
   }
   async readPendingInvites() { return this.pending; }

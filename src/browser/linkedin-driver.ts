@@ -1,7 +1,7 @@
 import type { Page } from 'playwright-core';
 import type { BrowserDriver, SendOutcome, LoginSnapshot, CheckpointScan } from '../types.js';
 import { CloakSession } from './cloak-session.js';
-import { SEL, find, URLS, customInviteUrl, profileSlug } from './linkedin-selectors.js';
+import { SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
 import { applyFirstName } from '../core/message.js';
 import { detectCheckpoint } from '../core/checkpoint.js';
@@ -52,6 +52,11 @@ export class LinkedInDriver implements BrowserDriver {
       //    (so we never re-send) or a checkpoint.
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       await sleep(rand(1500, 3500));
+      // Dead profile (deleted account / renamed slug) — LinkedIn redirects to /404/.
+      // Without this check the flow degrades step by step into 'unavailable', which
+      // counts toward the failure streak and halted the engine on 2026-07-27 when
+      // three stale imports sat adjacent in the queue.
+      if (isNotFoundUrl(page.url())) return this.notFoundOutcome(page);
       const firstName = await this.readFirstName(page);
       {
         const scan = await this.scanCheckpoint(page);
@@ -82,7 +87,19 @@ export class LinkedInDriver implements BrowserDriver {
         const scan = await this.scanCheckpoint(page);
         if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
         if (await this.emailRequired(page)) return this.emailRequiredOutcome(page, firstName);
-        return { result: 'unavailable', firstName };
+        // The weekly invitation limit replaces the composer with its own dialog —
+        // an account-level cap, not a per-profile problem or a UI change.
+        if (await page.locator(SEL.noteQuotaDialog).first().isVisible().catch(() => false)) {
+          return this.weeklyLimitOutcome(page, firstName);
+        }
+        // Unexplained: no composer, no known gate. Snapshot the page — this verdict
+        // feeds the failure streak, so a halt on it must be diagnosable after the fact.
+        const ev = await captureEvidence(page, 'composer-unavailable', {});
+        return {
+          result: 'unavailable',
+          firstName,
+          evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+        };
       }
 
       // The gate usually shows its "please enter their email to connect" text the moment
@@ -172,6 +189,28 @@ export class LinkedInDriver implements BrowserDriver {
   private async emailRequired(page: Page): Promise<boolean> {
     if (await find.emailVerifyText(page).first().isVisible().catch(() => false)) return true;
     return find.emailVerifyInput(page).first().isVisible().catch(() => false);
+  }
+
+  /** LinkedIn's weekly invitation limit dialog is showing in place of the composer.
+   *  Evidence is captured BEFORE dismissing so the screenshot shows the dialog. */
+  private async weeklyLimitOutcome(page: Page, firstName?: string): Promise<SendOutcome> {
+    const ev = await captureEvidence(page, 'weekly-limit', {});
+    await find.dismissDialog(page).first().click().catch(() => {}); // leave no modal behind
+    return {
+      result: 'weekly_limit',
+      firstName,
+      evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+    };
+  }
+
+  /** The profile URL no longer exists (LinkedIn redirected to /404/) — terminal, never
+   *  retryable. Evidence keeps the verdict auditable without re-visiting the URL. */
+  private async notFoundOutcome(page: Page): Promise<SendOutcome> {
+    const ev = await captureEvidence(page, 'profile-not-found', {});
+    return {
+      result: 'not_found',
+      evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+    };
   }
 
   /** The member requires their email to connect — terminal, never retryable. Evidence is

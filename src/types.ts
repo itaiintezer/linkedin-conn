@@ -6,7 +6,7 @@ export type ProfileStatus =
   | 'accepted' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
 
 /** Why a skipped profile was skipped (terminal — the engine never retries these). */
-export type SkipReason = 'already_connected' | 'email_required' | 'unavailable' | 'dismissed';
+export type SkipReason = 'already_connected' | 'email_required' | 'not_found' | 'unavailable' | 'dismissed';
 
 export type EventType = 'sent' | 'accepted' | 'expired' | 'skipped' | 'failed';
 
@@ -61,7 +61,7 @@ export interface Settings {
 
 export type SendResult =
   | 'sent' | 'already' | 'unavailable' | 'note_quota' | 'checkpoint' | 'error'
-  | 'email_required';
+  | 'email_required' | 'not_found' | 'weekly_limit';
 
 /** What the browser saw when a send went wrong — captured for the operator. */
 export interface SendEvidence {

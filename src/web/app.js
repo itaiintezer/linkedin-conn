@@ -266,15 +266,21 @@ function applyGuardrailUi(status) {
 }
 
 /* Link the banner to the screenshot captured at trip time. Fetched once per trip
-   (keyed on trippedAt) so the status poll doesn't hammer /api/incidents. */
+   (keyed on trippedAt) so the status poll doesn't hammer /api/incidents.
+   Only evidence from THIS trip qualifies: the tripping attempt starts minutes
+   before the trip is recorded, so allow a 10-minute lead — anything older is a
+   past incident and linking it misleads (the 2026-07-27 halt showed a 5-day-old
+   email-required capture as if it were the cause). */
 let shotLoadedFor = null;
 async function loadGuardrailShot(g) {
   const link = $('#guardrailShot');
   if (!link || shotLoadedFor === g.trippedAt) return;
   shotLoadedFor = g.trippedAt;
   link.hidden = true;
+  if (!g.trippedAt) return;
   try {
-    const rows = await api('/api/incidents?limit=1');
+    const since = new Date(new Date(g.trippedAt).getTime() - 10 * 60 * 1000).toISOString();
+    const rows = await api(`/api/incidents?limit=1&since=${encodeURIComponent(since)}`);
     if (rows.length && rows[0].screenshot) { link.href = rows[0].screenshot; link.hidden = false; }
   } catch (_) { /* no evidence captured for this trip */ }
 }
@@ -450,6 +456,7 @@ const DRILL_DATE = {
 const SKIP_REASON_LABEL = {
   already_connected: 'already connected',
   email_required: 'requires their email',
+  not_found: 'profile no longer exists',
   unavailable: 'composer unavailable',
   dismissed: 'dismissed',
 };

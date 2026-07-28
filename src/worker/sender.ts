@@ -103,12 +103,34 @@ export async function runSenderOnce(
         repos.events.recordEvent(p.id, 'skipped');
         logVerdict(p, 'skipped: LinkedIn requires their email to connect');
         break;
-      case 'unavailable':
+      case 'weekly_limit':
+        // LinkedIn's account-level weekly invite cap: expected, resolves on its own
+        // when the window resets. Amber pause (user-resumable, clear reason) instead
+        // of the red guardrail — this is not a UI change or a block. The profile is
+        // blameless: back to the queue for after the resume.
+        repos.profiles.setStatus(p.id, 'queued', { last_error: null });
+        repos.settings.update({ paused: 1, pause_reason: 'LinkedIn weekly invitation limit reached — resume next week' });
+        logVerdict(p, 'weekly invitation limit reached — sending paused, profile requeued');
+        return;
+      case 'not_found':
+        // The profile URL 404s (deleted account / renamed slug) — a per-profile
+        // verdict that can never succeed on retry. Terminal skip; does NOT touch
+        // the failure streak (a batch of stale imports must not halt the engine).
+        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_found' });
+        repos.events.recordEvent(p.id, 'skipped');
+        logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
+        break;
+      case 'unavailable': {
         repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'unavailable' });
         repos.events.recordEvent(p.id, 'skipped');
-        logVerdict(p, 'skipped: send composer unavailable');
-        if (recordFailure(repos, 'send composer unavailable', clock())) return;
+        // Carry the evidence into the streak detail so a repeated_failures halt
+        // links the screenshot of THIS failure, not some older incident.
+        const shot = outcome.evidence?.screenshot;
+        const detail = `send composer unavailable${shot ? ` — screenshot: /incidents/${shot}` : ''}`;
+        logVerdict(p, `skipped: ${detail}`);
+        if (recordFailure(repos, detail, clock())) return;
         break;
+      }
       case 'checkpoint': {
         const ev = outcome.evidence;
         const detail = ev

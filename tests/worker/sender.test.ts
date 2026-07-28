@@ -58,6 +58,39 @@ test('email_required -> skipped with reason, terminal, no failure streak', async
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(0);
 });
 
+test('not_found -> skipped with reason not_found, terminal, no failure streak', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'not_found');
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('skipped');
+  expect(row.skip_reason).toBe('not_found');
+  expect(row.last_error).toBeNull();
+  // A dead profile URL is a per-profile verdict, not an automation failure:
+  // streak untouched, no guardrail (three dead imports in a row must not halt).
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(0);
+});
+
+test('unavailable evidence flows into the guardrail detail when the streak trips', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (const slug of ['a', 'b', 'c']) {
+    seedScheduled(`https://www.linkedin.com/in/${slug}`, '2026-06-29T09:00:00.000Z', c.id);
+    driver.scripted.set(`https://www.linkedin.com/in/${slug}`, 'unavailable');
+  }
+  driver.evidence = {
+    pageUrl: 'https://www.linkedin.com/preload/custom-invite/?vanityName=c',
+    screenshot: '2026-07-27T15-15-08-composer-unavailable.png',
+  };
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  const st = repos.appState.get();
+  expect(st.guardrail_tripped).toBe(1);
+  expect(st.guardrail_reason).toBe('repeated_failures');
+  expect(st.guardrail_detail).toContain('/incidents/2026-07-27T15-15-08-composer-unavailable.png');
+});
+
 test('unavailable -> skipped with reason unavailable (still counts toward failure streak)', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
@@ -67,6 +100,24 @@ test('unavailable -> skipped with reason unavailable (still counts toward failur
   expect(row.status).toBe('skipped');
   expect(row.skip_reason).toBe('unavailable');
   expect(repos.appState.get().failure_streak).toBe(1);
+});
+
+test('weekly_limit -> pauses with a clear reason, requeues the profile, stops the batch', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p1 = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  seedScheduled('https://www.linkedin.com/in/b', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'weekly_limit');
+  await runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+  // Account-level cap, not an automation failure: amber pause, no red guardrail.
+  const s = repos.settings.get();
+  expect(s.paused).toBe(1);
+  expect(s.pause_reason).toContain('weekly invitation limit');
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+  expect(repos.appState.get().failure_streak).toBe(0);
+  // The profile could not be sent through no fault of its own: back to the queue.
+  expect(repos.profiles.findById(p1.id)!.status).toBe('queued');
+  // The batch stops immediately — the next profile is never attempted.
+  expect(driver.sentLog).toHaveLength(1);
 });
 
 test('checkpoint -> trips guardrail and flags needs_attention', async () => {
