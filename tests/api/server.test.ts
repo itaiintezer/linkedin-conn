@@ -12,11 +12,15 @@ import { join as pathJoin } from 'node:path';
 
 let app: ReturnType<typeof buildServer>;
 let repos: Repos;
+// Hoisted so tests that need to stage driver reads (connections, inbox rows) can reach
+// the same FakeDriver instance the shared `app` was built with.
+let driver: FakeDriver;
 beforeEach(() => {
   repos = new Repos(openDatabase(':memory:'));
+  driver = new FakeDriver();
   // No-op sleep: safe by construction regardless of run-now's batch size, so this suite
   // never actually waits the real min_delay_ms/max_delay_ms (20-90s by default).
-  app = buildServer(repos, new FakeDriver(), undefined, undefined, { senderOptions: { sleep: async () => {} } });
+  app = buildServer(repos, driver, undefined, undefined, { senderOptions: { sleep: async () => {} } });
   repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
 });
 
@@ -602,4 +606,63 @@ test('POST /api/recheck-acceptance promotes a profile that now appears in connec
   expect(body.ran).toBe(true);
   expect(body.accepted).toBe(1);
   expect(repos.profiles.findById(p.id)!.status).toBe('accepted');
+});
+
+test('POST /api/lists with kind=message requires a template and creates a message cohort', async () => {
+  const bad = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Msgs', kind: 'message', text: 'https://www.linkedin.com/in/a',
+  } });
+  expect(bad.statusCode).toBe(400);
+
+  const ok = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Msgs', kind: 'message', text: 'https://www.linkedin.com/in/a', message_template: 'Hey {firstName}',
+  } });
+  expect(ok.statusCode).toBe(200);
+  expect(ok.json().added).toBe(1);
+  const cohort = repos.cohorts.findByName('Msgs')!;
+  expect(cohort.kind).toBe('message');
+  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(1);
+});
+
+test('POST /api/lists rejects adding to a cohort of the other kind', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: { cohort: 'InvC', text: 'https://www.linkedin.com/in/z' } });
+  const res = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'InvC', kind: 'message', text: 'https://www.linkedin.com/in/y', message_template: 'hi',
+  } });
+  expect(res.statusCode).toBe(409);
+});
+
+test('GET /api/status exposes per-kind counts, caps, and replies_checked_at', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  const body = res.json();
+  expect(body.counts).toBeDefined();
+  expect(body.msg_counts).toBeDefined();
+  expect(body.msg_weekly_cap).toBe(250);
+  expect(body).toHaveProperty('replies_checked_at');
+  expect(body.forecast.msg_next_batch !== undefined).toBe(true);
+});
+
+test('GET /api/profiles?status=sent&kind=message filters by kind', async () => {
+  const m = repos.cohorts.create('MM', 'hi', true, 'message');
+  const p = repos.profiles.add(m.id, 'https://www.linkedin.com/in/mk', null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-28T00:00:00.000Z' });
+  const res = await app.inject({ method: 'GET', url: '/api/profiles?status=sent&kind=message' });
+  expect(res.json()).toHaveLength(1);
+  const inv = await app.inject({ method: 'GET', url: '/api/profiles?status=sent&kind=invite' });
+  expect(inv.json()).toHaveLength(0);
+});
+
+test('POST /api/recheck-replies runs a forced reply pass', async () => {
+  const m = repos.cohorts.create('MR', 'hi', true, 'message');
+  const p = repos.profiles.add(m.id, 'https://www.linkedin.com/in/kr', null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-27T00:00:00.000Z', full_name: 'K R' });
+  driver.inboxRows = [{ name: 'K R', snippet: 'K: hi', youSentLast: false }];
+  const res = await app.inject({ method: 'POST', url: '/api/recheck-replies' });
+  expect(res.json().replied).toBe(1);
+});
+
+test('POST /api/settings accepts the message pacing keys', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/settings', payload: { msg_weekly_cap: 150, reply_checks_per_day: 1 } });
+  expect(res.json().msg_weekly_cap).toBe(150);
+  expect(res.json().reply_checks_per_day).toBe(1);
 });

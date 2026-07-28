@@ -6,7 +6,7 @@ import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { INCIDENTS_DIR } from '../config.js';
 import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
-import type { BrowserDriver } from '../types.js';
+import type { BrowserDriver, CampaignKind } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
 import { estimateQueueCompletion, nextBatchForecast, orderUpcoming } from '../core/forecast.js';
@@ -15,9 +15,11 @@ import { dailyRemainingFor } from '../core/daily-budget.js';
 import { Mutex } from '../core/mutex.js';
 import { runSenderOnce, type SenderOptions } from '../worker/sender.js';
 import { runAcceptanceCheck } from '../worker/acceptance-checker.js';
+import { runReplyCheck } from '../worker/reply-checker.js';
 import { planAndAssignToday } from '../worker/scheduler-service.js';
 import { defaultCohortName } from '../core/cohort-name.js';
-import { deriveAllowNoNote } from '../core/message.js';
+import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE } from '../core/message.js';
+import { capsFor } from '../core/caps.js';
 import type { Logger } from '../core/logger.js';
 import { log as defaultLog } from '../core/log.js';
 import { listDocs, readDoc } from '../core/docs.js';
@@ -29,6 +31,7 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'batch_size', 'batches_per_day', 'acceptance_checks_per_day',
   'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
   'onboarded', 'expiry_days',
+  'msg_weekly_cap', 'msg_batch_size', 'msg_batches_per_day', 'reply_checks_per_day',
 ]);
 
 export function buildServer(
@@ -63,40 +66,70 @@ export function buildServer(
     return { id: p.id, profile_url: p.profile_url };
   });
 
-  app.post('/api/lists', async (req) => {
-    const { cohort, text, message_template } =
-      req.body as { cohort?: string; text: string; message_template?: string };
+  app.post('/api/lists', async (req, reply) => {
+    const { cohort, text, message_template, kind: kindRaw } =
+      req.body as { cohort?: string; text: string; message_template?: string; kind?: string };
+    const kind: CampaignKind = kindRaw === 'message' ? 'message' : 'invite';
+    const template = message_template?.trim() || undefined;
+    // A message campaign has nothing to send without a body: an invite can go note-less,
+    // a DM cannot.
+    if (kind === 'message' && !template) {
+      return reply.code(400).send({ error: 'message campaigns require a message template' });
+    }
+    const max = kind === 'message' ? MAX_MESSAGE : MAX_NOTE;
+    if (template && template.length > max) {
+      return reply.code(400).send({ error: `template too long (max ${max} characters)` });
+    }
     const cohortName = (cohort && cohort.trim()) || defaultCohortName(new Date());
-    const allowNoNote = deriveAllowNoNote(message_template);
-    const c = repos.cohorts.getOrCreate(cohortName, message_template ?? null, allowNoNote);
+    const allowNoNote = deriveAllowNoNote(template);
+    // A cohort's kind is fixed at creation: the schedulers, caps, and metrics all read it,
+    // so silently mixing kinds inside one cohort would mis-pace both engines.
+    const existing = repos.cohorts.findByName(cohortName);
+    if (existing && existing.kind !== kind) {
+      return reply.code(409).send({ error: `cohort "${cohortName}" is a ${existing.kind} cohort` });
+    }
+    const c = repos.cohorts.getOrCreate(cohortName, template ?? null, allowNoNote, kind);
     repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
-      .run(message_template ?? c.message_template, allowNoNote ? 1 : 0, c.id);
+      .run(template ?? c.message_template, allowNoNote ? 1 : 0, c.id);
     const urls = extractProfileUrls(text ?? '');
     const before = repos.profiles.countAll();
-    for (const u of urls) repos.profiles.add(c.id, u, null);
+    for (const u of urls) repos.profiles.add(c.id, u, null, kind);
     const added = repos.profiles.countAll() - before;
     return { added, found: urls.length };
   });
 
   app.get('/api/status', async () => {
+    // Two conveyors, two count buckets. `counts` stays invite-only so every existing
+    // invite-side number (and the forecast built from it) keeps meaning what it did
+    // before messages existed; message rows land in msg_counts.
     const counts: Record<string, number> = {};
-    for (const p of repos.profiles.all()) counts[p.status] = (counts[p.status] ?? 0) + 1;
+    const msg_counts: Record<string, number> = {};
+    for (const p of repos.profiles.all()) {
+      const bucket = p.kind === 'message' ? msg_counts : counts;
+      bucket[p.status] = (bucket[p.status] ?? 0) + 1;
+    }
     const s = repos.settings.get();
     const a = repos.appState.get();
     const now = new Date();
     const queueRemaining = (counts.queued ?? 0) + (counts.scheduled ?? 0);
-    const scheduledRows = repos.profiles.byStatus('scheduled');
+    const scheduledRows = repos.profiles.byStatusKind('scheduled', 'invite');
     const weekly_sent = repos.events.countSentSince(windowStartIso(now), 'invite');
     const weeklyRemaining = remainingCapacity(s.weekly_cap, weekly_sent);
+    const msgWeeklySent = repos.events.countSentSince(windowStartIso(now), 'message');
+    const msgBacklog = (msg_counts.queued ?? 0) + (msg_counts.scheduled ?? 0);
     return {
       paused: s.paused,
       pause_reason: s.pause_reason,
       weekly_sent,
       weekly_cap: s.weekly_cap,
       counts,
+      msg_counts,
+      msg_weekly_sent: msgWeeklySent,
+      msg_weekly_cap: s.msg_weekly_cap,
       loggedIn: a.login_logged_in === 1,
       login_as_of: a.login_confirmed_at,
       acceptance_checked_at: a.acceptance_checked_at,
+      replies_checked_at: a.replies_checked_at,
       forecast: {
         queue_remaining: queueRemaining,
         eta: estimateQueueCompletion(queueRemaining, s, now),
@@ -107,6 +140,17 @@ export function buildServer(
           guardrailTripped: a.guardrail_tripped === 1,
           paused: s.paused === 1,
           settings: s,
+        }, now),
+        // nextBatchForecast reads weekly_cap/batch_size/batches_per_day straight off the
+        // settings object, so the message side gets a remapped copy rather than a second
+        // forecast implementation.
+        msg_next_batch: nextBatchForecast(repos.profiles.byStatusKind('scheduled', 'message'), {
+          backlog: msgBacklog,
+          weeklyRemaining: remainingCapacity(s.msg_weekly_cap, msgWeeklySent),
+          dailyRemaining: dailyRemainingFor(repos, s, now, 'message'),
+          guardrailTripped: a.guardrail_tripped === 1,
+          paused: s.paused === 1,
+          settings: { ...s, weekly_cap: s.msg_weekly_cap, batch_size: s.msg_batch_size, batches_per_day: s.msg_batches_per_day },
         }, now),
       },
       guardrail: {
@@ -141,10 +185,18 @@ export function buildServer(
     return { ok: true };
   });
 
-  app.post('/api/cohorts', async (req) => {
-    const { name, message_template } = req.body as { name: string; message_template?: string };
+  app.post('/api/cohorts', async (req, reply) => {
+    const { name, message_template, kind: kindRaw } =
+      req.body as { name: string; message_template?: string; kind?: string };
+    const kind: CampaignKind = kindRaw === 'message' ? 'message' : 'invite';
+    // Only a caller that explicitly asked for a kind can be told it conflicts; an
+    // existing-cohort edit that omits `kind` must not be rejected by the 'invite' default.
+    const existing = repos.cohorts.findByName(name);
+    if (existing && existing.kind !== kind && kindRaw !== undefined) {
+      return reply.code(409).send({ error: `cohort "${name}" is a ${existing.kind} cohort` });
+    }
     const allowNoNote = deriveAllowNoNote(message_template);
-    const c = repos.cohorts.getOrCreate(name, message_template ?? null, allowNoNote);
+    const c = repos.cohorts.getOrCreate(name, message_template ?? null, allowNoNote, kind);
     repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
       .run(message_template ?? null, allowNoNote ? 1 : 0, c.id);
     return repos.cohorts.findById(c.id);
@@ -160,27 +212,32 @@ export function buildServer(
   });
 
   app.get('/api/profiles', async (req): Promise<unknown[]> => {
-    const status = (req.query as { status?: string }).status;
-    const where = status ? 'WHERE p.status = ?' : '';
+    const { status, kind } = req.query as { status?: string; kind?: string };
+    // string[] (not unknown[]): both filters bind text, and node:sqlite's SQLInputValue
+    // won't accept unknown.
+    const conds: string[] = []; const args: string[] = [];
+    if (status) { conds.push('p.status = ?'); args.push(status); }
+    if (kind === 'invite' || kind === 'message') { conds.push('p.kind = ?'); args.push(kind); }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const stmt = repos.db.prepare(`
-      SELECT p.id, p.profile_url, p.status, p.skip_reason, p.scheduled_for, p.sent_at, p.accepted_at,
-             p.last_error, c.name AS cohort_name
+      SELECT p.id, p.profile_url, p.kind, p.status, p.skip_reason, p.scheduled_for, p.sent_at,
+             p.accepted_at, p.replied_at, p.last_error, c.name AS cohort_name
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       ${where}
       ORDER BY p.id DESC LIMIT 500
     `);
-    return (status ? stmt.all(status) : stmt.all()) as unknown[];
+    return stmt.all(...args) as unknown[];
   });
 
   app.get('/api/queue', async (req) => {
     const limitRaw = Number((req.query as { limit?: string }).limit);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 10;
     const rows = repos.db.prepare(`
-      SELECT p.id, p.profile_url, p.status, p.scheduled_for, p.priority, c.name AS cohort_name,
+      SELECT p.id, p.profile_url, p.kind, p.status, p.scheduled_for, p.priority, c.name AS cohort_name,
              COALESCE(NULLIF(p.custom_message, ''), NULLIF(c.message_template, '')) AS note
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       WHERE p.status IN ('queued','scheduled')
-    `).all() as unknown as { id: number; profile_url: string; status: string; scheduled_for: string | null; cohort_name: string; note: string | null }[];
+    `).all() as unknown as { id: number; profile_url: string; kind: string; status: string; scheduled_for: string | null; cohort_name: string; note: string | null }[];
     const ordered = orderUpcoming(rows);
     return { upcoming: ordered.slice(0, limit), total_remaining: ordered.length };
   });
@@ -213,10 +270,15 @@ export function buildServer(
   app.post('/api/run-now', async () => {
     const now = new Date();
     const dueIso = new Date(now.getTime() - 1000).toISOString();
-    const batch = repos.settings.get().batch_size;
+    const s = repos.settings.get();
     // Make the next batch due immediately, pulling from queued first, then already-
     // scheduled (future) profiles, so "Run now" always sends something if work exists.
-    const candidates = [...repos.profiles.byStatus('queued'), ...repos.profiles.byStatus('scheduled')].slice(0, batch);
+    // Promoted per kind, each against its own batch size, so one conveyor's backlog can't
+    // starve the other out of a manual run.
+    const promote = (kind: CampaignKind) =>
+      [...repos.profiles.queuedByPriorityKind(kind), ...repos.profiles.byStatusKind('scheduled', kind)]
+        .slice(0, capsFor(s, kind).batchSize);
+    const candidates = [...promote('invite'), ...promote('message')];
     defaultLog.info('api', 'run-now', { promoted: candidates.length });
     for (const p of candidates) repos.profiles.setScheduled(p.id, dueIso);
     // force: a manual trigger may run outside working hours by design.
@@ -236,6 +298,15 @@ export function buildServer(
   app.post('/api/recheck-acceptance', async () => {
     defaultLog.info('api', 'recheck-acceptance');
     return browserLock.run(() => runAcceptanceCheck(repos, driver, new Date(), { force: true }));
+  });
+
+  // Manual, on-demand reply reconciliation. Same contract as recheck-acceptance: read-only
+  // against LinkedIn so it runs even while paused (force: true), while still respecting the
+  // guardrail, login, and empty-read fail-safes inside runReplyCheck. run (not tryRun) so it
+  // queues behind an in-flight batch instead of being silently dropped.
+  app.post('/api/recheck-replies', async () => {
+    defaultLog.info('api', 'recheck-replies');
+    return browserLock.run(() => runReplyCheck(repos, driver, new Date(), { force: true }));
   });
 
   // Reset failed / needs-attention profiles back to queued so they get retried.
@@ -343,13 +414,13 @@ export function buildServer(
 
   app.get('/api/queue/grouped', async () => {
     const rows = repos.db.prepare(`
-      SELECT p.id, p.profile_url, p.status, p.scheduled_for, p.priority, p.cohort_id,
+      SELECT p.id, p.profile_url, p.kind, p.status, p.scheduled_for, p.priority, p.cohort_id,
              c.name AS cohort_name,
              COALESCE(NULLIF(p.custom_message, ''), NULLIF(c.message_template, '')) AS note
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       WHERE p.status IN ('queued','scheduled')
     `).all() as unknown as {
-      id: number; profile_url: string; status: string; scheduled_for: string | null;
+      id: number; profile_url: string; kind: string; status: string; scheduled_for: string | null;
       priority: number; cohort_id: number; cohort_name: string; note: string | null;
     }[];
 
@@ -366,7 +437,8 @@ export function buildServer(
       .map((g) => ({
         id: g.id, name: g.name, count: g.count,
         profiles: orderUpcoming(g.profiles).map((p) => ({
-          id: p.id, profile_url: p.profile_url, status: p.status, scheduled_for: p.scheduled_for, note: p.note,
+          id: p.id, profile_url: p.profile_url, kind: p.kind, status: p.status,
+          scheduled_for: p.scheduled_for, note: p.note,
         })),
       }));
     return { cohorts };
