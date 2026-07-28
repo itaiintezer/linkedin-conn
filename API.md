@@ -19,16 +19,29 @@ out per endpoint below.
 ## For agents: the two you need
 
 ### POST /api/profiles
-Enqueue one profile. Creates the cohort if it does not exist. Invite-only — this endpoint
-takes no `kind`, and the cohort it creates is an `invite` cohort. Use `POST /api/lists`
-for a message campaign.
+Enqueue one profile. Creates the cohort if it does not exist.
 
-Request: `{ "url": "https://www.linkedin.com/in/jane-doe/", "cohort": "Security VPs", "message": "Hi {firstName}, …" }`
+Request: `{ "url": "https://www.linkedin.com/in/jane-doe/", "cohort": "Security VPs", "message": "Hi {firstName}, …", "kind": "invite" | "message" }`
 - `url` (required) — a LinkedIn profile URL; normalized server-side.
 - `cohort` (optional) — cohort name; defaults to today's date.
-- `message` (optional) — per-profile note; `{firstName}` is substituted at send time.
+- `kind` (optional) — defaults to `invite`. Anything other than `"message"` is treated as
+  `invite`.
+- `message` (optional) — per-profile note (invites) or DM body (messages); `{firstName}` is
+  substituted at send time. Max length 2000 for messages, 300 for invite notes; over that
+  is `400`. It takes precedence over the cohort template.
 
-Response: `{ "id": 42, "profile_url": "https://www.linkedin.com/in/jane-doe" }`
+`400` if the URL is not a recognizable `/in/<slug>` link.
+
+`409` if a cohort with that name already exists with the other kind — including the common
+case of omitting `kind` (so defaulting to `invite`) while naming a message cohort. Without
+that guard the row would be sent by the *invite* sender, which resolves its text from the
+DM template and truncates it to a 300-char connection note.
+
+When `kind` is `message`, there must be something to send: `400` unless the request carries
+a non-blank `message` **or** the target cohort already has a non-blank template. (This is
+looser than `POST /api/lists`, which has only the cohort template to work with.)
+
+Response: `{ "id": 42, "profile_url": "https://www.linkedin.com/in/jane-doe", "kind": "invite" }`
 
 ```
 curl -s http://localhost:4400/api/profiles \
@@ -109,7 +122,9 @@ Flat upcoming work, both kinds interleaved: `{ "upcoming": [{ "id", "profile_url
 
 ### GET /api/queue/grouped
 Queue grouped by cohort in send-priority order: `{ "cohorts": [{ "id", "name", "count", "profiles": [{ "id", "profile_url", "kind", "status", "scheduled_for", "note" }] }] }`.
-Every profile in a cohort has the cohort's kind, so the first row identifies the group.
+Every profile in a cohort has the cohort's kind, so the first row identifies the group. That
+invariant is enforced at every write path: `POST /api/lists`, `POST /api/cohorts` and
+`POST /api/profiles` all `409` on a cross-kind add, and a cohort's kind is fixed at creation.
 
 ### Reordering & removal
 - `POST /api/queue/profile/:id/move` — body `{ "to": "top" | "bottom" }`.
@@ -120,11 +135,15 @@ Every profile in a cohort has the cohort's kind, so the first row identifies the
 
 ## Attention (failures)
 
+Both kinds land here, so every row carries its `kind`.
+
 - `GET /api/attention` — failed + needs_attention profiles with their errors:
-  `[{ "id", "profile_url", "status", "last_error", "attempts", "sent_at", "scheduled_for", "cohort_name" }]`.
-- `POST /api/retry` — requeue every failed / needs_attention profile. Response
+  `[{ "id", "profile_url", "kind", "status", "last_error", "attempts", "sent_at", "scheduled_for", "cohort_name" }]`.
+- `POST /api/retry` — requeue every failed / needs_attention profile, both kinds. Response
   `{ "ok": true, "retried": N }`.
-- `POST /api/profiles/:id/retry` — requeue one. `404` if unknown.
+- `POST /api/profiles/:id/retry` — requeue one. `404` if unknown. `409` unless its status is
+  `failed`, `needs_attention` or `skipped`: retry re-queues for a *fresh* send, so retrying
+  a `replied`/`accepted`/`sent` profile would contact the same person twice.
 - `POST /api/profiles/:id/dismiss` — give up on one (skipped, reason `dismissed`). `404` if unknown.
 
 ## Login

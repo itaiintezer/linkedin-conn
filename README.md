@@ -99,7 +99,8 @@ database (`data/`) and browser profile (`.linkedin-profile/`) next to its own fi
 A cohort is either an **invite** cohort or a **message** cohort, chosen when it's created
 and never changeable afterwards — the schedulers, caps and metrics all key off it, so mixing
 kinds in one cohort would mis-pace both. Adding a profile to a cohort of the other kind is
-rejected (`409`).
+rejected (`409`) — by every write path, including a single-profile add that just names the
+cohort without saying which kind it means.
 
 |  | Invites | Messages |
 |---|---|---|

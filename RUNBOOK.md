@@ -27,11 +27,17 @@ machine (Windows on ARM won't work), or any Mac from the last several years.
    missing (wrong Node version, no npm, unsupported computer). Then it downloads the
    browser The Machine drives — **about 1 GB, a few minutes, once ever**. It's not stuck;
    wait for it to finish.
-5. Run:
+5. **Updating an existing install?** Before the first `npm start` after this update, copy
+   `data/app.db` somewhere safe. The first boot upgrades that file in place (it rebuilds the
+   profiles table to add the invite/message distinction). The Machine also snapshots it for
+   you as `data/app.db.pre-kind-backup` before touching anything, but a copy you made
+   yourself is the one you'll trust at 5pm. A brand-new install has no `data/app.db` yet —
+   skip this step.
+6. Run:
    ```
    npm start
    ```
-6. Open your browser to **http://localhost:4400**.
+7. Open your browser to **http://localhost:4400**.
 
 Leave the terminal window open — that's the engine. To stop sending, click into that
 window and press **Ctrl+C**. Don't just close the window: that can leave the hidden
@@ -97,7 +103,8 @@ On the invites conveyor:
 - **Needs attention** — anything that failed. Click it to open the **Attention** tab.
 
 **Skipped** and **Needs attention** are shared: they count invites *and* messages, and each
-row is tagged with which it was.
+row — in the Skipped list and in the Attention tab alike — is tagged with which it was.
+**Expired** is invites-only: a delivered message never expires, it just goes unanswered.
 
 The messages conveyor reads the same way, with its own **This week**, **Queued**,
 **Scheduled** and **Sent** — and **Replied** where invites have Accepted, showing when
