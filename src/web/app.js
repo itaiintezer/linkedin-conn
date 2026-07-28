@@ -155,7 +155,8 @@ function fillPill(id, lead, value, tail) {
 // Render the live engine by updating numbers IN PLACE — never re-rendering the
 // DOM — so the conveyor animation runs continuously across 15s status polls.
 function renderEngine(status) {
-  const c = status.counts || {};
+  const c = status.counts || {};   // invite-only, by design (see /api/status)
+  const mc = status.msg_counts || {};
   const f = status.forecast || {};
 
   // --- Pace: weekly "fuel" ---
@@ -185,9 +186,17 @@ function renderEngine(status) {
   setText('acceptedFoot', `checked ${status.acceptance_checked_at ? fmtClock(status.acceptance_checked_at) : 'never'}`);
 
   // --- Terminal outcomes ---
+  // Skipped and Needs-attention are SHARED cards (their drill-downs pass no kind, so they
+  // already list both conveyors) — they must sum invite + message counts. `status.counts`
+  // is invite-only by design, so reading it alone made every message-side failure invisible
+  // AND unreachable: the Attention card is the only entry point to the attention modal, and
+  // it only becomes clickable when the number is non-zero. A message campaign whose template
+  // was blanked would drain silently, each profile burning a slot for nothing.
+  // Expired stays invite-only on purpose: a sent DM never expires, only an invite does.
   setText('outExpired', c.expired || 0);
-  setText('outSkipped', c.skipped || 0);
-  const attention = (c.failed || 0) + (c.needs_attention || 0);
+  setText('outSkipped', (c.skipped || 0) + (mc.skipped || 0));
+  const attention = (c.failed || 0) + (c.needs_attention || 0)
+    + (mc.failed || 0) + (mc.needs_attention || 0);
   setText('outAttn', attention);
   const attnCard = document.getElementById('outAttnCard');
   if (attnCard) {
@@ -204,7 +213,6 @@ function renderEngine(status) {
   }
 
   // --- Messages engine: same in-place update discipline, its own counts + caps ---
-  const mc = status.msg_counts || {};
   const msgPct = status.msg_weekly_cap
     ? Math.min(100, Math.round(((status.msg_weekly_sent || 0) / status.msg_weekly_cap) * 100)) : 0;
   setText('msgFuelSent', status.msg_weekly_sent ?? 0);
@@ -597,8 +605,13 @@ async function loadAttention() {
     const rows = await api('/api/attention');
     if (!rows.length) { body.replaceChildren(); empty.hidden = false; return; }
     empty.hidden = true;
+    // Both conveyors land here, so each row carries its kind glyph — same marker the
+    // queue and the shared drill-downs use.
     body.replaceChildren(...rows.map((p) => el('tr', {},
-      el('td', { class: 'trunc' }, el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', title: p.profile_url || '', text: slugFromUrl(p.profile_url) })),
+      el('td', { class: 'trunc' }, el('div', { class: 'attn-profile' },
+        kindMark(p.kind),
+        el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', title: p.profile_url || '', text: slugFromUrl(p.profile_url) }),
+      )),
       el('td', { class: 'mono trunc', title: p.cohort_name || '' }, p.cohort_name || '—'),
       el('td', { class: 'status-cell' }, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
       el('td', { class: 'num mono' }, String(p.attempts ?? 0)),

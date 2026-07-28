@@ -448,14 +448,21 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
    blow the columns past the modal (which clipped Error + the Actions buttons under
    the wrap's overflow:hidden). Widths sum to 100%; greedy text columns truncate. */
 .attn-table { table-layout: fixed; }
-.attn-table .c-profile  { width: 16%; }
+   Profile is 3% wider than the other text columns are, to pay for the kind glyph. */
+.attn-table { table-layout: fixed; }
+.attn-table .c-profile  { width: 19%; }
 .attn-table .c-cohort   { width: 15%; }
 .attn-table .c-status   { width: 18%; }
 .attn-table .c-attempts { width: 9%; }
-.attn-table .c-error    { width: 23%; }
+.attn-table .c-error    { width: 20%; }
 .attn-table .c-actions  { width: 19%; }
 .attn-table td.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attn-table td.trunc > a { display: block; overflow: hidden; text-overflow: ellipsis; }
+/* This table mixes both conveyors, so the profile cell pairs the kind glyph with the
+   still-truncating slug link (an inner flex row — a flex <td> fights table-layout). */
+.attn-table td.trunc > .attn-profile { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.attn-table td.trunc > .attn-profile > a { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.attn-table .attn-profile .kind-mark { width: 18px; height: 18px; border-radius: 5px; }
 /* Tighter cell padding so the status pill fits on one line and both action buttons
    fit their columns without clipping. */
 .attn-table td.status-cell { padding-left: 10px; padding-right: 10px; }
