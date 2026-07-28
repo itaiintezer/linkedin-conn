@@ -146,6 +146,18 @@ test('countSentSince counts per kind via the profile join', () => {
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'message')).toBe(1);
 });
 
+test('queuedByPriorityKind filters by kind and orders by (priority, id)', () => {
+  const inv = repos.cohorts.create('QI', null, true);
+  const msg = repos.cohorts.create('QM', 'hi', true, 'message');
+  const a = repos.profiles.add(inv.id, 'https://www.linkedin.com/in/qa', null);
+  const b = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/qb', null, 'message');
+  const c = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/qc', null, 'message');
+  repos.profiles.setPriority(c.id, -1);
+  const rows = repos.profiles.queuedByPriorityKind('message');
+  expect(rows.map((r) => r.id)).toEqual([c.id, b.id]);
+  expect(repos.profiles.queuedByPriorityKind('invite').map((r) => r.id)).toEqual([a.id]);
+});
+
 test('appState.setRepliesChecked stamps replies_checked_at', () => {
   repos.appState.setRepliesChecked('2026-07-28T12:00:00.000Z');
   expect(repos.appState.get().replies_checked_at).toBe('2026-07-28T12:00:00.000Z');

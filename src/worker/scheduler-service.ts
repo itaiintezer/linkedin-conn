@@ -1,7 +1,9 @@
 import type { Repos } from '../db/repositories.js';
+import type { CampaignKind } from '../types.js';
 import { planDailyBatches, assignSchedule } from '../core/schedule.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
+import { capsFor } from '../core/caps.js';
 import { log } from '../core/log.js';
 
 /** How long a scheduled profile may sit past its slot before it's re-queued. */
@@ -40,19 +42,27 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   windowEnd.setHours(s.workday_end_hour, 0, 0, 0);
   if (now.getTime() >= windowEnd.getTime()) return;
 
-  const sentInWindow = repos.events.countSentSince(windowStartIso(now), 'invite');
-  const weeklyRemaining = remainingCapacity(s.weekly_cap, sentInWindow);
+  for (const kind of ['invite', 'message'] as CampaignKind[]) {
+    planKind(repos, now, kind, windowEnd, rng);
+  }
+}
+
+function planKind(repos: Repos, now: Date, kind: CampaignKind, windowEnd: Date, rng: () => number): void {
+  const s = repos.settings.get();
+  const caps = capsFor(s, kind);
+  const sentInWindow = repos.events.countSentSince(windowStartIso(now), kind);
+  const weeklyRemaining = remainingCapacity(caps.weeklyCap, sentInWindow);
   if (weeklyRemaining <= 0) return;
 
   // Pace by day, not just by week: the weekly cap is a backstop, but the intended daily
-  // volume is batches_per_day * batch_size. Without this, a single day could spend the
+  // volume is batchesPerDay * batchSize. Without this, a single day could spend the
   // entire weekly allowance at once (and a late-day run would pile it onto one slot).
-  const batchSize = Math.max(1, s.batch_size);
-  const dailyBudget = dailyRemainingFor(repos, s, now, 'invite');
+  const batchSize = Math.max(1, caps.batchSize);
+  const dailyBudget = dailyRemainingFor(repos, s, now, kind);
   if (dailyBudget <= 0) return;
 
   const allTimes = planDailyBatches(now, {
-    startHour: s.workday_start_hour, endHour: s.workday_end_hour, count: s.batches_per_day,
+    startHour: s.workday_start_hour, endHour: s.workday_end_hour, count: caps.batchesPerDay,
   }, rng);
   let times = allTimes.filter((t) => t.getTime() > now.getTime());
   if (times.length === 0) {
@@ -69,13 +79,13 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   const budget = Math.min(weeklyRemaining, dailyBudget, slotCapacity);
   if (budget <= 0) return;
 
-  const queued = repos.profiles.queuedByPriority().slice(0, budget);
+  const queued = repos.profiles.queuedByPriorityKind(kind).slice(0, budget);
   if (queued.length === 0) return;
 
   const assignments = assignSchedule(queued.map((p) => p.id), times, batchSize);
   for (const a of assignments) repos.profiles.setScheduled(a.id, a.when.toISOString());
 
-  log.debug('scheduler', 'assigned slots', { count: assignments.length, slots: times.length, budget });
+  log.debug('scheduler', 'assigned slots', { kind, count: assignments.length, slots: times.length, budget });
 }
 
 /**

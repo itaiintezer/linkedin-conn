@@ -258,3 +258,21 @@ test('recoverOrphanedSending ignores non-sending profiles', () => {
   expect(repos.profiles.findById(sch.id)!.status).toBe('scheduled');
   expect(repos.profiles.findById(sent.id)!.status).toBe('sent');
 });
+
+test('planAndAssignToday schedules invite and message queues independently with their own caps', () => {
+  const repos = new Repos(openDatabase(':memory:'));
+  repos.settings.update({
+    weekly_cap: 100, batch_size: 2, batches_per_day: 1,
+    msg_weekly_cap: 200, msg_batch_size: 3, msg_batches_per_day: 1,
+    workday_start_hour: 8, workday_end_hour: 20, weekdays_only: 0,
+  });
+  const inv = repos.cohorts.create('I', null, true);
+  const msg = repos.cohorts.create('M', 'hi', true, 'message');
+  for (let i = 0; i < 5; i++) repos.profiles.add(inv.id, `https://www.linkedin.com/in/i${i}`, null);
+  for (let i = 0; i < 5; i++) repos.profiles.add(msg.id, `https://www.linkedin.com/in/m${i}`, null, 'message');
+
+  planAndAssignToday(repos, new Date('2026-07-28T09:00:00'), () => 0.5);
+
+  expect(repos.profiles.byStatusKind('scheduled', 'invite')).toHaveLength(2);   // 1 batch x 2
+  expect(repos.profiles.byStatusKind('scheduled', 'message')).toHaveLength(3);  // 1 batch x 3
+});
