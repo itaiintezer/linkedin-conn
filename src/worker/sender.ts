@@ -1,5 +1,5 @@
 import type { Repos } from '../db/repositories.js';
-import type { BrowserDriver, Profile, Settings, CampaignKind } from '../types.js';
+import type { BrowserDriver, Profile, Settings, CampaignKind, SendOutcome } from '../types.js';
 import { selectNoteSource } from '../core/message.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { pickDue } from '../core/schedule.js';
@@ -27,6 +27,49 @@ function withinSendWindow(now: Date, s: Settings): boolean {
 /** One human-readable line per profile so the run log answers "what happened to X?". */
 function logVerdict(p: Profile, verdict: string): void {
   log.info('sender', 'verdict', { profile: p.id, url: p.profile_url, verdict });
+}
+
+/** Shared 'checkpoint' verdict: needs_attention + guardrail trip. Identical for invites
+ *  and messages — a checkpoint halts the whole engine, not just one campaign kind. */
+function handleCheckpoint(repos: Repos, p: Profile, outcome: SendOutcome, clock: () => Date): void {
+  const ev = outcome.evidence;
+  const detail = ev
+    ? `Checkpoint/captcha page at ${ev.pageUrl}`
+      + (ev.matched ? ` (matched "${ev.matched}")` : '')
+      + (ev.screenshot ? ` — screenshot: /incidents/${ev.screenshot}` : '')
+    : undefined;
+  repos.profiles.setStatus(p.id, 'needs_attention', {
+    last_error: ev?.matched ? `checkpoint (matched "${ev.matched}")` : 'checkpoint',
+  });
+  logVerdict(p, `needs attention: checkpoint / captcha${detail ? ` — ${detail}` : ''}`);
+  tripCheckpoint(repos, clock(), detail);
+}
+
+/** Shared 'unavailable' verdict: terminal skip + failure-streak count. `label` is the
+ *  full detail phrase ('send composer unavailable' for invites, 'message composer
+ *  unavailable' for messages) so the streak detail stays specific to which pass hit it.
+ *  Returns whether the streak tripped. */
+function handleUnavailable(
+  repos: Repos, p: Profile, outcome: SendOutcome, clock: () => Date, label: string,
+): boolean {
+  repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'unavailable' });
+  repos.events.recordEvent(p.id, 'skipped');
+  // Carry the evidence into the streak detail so a repeated_failures halt
+  // links the screenshot of THIS failure, not some older incident.
+  const shot = outcome.evidence?.screenshot;
+  const detail = `${label}${shot ? ` — screenshot: /incidents/${shot}` : ''}`;
+  logVerdict(p, `skipped: ${detail}`);
+  return recordFailure(repos, detail, clock());
+}
+
+/** Shared 'error'/default verdict: failed + failure-streak count. Returns whether the
+ *  streak tripped so the caller can halt the pass. */
+function handleError(repos: Repos, p: Profile, outcome: SendOutcome, clock: () => Date): boolean {
+  const shot = outcome.evidence?.screenshot;
+  repos.profiles.setStatus(p.id, 'failed', { last_error: outcome.error ?? 'unknown' });
+  repos.events.recordEvent(p.id, 'failed');
+  logVerdict(p, `failed: ${outcome.error ?? 'unknown'}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
+  return recordFailure(repos, outcome.error ?? 'unknown', clock());
 }
 
 export async function runSenderOnce(
@@ -58,7 +101,11 @@ export async function runSenderOnce(
 
   if (invDue.length > 0) {
     const halted = await runInvitePass(repos, driver, invDue, clock);
-    if (halted) return; // checkpoint / weekly-limit / streak trip — don't start the other pass
+    // checkpoint / weekly-limit / streak trip — don't start the other pass. For weekly_limit
+    // specifically this is a deliberate conservative choice: the account was just rate-limited
+    // on invites, and paused=1 halts everything next tick anyway; messages resume with the
+    // manual resume rather than being allowed to run standalone this tick.
+    if (halted) return;
   }
   if (msgDue.length > 0) await runMessagePass(repos, driver, msgDue, clock);
 }
@@ -138,40 +185,16 @@ async function runInvitePass(
         repos.events.recordEvent(p.id, 'skipped');
         logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
         break;
-      case 'unavailable': {
-        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'unavailable' });
-        repos.events.recordEvent(p.id, 'skipped');
-        // Carry the evidence into the streak detail so a repeated_failures halt
-        // links the screenshot of THIS failure, not some older incident.
-        const shot = outcome.evidence?.screenshot;
-        const detail = `send composer unavailable${shot ? ` — screenshot: /incidents/${shot}` : ''}`;
-        logVerdict(p, `skipped: ${detail}`);
-        if (recordFailure(repos, detail, clock())) return true;
+      case 'unavailable':
+        if (handleUnavailable(repos, p, outcome, clock, 'send composer unavailable')) return true;
         break;
-      }
-      case 'checkpoint': {
-        const ev = outcome.evidence;
-        const detail = ev
-          ? `Checkpoint/captcha page at ${ev.pageUrl}`
-            + (ev.matched ? ` (matched "${ev.matched}")` : '')
-            + (ev.screenshot ? ` — screenshot: /incidents/${ev.screenshot}` : '')
-          : undefined;
-        repos.profiles.setStatus(p.id, 'needs_attention', {
-          last_error: ev?.matched ? `checkpoint (matched "${ev.matched}")` : 'checkpoint',
-        });
-        logVerdict(p, `needs attention: checkpoint / captcha${detail ? ` — ${detail}` : ''}`);
-        tripCheckpoint(repos, clock(), detail);
+      case 'checkpoint':
+        handleCheckpoint(repos, p, outcome, clock);
         return true;
-      }
       case 'error':
-      default: {
-        const shot = outcome.evidence?.screenshot;
-        repos.profiles.setStatus(p.id, 'failed', { last_error: outcome.error ?? 'unknown' });
-        repos.events.recordEvent(p.id, 'failed');
-        logVerdict(p, `failed: ${outcome.error ?? 'unknown'}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
-        if (recordFailure(repos, outcome.error ?? 'unknown', clock())) return true;
+      default:
+        if (handleError(repos, p, outcome, clock)) return true;
         break;
-      }
     }
   }
   return false;
@@ -219,38 +242,16 @@ async function runMessagePass(
         repos.events.recordEvent(p.id, 'skipped');
         logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
         break;
-      case 'unavailable': {
-        repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'unavailable' });
-        repos.events.recordEvent(p.id, 'skipped');
-        const shot = outcome.evidence?.screenshot;
-        const detail = `message composer unavailable${shot ? ` — screenshot: /incidents/${shot}` : ''}`;
-        logVerdict(p, `skipped: ${detail}`);
-        if (recordFailure(repos, detail, clock())) return true;
+      case 'unavailable':
+        if (handleUnavailable(repos, p, outcome, clock, 'message composer unavailable')) return true;
         break;
-      }
-      case 'checkpoint': {
-        const ev = outcome.evidence;
-        const detail = ev
-          ? `Checkpoint/captcha page at ${ev.pageUrl}`
-            + (ev.matched ? ` (matched "${ev.matched}")` : '')
-            + (ev.screenshot ? ` — screenshot: /incidents/${ev.screenshot}` : '')
-          : undefined;
-        repos.profiles.setStatus(p.id, 'needs_attention', {
-          last_error: ev?.matched ? `checkpoint (matched "${ev.matched}")` : 'checkpoint',
-        });
-        logVerdict(p, `needs attention: checkpoint / captcha${detail ? ` — ${detail}` : ''}`);
-        tripCheckpoint(repos, clock(), detail);
+      case 'checkpoint':
+        handleCheckpoint(repos, p, outcome, clock);
         return true;
-      }
       case 'error':
-      default: {
-        const shot = outcome.evidence?.screenshot;
-        repos.profiles.setStatus(p.id, 'failed', { last_error: outcome.error ?? 'unknown' });
-        repos.events.recordEvent(p.id, 'failed');
-        logVerdict(p, `failed: ${outcome.error ?? 'unknown'}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
-        if (recordFailure(repos, outcome.error ?? 'unknown', clock())) return true;
+      default:
+        if (handleError(repos, p, outcome, clock)) return true;
         break;
-      }
     }
   }
   return false;
