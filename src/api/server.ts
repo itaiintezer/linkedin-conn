@@ -13,7 +13,7 @@ import { estimateQueueCompletion, nextBatchForecast, orderUpcoming } from '../co
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
 import { Mutex } from '../core/mutex.js';
-import { runSenderOnce } from '../worker/sender.js';
+import { runSenderOnce, type SenderOptions } from '../worker/sender.js';
 import { runAcceptanceCheck } from '../worker/acceptance-checker.js';
 import { planAndAssignToday } from '../worker/scheduler-service.js';
 import { defaultCohortName } from '../core/cohort-name.js';
@@ -33,10 +33,14 @@ const ALLOWED_SETTINGS_KEYS = new Set([
 
 export function buildServer(
   repos: Repos, driver: BrowserDriver, browserLock: Mutex = new Mutex(), logger: Logger = defaultLog,
-  opts: { incidentsDir?: string } = {},
+  opts: { incidentsDir?: string; senderOptions?: Pick<SenderOptions, 'sleep' | 'rng'> } = {},
 ): FastifyInstance {
   const app = Fastify({ logger: false });
   const incidentsDir = opts.incidentsDir ?? INCIDENTS_DIR;
+  // Forwarded into every /api/run-now sender call — production leaves this empty so
+  // runSenderOnce falls back to the real timer-based sleep; tests inject a no-op so a
+  // multi-profile run-now batch never performs a real 20-90s wait, regardless of batch size.
+  const senderOptions = opts.senderOptions ?? {};
   mkdirSync(incidentsDir, { recursive: true }); // @fastify/static requires the root to exist
 
   app.setErrorHandler((err, _req, reply) => {
@@ -221,7 +225,7 @@ export function buildServer(
     // back-to-back is exactly the burst pattern min_delay_ms/max_delay_ms exist to prevent.
     // The endpoint already awaits the whole batch today, so a slower manual trigger
     // (safety over responsiveness) is an acceptable trade — no separate "fast" path.
-    await browserLock.tryRun(() => runSenderOnce(repos, driver, now, { force: true, clock: () => new Date() }));
+    await browserLock.tryRun(() => runSenderOnce(repos, driver, now, { force: true, clock: () => new Date(), ...senderOptions }));
     return { ok: true, promoted: candidates.length };
   });
 

@@ -28,13 +28,17 @@ export interface SenderOptions {
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** min + floor(rng() * (max - min + 1)), the repo's existing randomized-wait idiom
- *  (see core/schedule.ts, worker/scheduler-service.ts). Clamped so a negative/NaN
- *  min degrades to 0 and a misconfigured max < min degrades to min — the delay can
- *  never come out negative or NaN. */
+ *  (see core/schedule.ts, worker/scheduler-service.ts). `Number(...)` coerces a
+ *  numeric-string setting (POST /api/settings does no coercion) instead of letting
+ *  `NaN > 0` silently collapse the delay to 0. Clamped so a negative/NaN/non-numeric
+ *  min degrades to 0, a misconfigured max < min degrades to min, and — since rng() can
+ *  legitimately return exactly 1 — the result never overshoots max by 1ms either. */
 function randomDelayMs(min: number, max: number, rng: () => number): number {
-  const lo = Number.isFinite(min) && min > 0 ? min : 0;
-  const hi = Number.isFinite(max) && max > lo ? max : lo;
-  return lo + Math.floor(rng() * (hi - lo + 1));
+  const minN = Number(min);
+  const maxN = Number(max);
+  const lo = Number.isFinite(minN) && minN > 0 ? minN : 0;
+  const hi = Number.isFinite(maxN) && maxN > lo ? maxN : lo;
+  return Math.min(hi, lo + Math.floor(rng() * (hi - lo + 1)));
 }
 
 /** Local-time working-hours + sending-day test, mirroring the scheduler. */
@@ -149,26 +153,35 @@ function dueForKind(repos: Repos, now: Date, kind: CampaignKind): Profile[] {
   return pickDue(scheduled, now, Math.min(remaining, caps.batchSize));
 }
 
+/** Result of one profile attempt: whether it halted the pass, and whether it actually
+ *  contacted LinkedIn (called the driver at least once). Pacing only makes sense after
+ *  a real contact — a row that never reached the driver (e.g. no message text) leaves
+ *  nothing to pace, so delaying after it would just hold the browser lock for nothing. */
+interface AttemptResult { halted: boolean; contacted: boolean }
+
 /** One invite batch. Returns true if a halt-worthy verdict stopped the pass
  *  (checkpoint, weekly_limit, or a repeated-failures streak trip).
- *  `delay` paces consecutive sends — invoked between profiles, never before the first
- *  or after the last (a trailing wait would just hold the browser lock for nothing),
- *  and never after a halting profile (nothing follows it in this pass anyway). */
+ *  `delay` paces consecutive LinkedIn contacts — invoked between profiles only when the
+ *  one just attempted actually contacted LinkedIn, never before the first or after the
+ *  last (a trailing wait would just hold the browser lock for nothing), and never after
+ *  a halting profile (nothing follows it in this pass anyway). */
 async function runInvitePass(
   repos: Repos, driver: BrowserDriver, due: Profile[], clock: () => Date, delay: () => Promise<void>,
 ): Promise<boolean> {
   for (let i = 0; i < due.length; i++) {
-    const halted = await attemptInvite(repos, driver, due[i], clock);
+    const { halted, contacted } = await attemptInvite(repos, driver, due[i], clock);
     if (halted) return true;
-    if (i < due.length - 1) await delay();
+    if (contacted && i < due.length - 1) await delay();
   }
   return false;
 }
 
-/** One profile's invite attempt. Returns true if a halt-worthy verdict was hit. */
+/** One profile's invite attempt. Every branch calls driver.sendConnectionRequest at
+ *  least once before returning (the note_quota retry included), so `contacted` is
+ *  always true here — unlike messages, there is no early-return-before-contact path. */
 async function attemptInvite(
   repos: Repos, driver: BrowserDriver, p: Profile, clock: () => Date,
-): Promise<boolean> {
+): Promise<AttemptResult> {
   const cohort = repos.cohorts.findById(p.cohort_id)!;
   repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
   log.debug('sender', 'attempting', { profile: p.id, url: p.profile_url });
@@ -187,7 +200,7 @@ async function attemptInvite(
     } else {
       repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'note quota exhausted; no-note disabled' });
       logVerdict(p, 'needs attention: note quota exhausted, no-note disabled');
-      return false;
+      return { halted: false, contacted: true };
     }
   }
 
@@ -197,12 +210,12 @@ async function attemptInvite(
       repos.events.recordSend(p.id, 'sent');
       recordSuccess(repos); // reset the failure streak
       logVerdict(p, 'sent — invite pending');
-      return false;
+      return { halted: false, contacted: true };
     case 'already':
       repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'already_connected' });
       repos.events.recordEvent(p.id, 'skipped');
       logVerdict(p, 'skipped: already connected');
-      return false;
+      return { halted: false, contacted: true };
     case 'email_required':
       // LinkedIn gates this member behind "enter their email to connect" — a
       // per-profile verdict that can never succeed on retry. Terminal skip; does
@@ -210,7 +223,7 @@ async function attemptInvite(
       repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'email_required' });
       repos.events.recordEvent(p.id, 'skipped');
       logVerdict(p, 'skipped: LinkedIn requires their email to connect');
-      return false;
+      return { halted: false, contacted: true };
     case 'weekly_limit':
       // LinkedIn's account-level weekly invite cap: expected, resolves on its own
       // when the window resets. Amber pause (user-resumable, clear reason) instead
@@ -219,7 +232,7 @@ async function attemptInvite(
       repos.profiles.setStatus(p.id, 'queued', { last_error: null });
       repos.settings.update({ paused: 1, pause_reason: 'LinkedIn weekly invitation limit reached — resume next week' });
       logVerdict(p, 'weekly invitation limit reached — sending paused, profile requeued');
-      return true;
+      return { halted: true, contacted: true };
     case 'not_found':
       // The profile URL 404s (deleted account / renamed slug) — a per-profile
       // verdict that can never succeed on retry. Terminal skip; does NOT touch
@@ -227,35 +240,36 @@ async function attemptInvite(
       repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_found' });
       repos.events.recordEvent(p.id, 'skipped');
       logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
-      return false;
+      return { halted: false, contacted: true };
     case 'unavailable':
-      return handleUnavailable(repos, p, outcome, clock, 'send composer unavailable');
+      return { halted: handleUnavailable(repos, p, outcome, clock, 'send composer unavailable'), contacted: true };
     case 'checkpoint':
       handleCheckpoint(repos, p, outcome, clock);
-      return true;
+      return { halted: true, contacted: true };
     case 'error':
     default:
-      return handleError(repos, p, outcome, clock);
+      return { halted: handleError(repos, p, outcome, clock), contacted: true };
   }
 }
 
 /** One message batch. Returns true if a halt-worthy verdict stopped the pass.
- *  `delay` paces consecutive sends — see runInvitePass for the same contract. */
+ *  `delay` paces consecutive LinkedIn contacts — see runInvitePass for the same contract. */
 async function runMessagePass(
   repos: Repos, driver: BrowserDriver, due: Profile[], clock: () => Date, delay: () => Promise<void>,
 ): Promise<boolean> {
   for (let i = 0; i < due.length; i++) {
-    const halted = await attemptMessage(repos, driver, due[i], clock);
+    const { halted, contacted } = await attemptMessage(repos, driver, due[i], clock);
     if (halted) return true;
-    if (i < due.length - 1) await delay();
+    if (contacted && i < due.length - 1) await delay();
   }
   return false;
 }
 
-/** One profile's message attempt. Returns true if a halt-worthy verdict was hit. */
+/** One profile's message attempt. The no-text guard returns BEFORE calling
+ *  driver.sendMessage — that row never contacted LinkedIn, so `contacted: false`. */
 async function attemptMessage(
   repos: Repos, driver: BrowserDriver, p: Profile, clock: () => Date,
-): Promise<boolean> {
+): Promise<AttemptResult> {
   const cohort = repos.cohorts.findById(p.cohort_id)!;
   // Messages REQUIRE text: the API validates this at enqueue, but the engine must
   // never fall through to an empty send if a row slips past (imports, manual edits).
@@ -263,7 +277,7 @@ async function attemptMessage(
   if (text === null) {
     repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'message cohort has no template or custom message' });
     logVerdict(p, 'needs attention: no message text');
-    return false;
+    return { halted: false, contacted: false };
   }
   repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
   log.debug('sender', 'attempting message', { profile: p.id, url: p.profile_url });
@@ -281,25 +295,25 @@ async function attemptMessage(
       repos.events.recordSend(p.id, 'sent');
       recordSuccess(repos);
       logVerdict(p, 'message sent');
-      return false;
+      return { halted: false, contacted: true };
     case 'not_connected':
       // Not a 1st-degree connection — per-profile, terminal, never InMail, no streak.
       repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_connected' });
       repos.events.recordEvent(p.id, 'skipped');
       logVerdict(p, 'skipped: not a 1st-degree connection');
-      return false;
+      return { halted: false, contacted: true };
     case 'not_found':
       repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_found' });
       repos.events.recordEvent(p.id, 'skipped');
       logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
-      return false;
+      return { halted: false, contacted: true };
     case 'unavailable':
-      return handleUnavailable(repos, p, outcome, clock, 'message composer unavailable');
+      return { halted: handleUnavailable(repos, p, outcome, clock, 'message composer unavailable'), contacted: true };
     case 'checkpoint':
       handleCheckpoint(repos, p, outcome, clock);
-      return true;
+      return { halted: true, contacted: true };
     case 'error':
     default:
-      return handleError(repos, p, outcome, clock);
+      return { halted: handleError(repos, p, outcome, clock), contacted: true };
   }
 }

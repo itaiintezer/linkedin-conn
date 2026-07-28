@@ -1,4 +1,4 @@
-import { test, expect, beforeEach } from 'vitest';
+import { test, expect, beforeEach, vi } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
@@ -343,31 +343,59 @@ test('delays are requested between sends but not before the first or after the l
   expect(sleeps).toHaveLength(2); // gaps between 1-2 and 2-3, none before 1 or after 3
 });
 
-test('each requested delay is within [min_delay_ms, max_delay_ms] given a stubbed rng', async () => {
+test('rng=0 produces exactly min_delay_ms', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
   seedScheduled('https://www.linkedin.com/in/b', '2026-06-29T09:00:00.000Z', c.id);
-  const { min_delay_ms, max_delay_ms } = repos.settings.get();
+  const { min_delay_ms } = repos.settings.get();
 
-  const minSleeps: number[] = [];
+  const sleeps: number[] = [];
   await run(new Date('2026-06-29T10:00:00Z'), {
-    sleep: async (ms) => { minSleeps.push(ms); }, rng: () => 0,
+    sleep: async (ms) => { sleeps.push(ms); }, rng: () => 0,
   });
-  expect(minSleeps).toEqual([min_delay_ms]);
+  expect(sleeps).toEqual([min_delay_ms]);
+});
 
-  // Reset for the max case.
-  repos = new Repos(openDatabase(':memory:'));
-  driver = new FakeDriver();
-  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
-  const c2 = repos.cohorts.create('A', 'hi', true);
-  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c2.id);
-  seedScheduled('https://www.linkedin.com/in/b', '2026-06-29T09:00:00.000Z', c2.id);
-  const maxSleeps: number[] = [];
+test('rng just under 1 produces exactly max_delay_ms', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  seedScheduled('https://www.linkedin.com/in/b', '2026-06-29T09:00:00.000Z', c.id);
+  const { max_delay_ms } = repos.settings.get();
+
+  const sleeps: number[] = [];
   // Just under 1: floor(rng * (range+1)) lands on the top value of the range, i.e. max.
   await run(new Date('2026-06-29T10:00:00Z'), {
-    sleep: async (ms) => { maxSleeps.push(ms); }, rng: () => 0.999999999,
+    sleep: async (ms) => { sleeps.push(ms); }, rng: () => 0.999999999,
   });
-  expect(maxSleeps).toEqual([max_delay_ms]);
+  expect(sleeps).toEqual([max_delay_ms]);
+});
+
+test('rng returning exactly 1 is clamped to max_delay_ms, never overshoots by 1ms', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  seedScheduled('https://www.linkedin.com/in/b', '2026-06-29T09:00:00.000Z', c.id);
+  const { max_delay_ms } = repos.settings.get();
+
+  const sleeps: number[] = [];
+  await run(new Date('2026-06-29T10:00:00Z'), {
+    sleep: async (ms) => { sleeps.push(ms); }, rng: () => 1,
+  });
+  expect(sleeps).toEqual([max_delay_ms]);
+});
+
+test('a numeric-string min/max delay setting is coerced instead of collapsing to 0', async () => {
+  // Mirrors POST /api/settings, which writes whatever JSON value it received with no
+  // coercion. The real DB column has INTEGER affinity and normalizes this on write, so
+  // stub settings.get() directly to exercise the in-memory value as a genuine string.
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  seedScheduled('https://www.linkedin.com/in/b', '2026-06-29T09:00:00.000Z', c.id);
+  const real = repos.settings.get.bind(repos.settings);
+  repos.settings.get = () => ({ ...real(), min_delay_ms: '30000' as any, max_delay_ms: '30000' as any });
+
+  const sleeps: number[] = [];
+  await run(new Date('2026-06-29T10:00:00Z'), { sleep: async (ms) => { sleeps.push(ms); } });
+  expect(sleeps).toEqual([30000]); // not 0
 });
 
 test('a halt mid-batch (checkpoint on the 2nd of 3 profiles) sleeps once, not after the halt', async () => {
@@ -398,4 +426,53 @@ test('both passes sending in one tick pace the boundary between the last invite 
   // 1 gap within the invite pass + 1 gap between invite pass and message pass
   // + 1 gap within the message pass = 3 total.
   expect(sleeps).toHaveLength(3);
+});
+
+test('a message row with no text never contacts LinkedIn, so no delay is spent on it', async () => {
+  // Cohort has no template; m1/m3 carry a per-contact message, m2 does not — so only m2
+  // hits the pre-driver-call guard and must not cost a delay on either side of it.
+  const c = repos.cohorts.create('M-blank', null, true, 'message');
+  const m1 = repos.profiles.add(c.id, 'https://www.linkedin.com/in/m1', 'hi {firstName}', 'message');
+  repos.profiles.setScheduled(m1.id, '2026-06-29T09:00:00.000Z');
+  const m2 = repos.profiles.add(c.id, 'https://www.linkedin.com/in/m2', null, 'message');
+  repos.profiles.setScheduled(m2.id, '2026-06-29T09:00:00.000Z');
+  const m3 = repos.profiles.add(c.id, 'https://www.linkedin.com/in/m3', 'hi {firstName}', 'message');
+  repos.profiles.setScheduled(m3.id, '2026-06-29T09:00:00.000Z');
+
+  const sleeps: number[] = [];
+  await run(new Date('2026-06-29T10:00:00Z'), { sleep: async (ms) => { sleeps.push(ms); } });
+  // Only 2 rows actually contacted LinkedIn (m1, m3); m2 contacted neither side.
+  // A single delay separates the two real contacts.
+  expect(driver.msgLog).toHaveLength(2);
+  expect(repos.profiles.findById(m2.id)!.status).toBe('needs_attention');
+  expect(sleeps).toHaveLength(1);
+});
+
+test('default sleep is a real timer: runSenderOnce without a sleep option awaits a pending timer', async () => {
+  vi.useFakeTimers();
+  try {
+    const c = repos.cohorts.create('A', 'hi', true);
+    seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+    seedScheduled('https://www.linkedin.com/in/b', '2026-06-29T09:00:00.000Z', c.id);
+
+    // No sleep/rng option: this must fall back to the production realSleep, which
+    // schedules a genuine setTimeout. If a future edit ever swapped realSleep for a
+    // no-op, this test would be the only thing catching it — the rest of the suite
+    // only ever exercises the injected no-op sleep.
+    const done = runSenderOnce(repos, driver, new Date('2026-06-29T10:00:00Z'));
+
+    // Flush microtasks (at fake time +0) so the first send resolves and the delay's
+    // setTimeout gets scheduled, without letting fake time actually elapse.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(driver.sentLog).toHaveLength(1); // first profile sent
+    expect(driver.sentLog).not.toHaveLength(2); // second profile is blocked behind the timer
+    expect(vi.getTimerCount()).toBeGreaterThan(0); // a real timer is pending — this IS the delay
+
+    // Advance past the longest possible delay so the pending timer fires and the batch finishes.
+    await vi.advanceTimersByTimeAsync(repos.settings.get().max_delay_ms);
+    await done;
+    expect(driver.sentLog).toHaveLength(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });

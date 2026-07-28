@@ -14,7 +14,9 @@ let app: ReturnType<typeof buildServer>;
 let repos: Repos;
 beforeEach(() => {
   repos = new Repos(openDatabase(':memory:'));
-  app = buildServer(repos, new FakeDriver());
+  // No-op sleep: safe by construction regardless of run-now's batch size, so this suite
+  // never actually waits the real min_delay_ms/max_delay_ms (20-90s by default).
+  app = buildServer(repos, new FakeDriver(), undefined, undefined, { senderOptions: { sleep: async () => {} } });
   repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
 });
 
@@ -239,7 +241,7 @@ test('GET /api/incidents?since= excludes evidence captured before the cutoff', a
 test('POST /api/run-now is skipped (no send) while the shared browser lock is held', async () => {
   const driver = new FakeDriver();
   const lock = new Mutex();
-  const app2 = buildServer(repos, driver, lock);
+  const app2 = buildServer(repos, driver, lock, undefined, { senderOptions: { sleep: async () => {} } });
   await app2.inject({
     method: 'POST', url: '/api/lists',
     payload: { cohort: 'Locked', text: 'https://linkedin.com/in/locked-1', message_template: 'Hi' },
