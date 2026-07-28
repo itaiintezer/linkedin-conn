@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { canonicalName, firstLastKey } from '../../src/core/name-match.js';
+import { canonicalName, nameTokens, tokensContained } from '../../src/core/name-match.js';
 
 test('canonicalizes a parenthetical nickname/middle-name away', () => {
   expect(canonicalName('Keren (Yosef) Tevet')).toBe('keren tevet');
@@ -7,16 +7,46 @@ test('canonicalizes a parenthetical nickname/middle-name away', () => {
   expect(canonicalName('Keren (Yosef) Tevet')).toBe(canonicalName('Keren Tevet'));
 });
 
+test('an unbalanced open paren drops the paren, not the rest of the name', () => {
+  // A truncated title ("Keren (Yosef Tevet") must keep the surname: stripping to the end
+  // of the string would leave the single token "keren", which then loosely matches every
+  // pending Keren — exactly the false positive this module exists to prevent.
+  expect(canonicalName('Keren (Yosef Tevet')).toBe('keren yosef tevet');
+  expect(canonicalName('Keren Tevet)')).toBe('keren tevet');
+});
+
 test('drops post-comma credential suffixes', () => {
   expect(canonicalName('Keren Tevet, CISSP')).toBe('keren tevet');
   expect(canonicalName('Keren Tevet, CISSP, CISM')).toBe('keren tevet');
+  expect(canonicalName('Smith, Jr.')).toBe('smith');
+  expect(canonicalName('Nguyen, Ph.D.')).toBe('nguyen');
 });
 
-test('collapses NBSP and zero-width characters to plain spaces', () => {
-  expect(canonicalName('Keren Tevet')).toBe('keren tevet'); // NBSP
-  expect(canonicalName('Keren​Tevet')).toBe('keren tevet'); // zero-width space
-  expect(canonicalName('Keren‌‍Tevet')).toBe('keren tevet'); // ZWNJ + ZWJ
+test('keeps a post-comma tail that is a real name — surname-first display names', () => {
+  // CRITICAL B: unbounded `split(',')[0]` collapsed every "Surname, Given" display name
+  // onto the surname alone, so two different Cohens became the same person.
+  expect(canonicalName('Cohen, David')).toBe('cohen david');
+  expect(canonicalName('Cohen, Rachel')).toBe('cohen rachel');
+  expect(canonicalName('Cohen, David')).not.toBe(canonicalName('Cohen, Rachel'));
+  // A bare initial is not a credential either ("Cohen, D" vs "Cohen, R" must differ).
+  expect(canonicalName('Cohen, D')).toBe('cohen d');
+  expect(canonicalName('Cohen, D')).not.toBe(canonicalName('Cohen, R'));
+  // Non-Latin scripts have no case, so the "uppercase acronym" heuristic must not fire.
+  expect(canonicalName('כהן, דוד')).not.toBe(canonicalName('כהן, רחל'));
+});
+
+test('names made only of decorations canonicalize to empty (callers must skip empty keys)', () => {
+  expect(canonicalName('(Bot)')).toBe('');
+  expect(canonicalName('   ')).toBe('');
+  expect(canonicalName(', CISSP')).toBe('');
+});
+
+test('zero-width characters are deleted, not turned into a token break', () => {
+  expect(canonicalName('Keren​Tevet')).toBe('kerentevet'); // ZWSP inside one word
+  expect(canonicalName('Ke​ren Tevet')).toBe('keren tevet'); // ZWSP mid-token
+  expect(canonicalName('Keren‌‍Tevet')).toBe('kerentevet'); // ZWNJ + ZWJ
   expect(canonicalName('﻿Keren Tevet')).toBe('keren tevet'); // leading BOM
+  expect(canonicalName('Keren Tevet')).toBe('keren tevet'); // NBSP is a real space
 });
 
 test('collapses repeated/mixed whitespace and trims', () => {
@@ -30,8 +60,36 @@ test('is case-insensitive and Unicode-normalizing', () => {
   expect(canonicalName('Ｋｅｒｅｎ')).toBe('keren');
 });
 
-test('firstLastKey collapses a middle name/token but leaves short names untouched', () => {
-  expect(firstLastKey(canonicalName('Keren Yosef Tevet'))).toBe('keren tevet');
-  expect(firstLastKey(canonicalName('Keren Tevet'))).toBe('keren tevet');
-  expect(firstLastKey(canonicalName('Madonna'))).toBe('madonna');
+test('nameTokens splits a canonical name into comparable tokens', () => {
+  expect(nameTokens('keren yosef tevet')).toEqual(['keren', 'yosef', 'tevet']);
+  expect(nameTokens('')).toEqual([]);
+});
+
+test('tokensContained accepts a dropped middle token in either direction', () => {
+  const short = nameTokens(canonicalName('Keren Tevet'));
+  const long = nameTokens(canonicalName('Keren (Yosef) Tevet, CISSP'));
+  const longer = nameTokens(canonicalName('Keren Yosef Tevet'));
+  expect(tokensContained(short, longer)).toBe(true);
+  expect(tokensContained(longer, short)).toBe(true);
+  expect(tokensContained(short, long)).toBe(true); // parenthetical stripped -> identical
+  expect(tokensContained(short, short)).toBe(true);
+});
+
+test('tokensContained rejects same-first-and-last strangers', () => {
+  // IMPORTANT C: the old first+last key made these equal.
+  expect(tokensContained(nameTokens('jon a smith'), nameTokens('jon b smith'))).toBe(false);
+  expect(tokensContained(
+    nameTokens('ana maria garcia lopez'),
+    nameTokens('ana sofia perez lopez'),
+  )).toBe(false);
+});
+
+test('tokensContained requires two tokens on both sides and preserves order', () => {
+  // A one-token row name would otherwise contain-match every pending contact who
+  // happens to share that token.
+  expect(tokensContained(nameTokens('keren'), nameTokens('keren tevet'))).toBe(false);
+  expect(tokensContained(nameTokens('tevet'), nameTokens('keren tevet'))).toBe(false);
+  // Reordered tokens are a different person as far as this matcher is concerned.
+  expect(tokensContained(nameTokens('tevet keren'), nameTokens('keren yosef tevet'))).toBe(false);
+  expect(tokensContained([], nameTokens('keren tevet'))).toBe(false);
 });

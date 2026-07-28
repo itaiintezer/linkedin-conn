@@ -159,6 +159,143 @@ test('a pending profile with neither full_name nor thread_url is left pending (u
   expect(repos.profiles.findById(p.id)!.status).toBe('sent');
 });
 
+// --- CRITICAL A: an empty canonical name is never a matching key ----------------------
+
+test('a blank full_name does not wildcard-match a blank inbox row name', async () => {
+  const p = seedSentMsg('https://www.linkedin.com/in/blank', ' ');
+  driver.inboxRows = [{ name: '', snippet: 'hello?', youSentLast: false }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+  expect(eventCount(p.id)).toBe(0);
+});
+
+test('decoration-only names ("(Recruiter)" vs "(Hiring Bot)") do not cross-match', async () => {
+  const p = seedSentMsg('https://www.linkedin.com/in/rec', '(Recruiter)');
+  driver.inboxRows = [{ name: '(Hiring Bot)', snippet: 'we are hiring', youSentLast: false }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+});
+
+// --- CRITICAL B: surname-first display names stay distinct ----------------------------
+
+test('"Cohen, David" is not credited when "Cohen, Rachel" replies', async () => {
+  const p = seedSentMsg('https://www.linkedin.com/in/dcohen', 'Cohen, David');
+  driver.inboxRows = [{ name: 'Cohen, Rachel', snippet: 'Rachel: hi', youSentLast: false }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+});
+
+// --- IMPORTANT C: loose tier is containment, not first+last --------------------------
+
+test('a same-first-and-last stranger ("Jon B Smith") never credits "Jon A Smith"', async () => {
+  const p = seedSentMsg('https://www.linkedin.com/in/jas', 'Jon A Smith');
+  driver.inboxRows = [{ name: 'Jon B Smith', snippet: 'Jon: hey', youSentLast: false }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+  expect(res.unmatched).toBe(1); // and we can see we are blind to this contact
+});
+
+test('two four-token Hispanic names sharing first+last do not cross-match', async () => {
+  const p = seedSentMsg('https://www.linkedin.com/in/amgl', 'Ana Maria Garcia Lopez');
+  driver.inboxRows = [{ name: 'Ana Sofia Perez Lopez', snippet: 'Ana: hola', youSentLast: false }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+});
+
+// --- IMPORTANT D: cross-tier ambiguity ----------------------------------------------
+
+test('a row matching one profile exactly and another by containment is ambiguous', async () => {
+  const short = seedSentMsg('https://www.linkedin.com/in/k1', 'Keren Tevet');
+  const long = seedSentMsg('https://www.linkedin.com/in/k2', 'Keren Yosef Tevet');
+  driver.inboxRows = [{ name: 'Keren Tevet', snippet: 'Keren: hi', youSentLast: false }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(res.ambiguous).toBe(2);
+  expect(repos.profiles.findById(short.id)!.status).toBe('sent');
+  expect(repos.profiles.findById(long.id)!.status).toBe('sent');
+});
+
+// --- IMPORTANT E: an exact thread hit outranks a name hit on the same profile --------
+
+test('a thread_url hit still applies when a same-name stranger row also resolves to it', async () => {
+  const p = seedSentMsg('https://www.linkedin.com/in/k', 'Keren Tevet', {
+    thread_url: 'https://www.linkedin.com/messaging/thread/2-real/',
+  });
+  driver.inboxRows = [
+    // The real conversation — name rendered differently, but the thread id is definitive.
+    { name: 'K. Tevet', snippet: 'sounds good', youSentLast: false, threadUrl: 'https://www.linkedin.com/messaging/thread/2-real/' },
+    // A different person who merely shares the display name captured at send time.
+    { name: 'Keren Tevet', snippet: 'who is this?', youSentLast: false, threadUrl: 'https://www.linkedin.com/messaging/thread/2-stranger/' },
+  ];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(1);
+  expect(repos.profiles.findById(p.id)!.status).toBe('replied');
+  expect(eventCount(p.id)).toBe(1);
+});
+
+// --- MINOR F: two pending profiles sharing a thread_url -----------------------------
+
+test('two pending profiles sharing a thread_url are ambiguous, not last-wins', async () => {
+  const a = seedSentMsg('https://www.linkedin.com/in/a', 'Aaa One', {
+    thread_url: 'https://www.linkedin.com/messaging/thread/2-dup/',
+  });
+  const b = seedSentMsg('https://www.linkedin.com/in/b', 'Bbb Two', {
+    thread_url: 'https://www.linkedin.com/messaging/thread/2-dup/',
+  });
+  driver.inboxRows = [{ name: 'Whoever', snippet: 'hi', youSentLast: false, threadUrl: 'https://www.linkedin.com/messaging/thread/2-dup/' }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(res.ambiguous).toBe(2);
+  expect(repos.profiles.findById(a.id)!.status).toBe('sent');
+  expect(repos.profiles.findById(b.id)!.status).toBe('sent');
+});
+
+// --- MINOR G: `unmatched` means "no inbox row matched at all" ------------------------
+
+test('unmatched counts only contacts no row matched — a You-prefixed row still counts as seen', async () => {
+  seedSentMsg('https://www.linkedin.com/in/seen', 'Seen Person');
+  seedSentMsg('https://www.linkedin.com/in/blind', 'Blind Person');
+  driver.inboxRows = [
+    { name: 'Seen Person', snippet: 'You: hi', youSentLast: true },
+    { name: 'Nobody Relevant', snippet: 'x', youSentLast: false },
+  ];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(res.unmatched).toBe(1); // Blind Person only; "Seen Person" simply hasn't replied
+});
+
+// --- TASK-10: thread matching keys off the thread id, not the whole URL --------------
+
+test('a relative thread href from the row anchor matches the absolute stored thread_url', async () => {
+  const p = seedSentMsg('https://www.linkedin.com/in/k', 'Keren (Yosef) Tevet', {
+    thread_url: 'https://www.linkedin.com/messaging/thread/2-AbC=/',
+  });
+  driver.inboxRows = [{
+    name: 'Totally Different Rendering', snippet: 'hi', youSentLast: false,
+    threadUrl: '/messaging/thread/2-AbC=/?filter=unread',
+  }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(1);
+  expect(repos.profiles.findById(p.id)!.status).toBe('replied');
+});
+
+test('thread ids are compared verbatim — a case-different id is a different conversation', async () => {
+  // Thread ids are base64-ish and both sides come from LinkedIn hrefs, so case-folding
+  // could only merge two real conversations. Missing is safe; a false upgrade is not.
+  const p = seedSentMsg('https://www.linkedin.com/in/k', 'Alpha Beta', {
+    thread_url: 'https://www.linkedin.com/messaging/thread/2-AbC/',
+  });
+  driver.inboxRows = [{ name: 'Someone Unrelated', snippet: 'hi', youSentLast: false, threadUrl: '/messaging/thread/2-abc/' }];
+  const res = await runReplyCheck(repos, driver, NOW);
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+});
+
 // --- Cheap regression coverage (mirrors acceptance-checker.test.ts) -------------------
 
 test('guardrail blocks even with force', async () => {
