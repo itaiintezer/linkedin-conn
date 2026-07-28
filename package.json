@@ -4,9 +4,14 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.13"
   },
   "scripts": {
+    "preflight": "node scripts/preflight.mjs --stage=all",
+    "preinstall": "node scripts/preflight.mjs --stage=install",
+    "postinstall": "node scripts/install-browser.mjs",
+    "install-browser": "node scripts/install-browser.mjs",
+    "prestart": "node scripts/preflight.mjs --stage=start",
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",

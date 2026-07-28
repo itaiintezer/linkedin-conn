@@ -4,25 +4,54 @@ The Machine sends LinkedIn connection requests for you, slowly and safely, from 
 LinkedIn account on your own machine. This guide gets you from zero to running.
 
 ## 1. One-time setup
-1. Install **Node.js 22.5 or newer** from https://nodejs.org (the "LTS" build is fine if
-   it's ≥ 22.5; otherwise pick "Current").
-2. Get The Machine folder onto your machine (ask whoever shared it for the zip or repo link).
-3. Open a terminal **in The Machine folder** and run:
+
+Works the same on **Mac** and **Windows**. You need Windows 10/11 on a 64-bit Intel/AMD
+machine (Windows on ARM won't work), or any Mac from the last several years.
+
+1. Install **Node.js 22.13 or newer** from https://nodejs.org — take the big green **LTS**
+   button. If you already have Node, check the version with `node -v`; anything below
+   22.13 must be updated, or The Machine won't start.
+2. Get The Machine folder onto your machine (ask whoever shared it for the zip or repo
+   link). Put it somewhere you own — Documents, Downloads or your home folder. Not
+   `Program Files` or `Applications`.
+3. Open a terminal **in The Machine folder**:
+   - **Mac:** right-click the folder → *Services* → *New Terminal at Folder*.
+   - **Windows:** open the folder in File Explorer, right-click empty space →
+     *Open in Terminal* (or type `powershell` in the address bar).
+4. Run:
    ```
    npm install
+   ```
+   This checks your machine first and stops with a plain-English message if something is
+   missing (wrong Node version, no npm, unsupported computer). Then it downloads the
+   browser The Machine drives — **about 1 GB, a few minutes, once ever**. It's not stuck;
+   wait for it to finish.
+5. Run:
+   ```
    npm start
    ```
-4. Open your browser to **http://localhost:4400**.
+6. Open your browser to **http://localhost:4400**.
 
-Leave the terminal window open — that's the engine. Closing it stops sending.
+Leave the terminal window open — that's the engine. To stop sending, click into that
+window and press **Ctrl+C**. Don't just close the window: that can leave the hidden
+LinkedIn browser running and block the next start.
+
+If anything above fails, run `npm run preflight` — it lists every requirement with a
+one-line fix for whatever is wrong.
 
 ## 2. Connect your LinkedIn (first run)
 A setup wizard appears the first time.
 1. Click **Open LinkedIn login**. A browser window opens — log in to LinkedIn normally.
    The Machine never sees or stores your password; it just borrows the logged-in window.
-2. When the dashboard shows **linked** (green dot, top right), click **Continue**.
-3. Pick your **account type** (Free / Premium / Sales Navigator) so limits match your plan.
-   Click **Finish setup**.
+   (The window should appear within seconds. If it takes minutes on the very first click,
+   the install-time browser download didn't happen — stop, run `npm run install-browser`,
+   then try again.)
+2. When the wizard shows **Connected** (green dot), click **Finish setup**. That's it —
+   there is nothing else to configure to start sending.
+
+Sending limits default to 100 per rolling 7 days, 5 per batch, up to 4 batches a day —
+deliberately conservative. Change them under **Settings** if your LinkedIn plan allows
+more.
 
 ## 3. Add people to contact
 1. Go to **Add List**.
@@ -98,4 +127,14 @@ on the Accepted card forces a pass immediately, ignoring slots and even a pause.
   (default 8am–8pm, weekdays), and that the queue isn't empty.
 - **Lots of failures in Attention** → LinkedIn may have changed its page layout; contact
   whoever maintains The Machine. Pause until it's fixed.
-- **Stop everything** → close the terminal window running `npm start`.
+- **`npm install` stopped with a `[ FAIL ]` line** → it tells you exactly what to fix
+  (almost always: Node is older than 22.13 — install the LTS from https://nodejs.org and
+  open a *new* terminal). Run `npm run preflight` to re-check.
+- **"port 4400 is in use" when starting** → The Machine is already running in another
+  terminal window; use that one at http://localhost:4400.
+- **The LinkedIn browser window won't open** → a previous run was closed without Ctrl+C
+  and the old browser is still holding the login profile. Close any leftover Chromium
+  windows (Windows: Task Manager → end `chrome`; Mac: Activity Monitor → quit
+  `Chromium`), then `npm start` again.
+- **Stop everything** → click the terminal running `npm start` and press **Ctrl+C**. Wait
+  for it to return to a prompt. Only then close the window.
