@@ -465,7 +465,7 @@ export class LinkedInDriver implements BrowserDriver {
       // threadUrl is the real identity when the row exposes one (it currently never does),
       // so fall back to name + snippet. Deliberately NOT name alone: two different people
       // sharing a display name must stay two rows.
-      key: (r) => r.threadUrl ?? `${r.name} ${r.snippet}`,
+      key: (r) => r.threadUrl ?? `${r.name}\u0000${r.snippet}`,
       scrollOnce: () => this.scrollInbox(page),
       onRound: (round, total) => log.debug('replies', 'inbox scroll', { round, total }),
     }, maxRounds);
