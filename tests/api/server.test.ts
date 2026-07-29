@@ -385,6 +385,9 @@ test('POST /api/profiles/:id/retry 404s for an unknown id', async () => {
 });
 
 test('GET /api/status: next_batch reports pending when queued but unscheduled', async () => {
+  // `pending` only applies while today's window is still open, and /api/status reads the real
+  // clock — so without this the test passes during working hours and fails in the evening.
+  alwaysSending();
   const c = repos.cohorts.create('Pred', null, true);
   // Added straight through the repo, so no planning pass has run: these rows have no slots.
   for (let i = 0; i < 5; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
