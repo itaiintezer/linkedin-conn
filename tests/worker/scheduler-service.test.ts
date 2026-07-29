@@ -246,6 +246,50 @@ test('recoverOrphanedSending returns stuck sending profiles to queued, keeping a
   expect(row.attempts).toBe(1);         // the consumed attempt is preserved
 });
 
+test('recoverOrphanedSending parks an orphaned MESSAGE for the operator instead of resending', () => {
+  // A DM is not idempotent from the recipient's side. Nothing in the row can tell us whether
+  // the send click landed before the process died — full_name, thread_url and send_log are all
+  // written from the outcome that never arrived — so requeuing silently risks delivering the
+  // same message twice. Park it visibly and let the operator decide.
+  const c = repos.cohorts.create('DMs', 'hey', true, 'message');
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/dm-mid', null, 'message');
+  repos.profiles.setScheduled(p.id, '2026-06-29T09:00:00.000Z');
+  repos.profiles.setStatus(p.id, 'sending', { attempts: 1 });
+
+  expect(recoverOrphanedSending(repos)).toBe(1);
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.scheduled_for).toBeNull();
+  expect(row.attempts).toBe(1);
+  // The operator needs to know WHY, since the safe next step is to check the conversation.
+  expect(row.last_error).toMatch(/interrupted/i);
+  expect(row.last_error).toMatch(/may have been (sent|delivered)/i);
+});
+
+test('recoverOrphanedSending still requeues an orphaned INVITE', () => {
+  // A repeat invite is harmless — LinkedIn dedupes it — so the invite funnel keeps the
+  // automatic recovery and does not demand operator attention.
+  const c = repos.cohorts.create('Inv', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/inv-mid', null);
+  repos.profiles.setStatus(p.id, 'sending', { attempts: 1 });
+
+  expect(recoverOrphanedSending(repos)).toBe(1);
+  expect(repos.profiles.findById(p.id)!.status).toBe('queued');
+  expect(repos.profiles.findById(p.id)!.last_error).toBeNull();
+});
+
+test('recoverOrphanedSending handles a mixed batch by kind', () => {
+  const ic = repos.cohorts.create('MixI', 'hi', true);
+  const mc = repos.cohorts.create('MixM', 'hey', true, 'message');
+  const inv = repos.profiles.add(ic.id, 'https://www.linkedin.com/in/mix-i', null);
+  const msg = repos.profiles.add(mc.id, 'https://www.linkedin.com/in/mix-m', null, 'message');
+  for (const r of [inv, msg]) repos.profiles.setStatus(r.id, 'sending', { attempts: 1 });
+
+  expect(recoverOrphanedSending(repos)).toBe(2);
+  expect(repos.profiles.findById(inv.id)!.status).toBe('queued');
+  expect(repos.profiles.findById(msg.id)!.status).toBe('needs_attention');
+});
+
 test('recoverOrphanedSending ignores non-sending profiles', () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const q = repos.profiles.add(c.id, 'https://www.linkedin.com/in/q', null);

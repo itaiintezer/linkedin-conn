@@ -119,9 +119,41 @@ export function resortSchedule(repos: Repos, now: Date, rng: () => number = Math
  * every 'sending' row is definitively orphaned. Never call this mid-run, where a 'sending' row
  * is a live send.
  */
+/**
+ * Rescue rows abandoned in 'sending' by an abrupt exit — a crash, or an external kill the
+ * process can't intercept (observed 2026-07-29: the app was terminated mid-send with no
+ * stderr and no handler firing).
+ *
+ * The recovery has to guess, and it splits by kind because the two funnels punish the wrong
+ * guess very differently. Nothing in the row says whether the send actually landed:
+ * `full_name`, `thread_url` and the send_log entry are ALL written from the outcome that
+ * never arrived, so "died before the click" and "died after the click" are indistinguishable.
+ *
+ *  - invite: requeue. A duplicate invite is harmless — LinkedIn dedupes it against the
+ *    pending one — so silent automatic recovery is better than nagging the operator.
+ *  - message: park as needs_attention. A DM is NOT idempotent for the recipient; requeuing
+ *    can deliver the same message to a real person twice, which is exactly the failure the
+ *    operator would want to have been asked about. They can check the conversation, then
+ *    retry or dismiss from the attention view.
+ */
 export function recoverOrphanedSending(repos: Repos): number {
   const stuck = repos.profiles.byStatus('sending');
-  for (const p of stuck) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
-  if (stuck.length > 0) log.info('scheduler', 'recovered orphaned sending profiles', { count: stuck.length });
+  let requeued = 0;
+  let parked = 0;
+  for (const p of stuck) {
+    if (p.kind === 'message') {
+      repos.profiles.setStatus(p.id, 'needs_attention', {
+        scheduled_for: null,
+        last_error: 'interrupted mid-send — it may have been sent; check the conversation before retrying',
+      });
+      parked++;
+    } else {
+      repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
+      requeued++;
+    }
+  }
+  if (stuck.length > 0) {
+    log.info('scheduler', 'recovered orphaned sending profiles', { requeued, needs_attention: parked });
+  }
   return stuck.length;
 }
