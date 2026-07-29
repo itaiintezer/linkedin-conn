@@ -452,7 +452,7 @@ export class LinkedInDriver implements BrowserDriver {
    * Rows are accumulated per scroll round rather than collected once at the end, so this is
    * correct whether or not the list virtualizes — see collectWhileScrolling.
    */
-  async readInboxSnapshot(maxRounds = 8): Promise<InboxRow[]> {
+  async readInboxSnapshot(maxRounds = 25): Promise<InboxRow[]> {
     const page = await this.session.page();
     await page.goto(URLS.messaging, { waitUntil: 'domcontentloaded' });
     await sleep(rand(3000, 5000));
@@ -491,7 +491,15 @@ export class LinkedInDriver implements BrowserDriver {
     const x = box ? box.x + box.width / 2 : 400;
     const y = box ? box.y + box.height / 2 : 400;
     await page.mouse.move(x, y);
-    await page.mouse.wheel(0, 1800);
+    // HALF A VIEWPORT, never more. Each round only snapshots the rows currently rendered, so
+    // a step larger than the visible window scrolls rows past without ever capturing them.
+    // The original 1800px did exactly that: it traversed ~25 rows per round while capturing a
+    // steady +9, and the gaps showed up as contiguous runs of missing conversations (on
+    // 2026-07-29, profiles 680-687 — eight consecutive sends — vanished as one block while
+    // both their older and newer neighbours were captured). Halving guarantees consecutive
+    // snapshots overlap, so accumulation actually covers the list.
+    const vh = page.viewportSize()?.height ?? 800;
+    await page.mouse.wheel(0, Math.max(300, Math.floor(vh * 0.5)));
     await sleep(rand(900, 1500));
   }
 

@@ -129,3 +129,36 @@ test('collectWhileScrolling keeps the FIRST sighting of a duplicate key', async 
   }, 4);
   expect(res.items).toEqual([{ id: 'x', snippet: 'their reply' }]);
 });
+
+/**
+ * A windowed list: only `window` rows are rendered at a time, and each scroll advances the
+ * window by `step` rows. This is the shape that broke on 2026-07-29 — accumulating per round
+ * is necessary but NOT sufficient, because a step wider than the window scrolls rows past
+ * before anything snapshots them. The driver satisfies step <= window by scrolling half a
+ * viewport; these two tests pin why that bound has to hold.
+ */
+function windowedList(total: number, window: number, step: number) {
+  let offset = 0;
+  return {
+    collect: async () => Array.from(
+      { length: Math.min(window, Math.max(0, total - offset)) },
+      (_, i) => `row${offset + i}`,
+    ),
+    key: (s: string) => s,
+    scrollOnce: async () => { offset = Math.min(offset + step, total); },
+  };
+}
+
+test('collectWhileScrolling covers a windowed list when the step overlaps the window', async () => {
+  const res = await collectWhileScrolling(windowedList(40, 10, 5), 30);
+  expect(res.items).toHaveLength(40); // every row seen — consecutive windows overlap
+  expect(res.exhausted).toBe(true);
+});
+
+test('a step WIDER than the window silently drops rows (the 1800px bug)', async () => {
+  // Regression witness, not desired behaviour: 25-row strides past a 10-row window lose the
+  // rows in between, and they go missing in contiguous runs exactly as observed in production.
+  const res = await collectWhileScrolling(windowedList(100, 10, 25), 30);
+  expect(res.items.length).toBeLessThan(100);
+  expect(res.items).not.toContain('row15'); // fell in the first gap
+});
