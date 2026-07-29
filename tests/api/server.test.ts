@@ -24,6 +24,13 @@ beforeEach(() => {
   repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
 });
 
+// Rows of one kind regardless of status. POST /api/lists and POST /api/profiles schedule
+// their new backlog immediately, so counting via a specific status would make these
+// assertions depend on whether the suite happens to run inside working hours.
+function ofKind(kind: 'invite' | 'message') {
+  return repos.profiles.all().filter((p) => p.kind === kind);
+}
+
 test('POST /api/run-now promotes queued profiles and sends a batch immediately', async () => {
   await app.inject({
     method: 'POST', url: '/api/lists',
@@ -377,15 +384,18 @@ test('POST /api/profiles/:id/retry 404s for an unknown id', async () => {
   expect(res.statusCode).toBe(404);
 });
 
-test('GET /api/status: next_batch predicts a window when queued but unscheduled', async () => {
+test('GET /api/status: next_batch reports pending when queued but unscheduled', async () => {
   const c = repos.cohorts.create('Pred', null, true);
+  // Added straight through the repo, so no planning pass has run: these rows have no slots.
   for (let i = 0; i < 5; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
   const res = await app.inject({ method: 'GET', url: '/api/status' });
   expect(res.statusCode).toBe(200);
   const nb = JSON.parse(res.body).forecast.next_batch;
   expect(nb.estimated).toBe(true);
-  expect(typeof nb.at).toBe('string');
+  expect(nb.pending).toBe(true);
   expect(nb.count).toBeGreaterThan(0);
+  // No slot exists, so the payload must not carry a time the UI could render as one.
+  expect(nb.at).toBeUndefined();
 });
 
 test('GET /api/status: next_batch is blocked when paused with a backlog', async () => {
@@ -621,7 +631,7 @@ test('POST /api/lists with kind=message requires a template and creates a messag
   expect(ok.json().added).toBe(1);
   const cohort = repos.cohorts.findByName('Msgs')!;
   expect(cohort.kind).toBe('message');
-  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(1);
+  expect(ofKind('message')).toHaveLength(1);
 });
 
 test('POST /api/lists rejects adding to a cohort of the other kind', async () => {
@@ -764,7 +774,7 @@ test('POST /api/profiles with kind=message adds a message row to a message cohor
   expect(res.statusCode).toBe(200);
   const p = repos.profiles.all().find((x) => x.profile_url.endsWith('dm-one'))!;
   expect(p.kind).toBe('message');
-  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(2);
+  expect(ofKind('message')).toHaveLength(2);
 });
 
 test('POST /api/profiles kind=message takes a per-contact message instead of a cohort template', async () => {
@@ -822,8 +832,8 @@ test('POST /api/profiles still defaults to an invite row in an invite cohort', a
   });
   expect(res.statusCode).toBe(200);
   expect(repos.cohorts.findByName('Inv')!.kind).toBe('invite');
-  expect(repos.profiles.byStatusKind('queued', 'invite')).toHaveLength(2);
-  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(0);
+  expect(ofKind('invite')).toHaveLength(2);
+  expect(ofKind('message')).toHaveLength(0);
 });
 
 /* ---------- the message forecast's settings remap ----------
@@ -907,4 +917,53 @@ test('cross-kind 409 messages use the right article', async () => {
   });
   expect(toMsg.statusCode).toBe(409);
   expect(toMsg.json().error).toContain('is an invite cohort'); // not "is a invite"
+});
+
+// An always-open sending window, so these assertions don't depend on when the suite runs:
+// planAndAssignToday refuses to materialize slots on weekends or outside working hours.
+function alwaysSending(): void {
+  repos.settings.update({ weekdays_only: 0, workday_start_hour: 0, workday_end_hour: 24 });
+}
+
+test('POST /api/lists schedules the new backlog immediately', async () => {
+  // Without this, a fresh cohort sat entirely unscheduled until the hourly planning tick
+  // (up to 60 minutes) while the dashboard's next-batch pill implied an imminent send.
+  alwaysSending();
+  const res = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: {
+      cohort: 'PlanNow', kind: 'message', message_template: 'Hi {{first_name}}',
+      text: ['a', 'b', 'c'].map((s) => `https://www.linkedin.com/in/plan-now-${s}`).join('\n'),
+    },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(res.json().added).toBe(3);
+
+  const scheduled = repos.profiles.byStatusKind('scheduled', 'message');
+  expect(scheduled.length).toBeGreaterThan(0);
+  // Every materialized slot is a real future time, not a placeholder.
+  for (const p of scheduled) expect(new Date(p.scheduled_for!).getTime()).toBeGreaterThan(Date.now());
+});
+
+test('POST /api/profiles schedules the added profile immediately', async () => {
+  alwaysSending();
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/plan-one', cohort: 'PlanOne' },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(repos.profiles.findById(res.json().id)!.status).toBe('scheduled');
+});
+
+test('a paused engine still leaves an added list unscheduled', async () => {
+  // planAndAssignToday declines while paused (slots would only go stale). Adding work must
+  // not quietly resurrect a paused engine.
+  alwaysSending();
+  repos.settings.update({ paused: 1, pause_reason: 'Manual pause' });
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'PausedAdd', text: 'https://www.linkedin.com/in/paused-add' },
+  });
+  expect(repos.profiles.byStatus('scheduled')).toHaveLength(0);
+  expect(repos.profiles.byStatus('queued')).toHaveLength(1);
 });

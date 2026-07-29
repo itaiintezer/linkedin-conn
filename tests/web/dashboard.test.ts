@@ -166,3 +166,37 @@ test('kindMark is accessible for both kinds', () => {
   // The inner SVG is decorative — the label lives on the wrapper.
   expect(message.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
 });
+
+test('an unscheduled batch reads as awaiting scheduling, never as a clock time', () => {
+  // The pill's whole job is to answer "when will this send?". Showing `now` — which is what
+  // an unmaterialized forecast used to carry — made it read as an imminent commitment while
+  // the queue was in fact untouched, so the operator went looking for a bug that wasn't there.
+  app.renderEngine(status({
+    counts: { queued: 12 },
+    msg_counts: { queued: 19 },
+    forecast: {
+      next_batch: { estimated: true, pending: true, count: 5 },
+      msg_next_batch: { estimated: true, pending: true, count: 5 },
+    },
+  }));
+
+  for (const id of ['nextTxt', 'msgNextTxt']) {
+    expect(text(id)).toBe('next batch ~5 awaiting scheduling');
+    expect(text(id)).not.toMatch(/AM|PM|today/);
+  }
+});
+
+test('a materialized slot still shows its exact time, and a prediction its day', () => {
+  const at = new Date(2026, 6, 1, 15, 30).toISOString();
+  app.renderEngine(status({
+    counts: { scheduled: 5 },
+    msg_counts: { queued: 9 },
+    forecast: {
+      next_batch: { estimated: false, at, count: 5 },
+      msg_next_batch: { estimated: true, at, count: 3 },
+    },
+  }));
+
+  expect(text('nextTxt')).toMatch(/^next batch 5 at /);      // exact: no tilde
+  expect(text('msgNextTxt')).toMatch(/^next batch ~3 .*~/);   // prediction: tilde + relative day
+});

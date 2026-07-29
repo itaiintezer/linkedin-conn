@@ -3,7 +3,7 @@ import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
-import { planAndAssignToday } from '../../src/worker/scheduler-service.js';
+import { resortSchedule } from '../../src/worker/scheduler-service.js';
 import { runSenderOnce } from '../../src/worker/sender.js';
 import { runAcceptanceCheck } from '../../src/worker/acceptance-checker.js';
 
@@ -36,11 +36,14 @@ test('happy path: list -> schedule -> send -> accept -> metrics', async () => {
   });
   expect(addRes.statusCode).toBe(200);
   expect(JSON.parse(addRes.body)).toEqual({ added: 3, found: 3 });
-  expect(repos.profiles.byStatus('queued')).toHaveLength(3);
+  expect(repos.profiles.countAll()).toBe(3);
 
-  // 2. Schedule them. rng=()=>0 forces the fallback "now+60s" slot so they become due quickly.
+  // 2. Re-flow the whole backlog at a pinned time. /api/lists already scheduled these rows
+  // against the real wall clock, so resortSchedule (requeue everything, then re-plan) is what
+  // hands slot placement back to this test; rng=()=>0 forces the fallback slot at `planNow`
+  // so they become due immediately.
   const planNow = new Date('2026-06-29T09:00:00'); // Monday, local
-  planAndAssignToday(repos, planNow, () => 0);
+  resortSchedule(repos, planNow, () => 0);
   expect(repos.profiles.byStatus('scheduled')).toHaveLength(3);
   expect(repos.profiles.byStatus('queued')).toHaveLength(0);
 
@@ -102,7 +105,7 @@ test('per-contact custom message overrides the cohort template', async () => {
   expect(res.statusCode).toBe(200);
 
   const planNow = new Date('2026-06-29T09:00:00');
-  planAndAssignToday(repos, planNow, () => 0);
+  resortSchedule(repos, planNow, () => 0);
   await runSenderOnce(repos, driver, new Date(planNow.getTime() + 2 * 60_000), { sleep: async () => {} });
 
   const dave = driver.sentLog.find((s) => s.url === 'https://www.linkedin.com/in/qa-dave');
@@ -123,12 +126,12 @@ test('message campaign: list -> schedule -> send -> reply -> metrics/status', as
     payload: { cohort: 'Connected', kind: 'message', text, message_template: 'Hey {firstName}, quick one —' },
   });
   expect(addRes.statusCode).toBe(200);
-  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(2);
+  expect(repos.profiles.all().filter((p) => p.kind === 'message')).toHaveLength(2);
   // A message campaign must never leak into the invite funnel.
-  expect(repos.profiles.byStatusKind('queued', 'invite')).toHaveLength(0);
+  expect(repos.profiles.all().filter((p) => p.kind === 'invite')).toHaveLength(0);
 
   const planNow = new Date('2026-06-29T09:00:00'); // Monday, local
-  planAndAssignToday(repos, planNow, () => 0);
+  resortSchedule(repos, planNow, () => 0);
   expect(repos.profiles.byStatusKind('scheduled', 'message')).toHaveLength(2);
 
   await runSenderOnce(repos, driver, new Date(planNow.getTime() + 2 * 60_000), { sleep: async () => {} });

@@ -84,6 +84,7 @@ export function buildServer(
     }
     const c = repos.cohorts.getOrCreate(cohortName, null, true, kind);
     const p = repos.profiles.add(c.id, normalized, note ?? null, kind);
+    planAndAssignToday(repos, new Date()); // schedule it now — see the note in /api/lists
     return { id: p.id, profile_url: p.profile_url, kind: p.kind };
   });
 
@@ -116,6 +117,13 @@ export function buildServer(
     const before = repos.profiles.countAll();
     for (const u of urls) repos.profiles.add(c.id, u, null, kind);
     const added = repos.profiles.countAll() - before;
+    // Give the new backlog real slots now instead of leaving it untouched until the hourly
+    // planning tick — a cohort added at 09:05 would otherwise sit unscheduled for nearly an
+    // hour while the dashboard's next-batch pill implied an imminent send. planAndAssignToday
+    // declines on its own while paused, halted, off-hours or on a non-sending day, so this
+    // adds no way to slip a send past those gates; it only stops the operator from staring
+    // at an empty queue wondering what broke.
+    planAndAssignToday(repos, new Date());
     return { added, found: urls.length };
   });
 
