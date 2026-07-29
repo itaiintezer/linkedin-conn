@@ -118,18 +118,22 @@ test('nextBatchForecast: exact future slot => estimated false', () => {
   expect(nextBatchForecast(rows, baseCtx, now)).toEqual({ estimated: false, at, count: 2 });
 });
 
-test('nextBatchForecast: backlog + budget left today => predict today window', () => {
+test('nextBatchForecast: backlog + budget left today => pending, with no invented clock time', () => {
+  // Inside the window with budget to spare, but NOTHING is materialized: the honest answer
+  // is "the next planning pass will place it", not a time. This used to return `at = now`,
+  // which the dashboard rendered as "next batch ~5 today ~10:00 AM" — a time that advanced
+  // with every 15s poll and read as a commitment while the queue was in fact unscheduled.
   const now = new Date(2026, 6, 1, 10, 0); // Wed, before end hour 20
-  const r = nextBatchForecast([], baseCtx, now);
-  expect(r).toMatchObject({ estimated: true, count: 5 }); // min(batch_size 5, backlog 30)
-  const at = new Date((r as { at: string }).at);
-  expect(at.getDay()).toBe(3);     // same day (Wed)
-  expect(at.getHours()).toBe(10);  // max(now, workday_start 8) => now
+  expect(nextBatchForecast([], baseCtx, now))
+    .toEqual({ estimated: true, pending: true, count: 5 }); // min(batch_size 5, backlog 30)
 });
 
 test('nextBatchForecast: today budget spent => predict next sending day start', () => {
   const now = new Date(2026, 6, 1, 10, 0); // Wed
   const r = nextBatchForecast([], { ...baseCtx, dailyRemaining: 0 }, now);
+  // A real prediction, not a pending one: today is genuinely done, so tomorrow's window
+  // start is a time we actually know and should keep showing.
+  expect(r).not.toHaveProperty('pending');
   const at = new Date((r as { at: string }).at);
   expect(at.getDay()).toBe(4);    // Thursday
   expect(at.getHours()).toBe(8);  // workday_start_hour

@@ -84,6 +84,14 @@ export type NextBatchResult =
   | null
   | { estimated: false; at: string; count: number }
   | { estimated: true; at: string; count: number }
+  /**
+   * Work is ready and today's window is open, but no slot has been materialized yet — the
+   * next planning pass will place it. Deliberately carries NO `at`: the only times we could
+   * offer are `now` (which reads as "sending right now" and advances with every poll) or the
+   * next planning tick (which we can't see from here), so any clock value would be a guess
+   * presented as a schedule. Callers must render this as a state, not a time.
+   */
+  | { estimated: true; pending: true; count: number }
   | { blocked: true; reason: string };
 
 export interface NextBatchContext {
@@ -149,12 +157,10 @@ export function nextBatchForecast(
     now.getTime() < endToday.getTime() &&
     ctx.dailyRemaining > 0;
 
-  let at: Date;
-  if (canRunToday) {
-    const start = localWindowStart(now, s.workday_start_hour);
-    at = now.getTime() > start.getTime() ? now : start;
-  } else {
-    at = nextSendingWindowStart(now, s);
-  }
-  return { estimated: true, at: at.toISOString(), count };
+  // Today is still open with budget to spare, so the batch is imminent — but the planner
+  // assigns the actual minute and hasn't run yet. Report the state, not a fabricated time.
+  if (canRunToday) return { estimated: true, pending: true, count };
+  // Today is genuinely finished (or it's a non-sending day): the next window start is a
+  // time we really do know, so keep predicting it.
+  return { estimated: true, at: nextSendingWindowStart(now, s).toISOString(), count };
 }

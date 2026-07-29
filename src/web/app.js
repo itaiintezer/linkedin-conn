@@ -172,9 +172,13 @@ function renderEngine(status) {
   else fillPill('etaTxt', 'finishes in', eta.value, eta.foot);
 
   // --- Pace: next-batch pill ---
+  // Four states, and the order matters: `pending` carries no `at` at all (see NextBatchResult)
+  // because the planner hasn't placed the batch yet. Rendering a clock time there — which is
+  // what showing `now` amounted to — reads as a promise the engine hasn't made.
   const nb = f.next_batch;
   if (!nb) fillPill('nextTxt', null, null, 'no batch queued');
   else if (nb.blocked) fillPill('nextTxt', null, null, nb.reason);
+  else if (nb.pending) fillPill('nextTxt', 'next batch', `~${nb.count}`, 'awaiting scheduling');
   else if (nb.estimated === false) fillPill('nextTxt', 'next batch', nb.count, `at ${fmtClock(nb.at)}`);
   else fillPill('nextTxt', 'next batch', `~${nb.count}`, `${fmtRelDay(nb.at)} ~${fmtClock(nb.at)}`);
 
@@ -223,6 +227,7 @@ function renderEngine(status) {
   const mnb = f.msg_next_batch;
   if (!mnb) fillPill('msgNextTxt', null, null, 'no batch queued');
   else if (mnb.blocked) fillPill('msgNextTxt', null, null, mnb.reason);
+  else if (mnb.pending) fillPill('msgNextTxt', 'next batch', `~${mnb.count}`, 'awaiting scheduling');
   else if (mnb.estimated === false) fillPill('msgNextTxt', 'next batch', mnb.count, `at ${fmtClock(mnb.at)}`);
   else fillPill('msgNextTxt', 'next batch', `~${mnb.count}`, `${fmtRelDay(mnb.at)} ~${fmtClock(mnb.at)}`);
 

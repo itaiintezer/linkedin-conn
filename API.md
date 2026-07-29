@@ -52,7 +52,7 @@ curl -s http://localhost:4400/api/profiles \
 ### GET /api/status
 Queue snapshot + weekly usage + forecast, per campaign kind.
 
-Response (abridged): `{ "paused": 0, "weekly_sent": 12, "weekly_cap": 100, "counts": { "queued": 30, "scheduled": 5, "sent": 12, "accepted": 4 }, "msg_counts": { "queued": 8, "sent": 3, "replied": 1 }, "msg_weekly_sent": 3, "msg_weekly_cap": 250, "loggedIn": true, "acceptance_checked_at": "…", "replies_checked_at": "…", "forecast": { "queue_remaining": 35, "eta": { "sendingDays": 7, "finishDate": "…" }, "next_batch": { "estimated": true, "at": "…", "count": 5 }, "msg_next_batch": { "estimated": true, "at": "…", "count": 5 } } }`
+Response (abridged): `{ "paused": 0, "weekly_sent": 12, "weekly_cap": 100, "counts": { "queued": 30, "scheduled": 5, "sent": 12, "accepted": 4 }, "msg_counts": { "queued": 8, "sent": 3, "replied": 1 }, "msg_weekly_sent": 3, "msg_weekly_cap": 250, "loggedIn": true, "acceptance_checked_at": "…", "replies_checked_at": "…", "forecast": { "queue_remaining": 35, "eta": { "sendingDays": 7, "finishDate": "…" }, "next_batch": { "estimated": false, "at": "…", "count": 5 }, "msg_next_batch": { "estimated": true, "pending": true, "count": 5 } } }`
 
 - `counts`, `weekly_sent`, `weekly_cap`, `forecast.queue_remaining`, `forecast.eta` and
   `forecast.next_batch` are **invite-only** — they mean exactly what they meant before
@@ -63,6 +63,13 @@ Response (abridged): `{ "paused": 0, "weekly_sent": 12, "weekly_cap": 100, "coun
   acceptance pass); `null` until one succeeds.
 - `paused`, `guardrail` and `sending` are shared: there is one pause and one halt for both
   kinds.
+- A `next_batch` / `msg_next_batch` is one of four shapes: `null` (nothing queued),
+  `{ blocked, reason }`, `{ estimated: false, at, count }` for a materialized slot, or
+  `{ estimated: true, count, … }` for a prediction. A prediction carries **either** `at`
+  (a known future window start — today is finished, or it's a non-sending day) **or**
+  `pending: true` and **no `at` at all**, meaning today is still open and the next planning
+  pass will place the batch. Never render a clock time for a `pending` forecast: there is no
+  slot behind it.
 
 ## Bulk & cohorts
 
@@ -75,6 +82,10 @@ Bulk-enqueue from pasted text. Request: `{ "cohort": "Security VPs", "text": "ur
   nothing to send without a body. Max length 2000 for messages, 300 for invite notes;
   over that is `400`.
 - `409` if a cohort with that name already exists with the other kind.
+- Both `POST /api/lists` and `POST /api/profiles` run a planning pass on the new backlog, so
+  added work gets real slots immediately instead of waiting for the hourly scheduler tick.
+  Planning still declines while paused, halted, outside working hours or on a non-sending
+  day — adding work never slips a send past those gates.
 
 ### GET /api/cohorts
 List active (non-archived) cohorts: `[{ "id", "name", "kind", "message_template", "allow_no_note", "created_at" }]`.
