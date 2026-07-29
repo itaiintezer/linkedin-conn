@@ -6,7 +6,7 @@ import { normalizeProfileUrl } from '../core/url.js';
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 import { detectCheckpoint } from '../core/checkpoint.js';
 import { captureEvidence } from './evidence.js';
-import { scrollToLoad } from './auto-scroll.js';
+import { scrollToLoad, collectWhileScrolling } from './auto-scroll.js';
 import { log } from '../core/log.js';
 
 const rand = (min: number, max: number) => min + Math.floor(Math.random() * (max - min));
@@ -439,7 +439,20 @@ export class LinkedInDriver implements BrowserDriver {
    * day LinkedIn renders hrefs again — but do not rely on it, and do not "fix" the matcher
    * by loosening names on the assumption that thread ids will catch mistakes.
    */
-  async readInboxSnapshot(): Promise<InboxRow[]> {
+  /**
+   * Snapshot the conversation list, scrolling to reach past the first screen.
+   *
+   * The scroll is not optional. LinkedIn renders ~10 conversations on load and orders them
+   * by most recent activity, so every message WE send pushes older threads down. Reading only
+   * the first screen therefore loses replies as soon as the day's send volume exceeds ~10:
+   * on 2026-07-29 a real reply from the day's first contact went undetected because 29 later
+   * sends had buried his thread, and the read reported rows=10 while 22 of 29 pending
+   * contacts were never examined at all.
+   *
+   * Rows are accumulated per scroll round rather than collected once at the end, so this is
+   * correct whether or not the list virtualizes — see collectWhileScrolling.
+   */
+  async readInboxSnapshot(maxRounds = 8): Promise<InboxRow[]> {
     const page = await this.session.page();
     await page.goto(URLS.messaging, { waitUntil: 'domcontentloaded' });
     await sleep(rand(3000, 5000));
@@ -447,6 +460,42 @@ export class LinkedInDriver implements BrowserDriver {
       await captureEvidence(page, 'checkpoint', { during: 'inbox read' });
       throw new Error('checkpoint detected during inbox read');
     }
+    const { items, rounds, exhausted } = await collectWhileScrolling<InboxRow>({
+      collect: () => this.collectInboxRows(page),
+      // threadUrl is the real identity when the row exposes one (it currently never does),
+      // so fall back to name + snippet. Deliberately NOT name alone: two different people
+      // sharing a display name must stay two rows.
+      key: (r) => r.threadUrl ?? `${r.name} ${r.snippet}`,
+      scrollOnce: () => this.scrollInbox(page),
+      onRound: (round, total) => log.debug('replies', 'inbox scroll', { round, total }),
+    }, maxRounds);
+    // Louder than debug on purpose: a truncated snapshot cannot find a reply that sits below
+    // the cut, and the reply checker has no other way to know its input was incomplete.
+    if (!exhausted) {
+      log.warn('replies', 'inbox scroll hit the round cap — snapshot may be truncated', {
+        rounds, rows: items.length,
+      });
+    }
+    return items;
+  }
+
+  /**
+   * One real wheel gesture over the conversation list. Same constraint as the connections
+   * list (see scrollConnections): the list scrolls inside its own container, not the
+   * document, and its lazy loader only responds to trusted wheel events — so
+   * window.scrollTo would be a silent no-op here.
+   */
+  private async scrollInbox(page: Page): Promise<void> {
+    const box = await page.locator(SEL.inboxList).boundingBox().catch(() => null);
+    // Fallback aims at the left-hand conversation pane, which is where the list lives.
+    const x = box ? box.x + box.width / 2 : 400;
+    const y = box ? box.y + box.height / 2 : 400;
+    await page.mouse.move(x, y);
+    await page.mouse.wheel(0, 1800);
+    await sleep(rand(900, 1500));
+  }
+
+  private async collectInboxRows(page: Page): Promise<InboxRow[]> {
     return page.evaluate(({ listSel, rowSel, nameSel, snipSel }) => {
       // Scope rows to the conversation list when it is present, so a listitem rendered
       // outside the inbox (overlays, the "other" tab's stale DOM) can't enter the snapshot.

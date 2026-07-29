@@ -287,5 +287,16 @@ export async function runReplyCheck(
   log.info('replies', 'checked', {
     replied, ambiguousProfiles, unmatchedPending, rows: rows.length, pending: pending.length,
   });
+  // A pending contact with no inbox row was not examined at all, so a reply from them cannot
+  // have been seen. Warn rather than leave it at info: this number climbed 20 -> 21 -> 22 on
+  // 2026-07-29 while the pass reported success each time, and a real reply was missed under it.
+  // The slot IS still stamped above — a contact can be legitimately absent from the inbox
+  // (no thread was ever created), and refusing to stamp would re-run the read every 30 minutes
+  // forever. Visibility is the fix here, not a retry.
+  if (unmatchedPending > 0) {
+    log.warn('replies', 'pending contacts had no inbox row — a reply from them cannot be seen', {
+      unmatchedPending, pending: pending.length, rows: rows.length,
+    });
+  }
   return { ran: true, replied, ambiguous: ambiguousProfiles, unmatched: unmatchedPending, checkedAt: iso };
 }
