@@ -217,6 +217,15 @@ export async function runReplyCheck(
     });
   }
 
+  // The roster of what the read actually returned. Names only, never snippets: this is enough
+  // to tell "the contact's conversation was never captured" apart from "it was captured but
+  // didn't resolve or looked like we spoke last", which are different bugs with different
+  // fixes, and the aggregate counts cannot distinguish them.
+  log.debug('replies', 'inbox roster', {
+    rows: rows.length,
+    names: rows.map((r) => `${r.name}${r.youSentLast ? ' [you]' : ''}`),
+  });
+
   // --- Resolve each inbox row to at most one profile, or flag it ambiguous ------------
   const clean: RowMatch[] = [];
   // Profiles some row pointed at (even a You-prefixed or ambiguous one): the complement
@@ -296,6 +305,9 @@ export async function runReplyCheck(
   if (unmatchedPending > 0) {
     log.warn('replies', 'pending contacts had no inbox row — a reply from them cannot be seen', {
       unmatchedPending, pending: pending.length, rows: rows.length,
+      // Identities, not just a count: a bare number can't tell you whether the read is short
+      // or a specific contact's name never resolves, and those need opposite fixes.
+      who: pending.filter((p) => !seenIds.has(p.id)).map((p) => `${p.id}:${p.full_name ?? '?'}`),
     });
   }
   return { ran: true, replied, ambiguous: ambiguousProfiles, unmatched: unmatchedPending, checkedAt: iso };
