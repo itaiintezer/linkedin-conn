@@ -12,9 +12,15 @@ import { join as pathJoin } from 'node:path';
 
 let app: ReturnType<typeof buildServer>;
 let repos: Repos;
+// Hoisted so tests that need to stage driver reads (connections, inbox rows) can reach
+// the same FakeDriver instance the shared `app` was built with.
+let driver: FakeDriver;
 beforeEach(() => {
   repos = new Repos(openDatabase(':memory:'));
-  app = buildServer(repos, new FakeDriver());
+  driver = new FakeDriver();
+  // No-op sleep: safe by construction regardless of run-now's batch size, so this suite
+  // never actually waits the real min_delay_ms/max_delay_ms (20-90s by default).
+  app = buildServer(repos, driver, undefined, undefined, { senderOptions: { sleep: async () => {} } });
   repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
 });
 
@@ -239,7 +245,7 @@ test('GET /api/incidents?since= excludes evidence captured before the cutoff', a
 test('POST /api/run-now is skipped (no send) while the shared browser lock is held', async () => {
   const driver = new FakeDriver();
   const lock = new Mutex();
-  const app2 = buildServer(repos, driver, lock);
+  const app2 = buildServer(repos, driver, lock, undefined, { senderOptions: { sleep: async () => {} } });
   await app2.inject({
     method: 'POST', url: '/api/lists',
     payload: { cohort: 'Locked', text: 'https://linkedin.com/in/locked-1', message_template: 'Hi' },
@@ -600,4 +606,305 @@ test('POST /api/recheck-acceptance promotes a profile that now appears in connec
   expect(body.ran).toBe(true);
   expect(body.accepted).toBe(1);
   expect(repos.profiles.findById(p.id)!.status).toBe('accepted');
+});
+
+test('POST /api/lists with kind=message requires a template and creates a message cohort', async () => {
+  const bad = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Msgs', kind: 'message', text: 'https://www.linkedin.com/in/a',
+  } });
+  expect(bad.statusCode).toBe(400);
+
+  const ok = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Msgs', kind: 'message', text: 'https://www.linkedin.com/in/a', message_template: 'Hey {firstName}',
+  } });
+  expect(ok.statusCode).toBe(200);
+  expect(ok.json().added).toBe(1);
+  const cohort = repos.cohorts.findByName('Msgs')!;
+  expect(cohort.kind).toBe('message');
+  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(1);
+});
+
+test('POST /api/lists rejects adding to a cohort of the other kind', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: { cohort: 'InvC', text: 'https://www.linkedin.com/in/z' } });
+  const res = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'InvC', kind: 'message', text: 'https://www.linkedin.com/in/y', message_template: 'hi',
+  } });
+  expect(res.statusCode).toBe(409);
+});
+
+test('GET /api/status exposes per-kind counts, caps, and replies_checked_at', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  const body = res.json();
+  expect(body.counts).toBeDefined();
+  expect(body.msg_counts).toBeDefined();
+  expect(body.msg_weekly_cap).toBe(250);
+  expect(body).toHaveProperty('replies_checked_at');
+  expect(body.forecast.msg_next_batch !== undefined).toBe(true);
+});
+
+test('GET /api/profiles?status=sent&kind=message filters by kind', async () => {
+  const m = repos.cohorts.create('MM', 'hi', true, 'message');
+  const p = repos.profiles.add(m.id, 'https://www.linkedin.com/in/mk', null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-28T00:00:00.000Z' });
+  const res = await app.inject({ method: 'GET', url: '/api/profiles?status=sent&kind=message' });
+  expect(res.json()).toHaveLength(1);
+  const inv = await app.inject({ method: 'GET', url: '/api/profiles?status=sent&kind=invite' });
+  expect(inv.json()).toHaveLength(0);
+});
+
+test('POST /api/recheck-replies runs a forced reply pass', async () => {
+  const m = repos.cohorts.create('MR', 'hi', true, 'message');
+  const p = repos.profiles.add(m.id, 'https://www.linkedin.com/in/kr', null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-27T00:00:00.000Z', full_name: 'K R' });
+  driver.inboxRows = [{ name: 'K R', snippet: 'K: hi', youSentLast: false }];
+  const res = await app.inject({ method: 'POST', url: '/api/recheck-replies' });
+  expect(res.json().replied).toBe(1);
+});
+
+test('POST /api/settings accepts the message pacing keys', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/settings', payload: { msg_weekly_cap: 150, reply_checks_per_day: 1 } });
+  expect(res.json().msg_weekly_cap).toBe(150);
+  expect(res.json().reply_checks_per_day).toBe(1);
+});
+
+test('POST /api/cohorts enforces the same template rules as /api/lists', async () => {
+  // A direct API caller (agent/script) must not be able to create a message cohort with
+  // no text — the UI guards this client-side, which doesn't protect the API.
+  const blank = await app.inject({ method: 'POST', url: '/api/cohorts', payload: { name: 'MsgNoTpl', kind: 'message' } });
+  expect(blank.statusCode).toBe(400);
+  expect(repos.cohorts.findByName('MsgNoTpl')).toBeUndefined();
+
+  const tooLong = await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'MsgLong', kind: 'message', message_template: 'x'.repeat(2001) },
+  });
+  expect(tooLong.statusCode).toBe(400);
+
+  const ok = await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'MsgOk', kind: 'message', message_template: 'Hey {firstName}' },
+  });
+  expect(ok.statusCode).toBe(200);
+  expect(repos.cohorts.findByName('MsgOk')!.kind).toBe('message');
+
+  // Invite cohorts keep their 300-char limit and may still have no template at all.
+  const bareInvite = await app.inject({ method: 'POST', url: '/api/cohorts', payload: { name: 'InvBare' } });
+  expect(bareInvite.statusCode).toBe(200);
+  const inviteLong = await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'InvLong', message_template: 'x'.repeat(301) },
+  });
+  expect(inviteLong.statusCode).toBe(400);
+});
+
+test('editing an existing message cohort without restating kind still enforces its template', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'MsgEdit', kind: 'message', message_template: 'Hey {firstName}' },
+  });
+  // The UI's edit form omits `kind` (it's frozen); blanking the template must still 400
+  // rather than silently leaving a message cohort unsendable.
+  const blanked = await app.inject({
+    method: 'POST', url: '/api/cohorts', payload: { name: 'MsgEdit', message_template: '   ' },
+  });
+  expect(blanked.statusCode).toBe(400);
+  expect(repos.cohorts.findByName('MsgEdit')!.message_template).toBe('Hey {firstName}');
+});
+
+/* ---------- POST /api/profiles: kind safety ----------
+   The single-URL path defaulted every row to 'invite'. Adding to a message cohort that
+   way produced an INVITE row whose text came from the DM template, which the invite
+   sender then truncated to a 300-char connection note — a real message to a real person.
+   These lock the cross-kind guard, the new `kind` parameter, and the text rules. */
+
+test('POST /api/profiles rejects adding to a cohort of the other kind', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: {
+      cohort: 'DMs', kind: 'message', text: 'https://www.linkedin.com/in/seed-dm',
+      message_template: 'Hey {firstName}, '.repeat(50),
+    },
+  });
+  // No `kind` in the body defaults to 'invite', which used to silently mis-kind the row.
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/cross-kind', cohort: 'DMs' },
+  });
+  expect(res.statusCode).toBe(409);
+  expect(res.json().error).toContain('is a message cohort');
+  expect(repos.profiles.byStatusKind('queued', 'invite')).toHaveLength(0);
+});
+
+test('POST /api/profiles rejects a message add to an invite cohort', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'InvOnly', text: 'https://www.linkedin.com/in/seed-inv' },
+  });
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/wrong-way', cohort: 'InvOnly', kind: 'message', message: 'hi' },
+  });
+  expect(res.statusCode).toBe(409);
+  // Deliberately the same message shape /api/lists and /api/cohorts emit, article wart included.
+  expect(res.json().error).toContain('invite cohort');
+});
+
+test('POST /api/profiles with kind=message adds a message row to a message cohort', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: {
+      cohort: 'DMs', kind: 'message', text: 'https://www.linkedin.com/in/seed-dm',
+      message_template: 'Hey {firstName}',
+    },
+  });
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/dm-one', cohort: 'DMs', kind: 'message' },
+  });
+  expect(res.statusCode).toBe(200);
+  const p = repos.profiles.all().find((x) => x.profile_url.endsWith('dm-one'))!;
+  expect(p.kind).toBe('message');
+  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(2);
+});
+
+test('POST /api/profiles kind=message takes a per-contact message instead of a cohort template', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: {
+      url: 'https://www.linkedin.com/in/per-contact', cohort: 'FreshDMs', kind: 'message',
+      message: 'Hey {firstName}',
+    },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(repos.cohorts.findByName('FreshDMs')!.kind).toBe('message');
+  const p = repos.profiles.all()[0];
+  expect(p.kind).toBe('message');
+  expect(p.custom_message).toBe('Hey {firstName}');
+});
+
+test('POST /api/profiles kind=message 400s when there is no text to send at all', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/no-text', cohort: 'EmptyDMs', kind: 'message' },
+  });
+  expect(res.statusCode).toBe(400);
+  // Nothing partially created: no cohort, and no row that would drain into needs_attention.
+  expect(repos.cohorts.findByName('EmptyDMs')).toBeUndefined();
+  expect(repos.profiles.all()).toHaveLength(0);
+});
+
+test('POST /api/profiles caps the per-contact message at the limit for its kind', async () => {
+  const longDm = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: {
+      url: 'https://www.linkedin.com/in/long-dm', cohort: 'LongDMs', kind: 'message',
+      message: 'x'.repeat(2001),
+    },
+  });
+  expect(longDm.statusCode).toBe(400);
+  // Invite notes cap at 300 — over-long text was silently truncated mid-sentence at send time.
+  const longNote = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/long-note', cohort: 'LongNotes', message: 'x'.repeat(301) },
+  });
+  expect(longNote.statusCode).toBe(400);
+  expect(repos.profiles.all()).toHaveLength(0);
+});
+
+test('POST /api/profiles still defaults to an invite row in an invite cohort', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Inv', text: 'https://www.linkedin.com/in/seed-i' },
+  });
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/inv-one', cohort: 'Inv', message: 'Hi there' },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(repos.cohorts.findByName('Inv')!.kind).toBe('invite');
+  expect(repos.profiles.byStatusKind('queued', 'invite')).toHaveLength(2);
+  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(0);
+});
+
+/* ---------- the message forecast's settings remap ----------
+   core/forecast is kind-agnostic: the message side gets its pacing by handing
+   nextBatchForecast a Settings whose invite fields carry the msg_* values. That remap is
+   now the ONLY mechanism (forecast.dailySendRate has no `kind` parameter), so lock it. */
+
+test('GET /api/status paces msg_next_batch from the msg_* settings, not the invite ones', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/settings',
+    payload: {
+      weekly_cap: 100, batch_size: 5, batches_per_day: 4,
+      msg_weekly_cap: 200, msg_batch_size: 2, msg_batches_per_day: 4,
+    },
+  });
+  const inv = repos.cohorts.create('FInv', null, true);
+  const msg = repos.cohorts.create('FMsg', 'hi', false, 'message');
+  for (let i = 0; i < 20; i++) {
+    repos.profiles.add(inv.id, `https://www.linkedin.com/in/fi-${i}`, null);
+    repos.profiles.add(msg.id, `https://www.linkedin.com/in/fm-${i}`, null, 'message');
+  }
+  const body = (await app.inject({ method: 'GET', url: '/api/status' })).json();
+  // batch_size 5 vs msg_batch_size 2 — a shared invite-only rate would report 5 for both.
+  expect(body.forecast.next_batch.count).toBe(5);
+  expect(body.forecast.msg_next_batch.count).toBe(2);
+
+  // The weekly clamp is remapped too: zeroing only the message cap must stop only the
+  // message conveyor, leaving the invite forecast running.
+  await app.inject({ method: 'POST', url: '/api/settings', payload: { msg_weekly_cap: 0 } });
+  const capped = (await app.inject({ method: 'GET', url: '/api/status' })).json();
+  expect(capped.forecast.msg_next_batch.blocked).toBe(true);
+  expect(capped.forecast.next_batch.blocked).toBeUndefined();
+});
+
+/* ---------- GET /api/attention ---------- */
+
+test('GET /api/attention tags each row with its campaign kind', async () => {
+  const inv = repos.cohorts.create('AttnInv', null, true);
+  const msg = repos.cohorts.create('AttnMsg', 'hi', false, 'message');
+  const a = repos.profiles.add(inv.id, 'https://www.linkedin.com/in/attn-inv', null);
+  const b = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/attn-msg', null, 'message');
+  repos.profiles.setStatus(a.id, 'failed', { last_error: 'boom' });
+  repos.profiles.setStatus(b.id, 'needs_attention', { last_error: 'no text' });
+  const rows = (await app.inject({ method: 'GET', url: '/api/attention' })).json() as { kind: string }[];
+  expect(rows).toHaveLength(2);
+  expect(rows.map((r) => r.kind).sort()).toEqual(['invite', 'message']);
+});
+
+/* ---------- POST /api/profiles/:id/retry: status allow-list ----------
+   Retry re-queues the profile for a fresh send. Without an allow-list, retrying an
+   already-`replied` or `accepted` profile sends the same DM/invite a second time. */
+
+test('POST /api/profiles/:id/retry refuses statuses that would re-send', async () => {
+  const m = repos.cohorts.create('NoRetry', 'hi', false, 'message');
+  for (const status of ['replied', 'accepted', 'sent', 'sending', 'expired', 'queued', 'scheduled'] as const) {
+    const p = repos.profiles.add(m.id, `https://www.linkedin.com/in/nr-${status}`, null, 'message');
+    repos.profiles.setStatus(p.id, status);
+    const res = await app.inject({ method: 'POST', url: `/api/profiles/${p.id}/retry` });
+    expect(res.statusCode, `status ${status}`).toBe(409);
+    expect(res.json().error).toContain(status);
+    expect(repos.profiles.findById(p.id)!.status).toBe(status);
+  }
+});
+
+test('POST /api/profiles/:id/retry allows exactly the statuses the UI offers', async () => {
+  const c = repos.cohorts.create('CanRetry', null, true);
+  for (const status of ['failed', 'needs_attention', 'skipped'] as const) {
+    const p = repos.profiles.add(c.id, `https://www.linkedin.com/in/cr-${status}`, null);
+    repos.profiles.setStatus(p.id, status, { last_error: 'boom', skip_reason: 'dismissed' });
+    const res = await app.inject({ method: 'POST', url: `/api/profiles/${p.id}/retry` });
+    expect(res.statusCode, `status ${status}`).toBe(200);
+    expect(repos.profiles.findById(p.id)!.status).toBe('queued');
+  }
+});
+
+test('cross-kind 409 messages use the right article', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: { cohort: 'ArtI', text: 'https://www.linkedin.com/in/art1' } });
+  const toMsg = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'ArtI', kind: 'message', text: 'https://www.linkedin.com/in/art2', message_template: 'hi' },
+  });
+  expect(toMsg.statusCode).toBe(409);
+  expect(toMsg.json().error).toContain('is an invite cohort'); // not "is a invite"
 });

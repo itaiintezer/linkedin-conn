@@ -45,8 +45,10 @@ test('happy path: list -> schedule -> send -> accept -> metrics', async () => {
   expect(repos.profiles.byStatus('queued')).toHaveLength(0);
 
   // 3. Run the sender once, after the scheduled time. All 3 fit in one batch (batch_size 5).
+  // No-op sleep: this batch has 3 profiles (2 inter-send gaps), and this suite must not
+  // actually wait the real min_delay_ms/max_delay_ms (20-90s by default).
   const sendNow = new Date(planNow.getTime() + 2 * 60_000);
-  await runSenderOnce(repos, driver, sendNow);
+  await runSenderOnce(repos, driver, sendNow, { sleep: async () => {} });
   expect(driver.sentLog).toHaveLength(3);
   // driver substitutes {firstName} with the live name it reads (FakeDriver uses 'Test')
   expect(driver.sentLog.every((s) => s.message === 'Hi Test')).toBe(true);
@@ -101,8 +103,71 @@ test('per-contact custom message overrides the cohort template', async () => {
 
   const planNow = new Date('2026-06-29T09:00:00');
   planAndAssignToday(repos, planNow, () => 0);
-  await runSenderOnce(repos, driver, new Date(planNow.getTime() + 2 * 60_000));
+  await runSenderOnce(repos, driver, new Date(planNow.getTime() + 2 * 60_000), { sleep: async () => {} });
 
   const dave = driver.sentLog.find((s) => s.url === 'https://www.linkedin.com/in/qa-dave');
   expect(dave?.message).toBe('Loved your talk, Test!'); // custom msg used, {firstName}->live name
+});
+
+test('message campaign: list -> schedule -> send -> reply -> metrics/status', async () => {
+  // The message funnel end to end, mirroring the invite happy path above. The real
+  // browser path is verified separately against a consented profile
+  // (scripts/verify-message-send.ts); this pins the WIRING deterministically.
+  const text = [
+    'https://linkedin.com/in/msg-erin',
+    'https://linkedin.com/in/msg-frank',
+  ].join('\n');
+  const addRes = await app.inject({
+    method: 'POST',
+    url: '/api/lists',
+    payload: { cohort: 'Connected', kind: 'message', text, message_template: 'Hey {firstName}, quick one —' },
+  });
+  expect(addRes.statusCode).toBe(200);
+  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(2);
+  // A message campaign must never leak into the invite funnel.
+  expect(repos.profiles.byStatusKind('queued', 'invite')).toHaveLength(0);
+
+  const planNow = new Date('2026-06-29T09:00:00'); // Monday, local
+  planAndAssignToday(repos, planNow, () => 0);
+  expect(repos.profiles.byStatusKind('scheduled', 'message')).toHaveLength(2);
+
+  await runSenderOnce(repos, driver, new Date(planNow.getTime() + 2 * 60_000), { sleep: async () => {} });
+  expect(driver.msgLog).toHaveLength(2);
+  expect(driver.sentLog).toHaveLength(0); // no connection requests were sent
+  expect(driver.msgLog.every((m) => m.message === 'Hey Test, quick one —')).toBe(true);
+  const sent = repos.profiles.byStatusKind('sent', 'message');
+  expect(sent).toHaveLength(2);
+  expect(sent.every((p) => p.full_name === 'Test Person')).toBe(true);
+
+  // Erin answered; Frank's last message is still ours, so he stays pending.
+  driver.inboxRows = [
+    { name: 'Test Person', snippet: 'Test: sounds good!', youSentLast: false },
+  ];
+  // Both pending contacts share the FakeDriver's display name, so this is deliberately
+  // ambiguous: the checker must refuse to guess rather than credit the wrong contact.
+  const ambiguous = await app.inject({ method: 'POST', url: '/api/recheck-replies' });
+  expect(JSON.parse(ambiguous.body).replied).toBe(0);
+  expect(repos.profiles.byStatusKind('sent', 'message')).toHaveLength(2);
+
+  // Disambiguate by giving Erin a distinct captured name, then re-check.
+  const erin = sent.find((p) => p.profile_url.endsWith('msg-erin'))!;
+  repos.profiles.setStatus(erin.id, 'sent', { full_name: 'Erin Example' });
+  driver.inboxRows = [{ name: 'Erin Example', snippet: 'Erin: sounds good!', youSentLast: false }];
+  const replyRes = await app.inject({ method: 'POST', url: '/api/recheck-replies' });
+  expect(JSON.parse(replyRes.body).replied).toBe(1);
+  expect(repos.profiles.findById(erin.id)!.status).toBe('replied');
+
+  const status = JSON.parse((await app.inject({ method: 'GET', url: '/api/status' })).body);
+  expect(status.msg_counts.replied).toBe(1);
+  expect(status.msg_counts.sent).toBe(1);       // Frank still pending
+  expect(status.counts.replied ?? 0).toBe(0);   // invite funnel untouched
+  expect(status.msg_weekly_sent).toBe(2);
+  expect(status.weekly_sent).toBe(0);
+  expect(status.replies_checked_at).not.toBeNull();
+
+  const metrics = JSON.parse((await app.inject({ method: 'GET', url: '/api/metrics' })).body);
+  const m = metrics.find((r: { cohort_name: string }) => r.cohort_name === 'Connected');
+  expect(m.kind).toBe('message');
+  expect(m.replied).toBe(1);
+  expect(m.reply_rate).toBeCloseTo(0.5);
 });

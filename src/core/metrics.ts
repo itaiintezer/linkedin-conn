@@ -1,14 +1,17 @@
 export interface MetricRow {
   cohort_id: number;
   cohort_name: string;
+  kind: string;
   status: string;
   sent_at: string | null;
   accepted_at: string | null;
+  replied_at: string | null;
 }
 
 export interface CohortMetrics {
   cohort_id: number;
   cohort_name: string;
+  kind: string;
   total: number;
   sent: number;
   pending: number;
@@ -17,6 +20,9 @@ export interface CohortMetrics {
   skipped: number;
   acceptance_rate: number;
   median_time_to_accept_days: number | null;
+  replied: number;
+  reply_rate: number;
+  median_time_to_reply_days: number | null;
 }
 
 function median(values: number[]): number | null {
@@ -42,17 +48,26 @@ export function computeCohortMetrics(rows: MetricRow[]): CohortMetrics[] {
     const ttaDays = grp
       .filter((r) => r.status === 'accepted' && r.sent_at && r.accepted_at)
       .map((r) => (new Date(r.accepted_at!).getTime() - new Date(r.sent_at!).getTime()) / 86400000);
+    const replied = grp.filter((r) => r.status === 'replied').length;
+    const msgAttempted = replied + pending; // messages have no expiry
+    const ttrDays = grp
+      .filter((r) => r.status === 'replied' && r.sent_at && r.replied_at)
+      .map((r) => (new Date(r.replied_at!).getTime() - new Date(r.sent_at!).getTime()) / 86400000);
     out.push({
       cohort_id: cohortId,
       cohort_name: grp[0].cohort_name,
+      kind: grp[0].kind,
       total: grp.length,
-      sent: attempted,
+      sent: grp[0].kind === 'message' ? msgAttempted : attempted,
       pending,
       accepted,
       expired,
       skipped,
       acceptance_rate: attempted > 0 ? accepted / attempted : 0,
       median_time_to_accept_days: median(ttaDays),
+      replied,
+      reply_rate: msgAttempted > 0 ? replied / msgAttempted : 0,
+      median_time_to_reply_days: median(ttrDays),
     });
   }
   return out;

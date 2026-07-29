@@ -1,18 +1,23 @@
 import type { CheckpointScan } from './core/checkpoint.js';
 export type { CheckpointScan };
 
+export type CampaignKind = 'invite' | 'message';
+
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
-  | 'accepted' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
+  | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
 
 /** Why a skipped profile was skipped (terminal — the engine never retries these). */
-export type SkipReason = 'already_connected' | 'email_required' | 'not_found' | 'unavailable' | 'dismissed';
+export type SkipReason =
+  | 'already_connected' | 'email_required' | 'not_found' | 'unavailable' | 'dismissed'
+  | 'not_connected';
 
-export type EventType = 'sent' | 'accepted' | 'expired' | 'skipped' | 'failed';
+export type EventType = 'sent' | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed';
 
 export interface Cohort {
   id: number;
   name: string;
+  kind: CampaignKind;
   message_template: string | null;
   allow_no_note: number; // 0 | 1 (SQLite has no bool)
   archived: number;      // 0 | 1
@@ -22,6 +27,7 @@ export interface Cohort {
 export interface Profile {
   id: number;
   cohort_id: number;
+  kind: CampaignKind;
   profile_url: string;       // normalized
   first_name: string | null;
   custom_message: string | null;
@@ -32,6 +38,9 @@ export interface Profile {
   scheduled_for: string | null; // ISO
   sent_at: string | null;
   accepted_at: string | null;
+  full_name: string | null;
+  thread_url: string | null;
+  replied_at: string | null;
   resolved_at: string | null;
   priority: number;
   created_at: string;
@@ -46,6 +55,10 @@ export interface Settings {
   batch_size: number;
   batches_per_day: number;
   acceptance_checks_per_day: number;
+  msg_weekly_cap: number;
+  msg_batch_size: number;
+  msg_batches_per_day: number;
+  reply_checks_per_day: number;
   note_quota_exhausted: number;
   min_delay_ms: number;
   max_delay_ms: number;
@@ -58,7 +71,7 @@ export interface Settings {
 
 export type SendResult =
   | 'sent' | 'already' | 'unavailable' | 'note_quota' | 'checkpoint' | 'error'
-  | 'email_required' | 'not_found' | 'weekly_limit';
+  | 'email_required' | 'not_found' | 'weekly_limit' | 'not_connected';
 
 /** What the browser saw when a send went wrong — captured for the operator. */
 export interface SendEvidence {
@@ -72,6 +85,8 @@ export interface SendEvidence {
 export interface SendOutcome {
   result: SendResult;
   firstName?: string;
+  fullName?: string;
+  threadUrl?: string;
   error?: string;
   evidence?: SendEvidence;
 }
@@ -85,6 +100,11 @@ export interface BrowserDriver {
   openLoginWindow(): Promise<void>;
   // message === null => send a bare request (no note)
   sendConnectionRequest(url: string, message: string | null): Promise<SendOutcome>;
+  /** Send a plain message to an existing 1st-degree connection. `message` still
+   *  contains {firstName}; the driver substitutes the live name it reads. */
+  sendMessage(url: string, message: string): Promise<SendOutcome>;
+  /** One-page scan of the messaging inbox conversation list. */
+  readInboxSnapshot(): Promise<InboxRow[]>;
   readPendingInvites(): Promise<string[]>;     // normalized profile URLs
   readRecentConnections(): Promise<string[]>;  // normalized profile URLs
   /** Scan the currently-loaded page for a checkpoint/captcha (url + what matched). */
@@ -105,10 +125,21 @@ export interface AppState {
   guardrail_tripped_at: string | null; // ISO
   failure_streak: number;
   acceptance_checked_at: string | null; // ISO, last successful acceptance read
+  replies_checked_at: string | null;    // ISO, last successful reply-check read
 }
 
 /** A point-in-time read of LinkedIn auth from the browser's li_at cookie. */
 export interface LoginSnapshot {
   loggedIn: boolean;
   cookieExpiry: string | null;    // ISO, or null for a session cookie / unknown
+}
+
+/** One conversation row from the messaging inbox list. */
+export interface InboxRow {
+  name: string;        // participant display name as rendered
+  snippet: string;     // last-message preview text
+  youSentLast: boolean; // snippet started with the "You:" prefix
+  /** Thread URL from the row's anchor href, when the driver can extract one. Preferred
+   *  match key over `name` — exact and unaffected by display-name rendering drift. */
+  threadUrl?: string;
 }

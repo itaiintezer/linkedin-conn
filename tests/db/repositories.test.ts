@@ -23,7 +23,7 @@ test('records send_log and events and counts sent in window', () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/x', null);
   repos.events.recordSend(p.id, 'sent');
-  expect(repos.events.countSentSince('1970-01-01T00:00:00Z')).toBe(1);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(1);
 });
 
 test('settings get returns defaults and update persists', () => {
@@ -100,4 +100,65 @@ test('getOrCreate resurrects an archived cohort instead of writing into a hidden
   expect(again.id).toBe(c.id);
   expect(again.archived).toBe(0);
   expect(repos.cohorts.list().find((x) => x.id === c.id)).toBeDefined();
+});
+
+/* ---------- kind-aware repositories ---------- */
+
+test('cohort kind: create carries kind; getOrCreate defaults to invite', () => {
+  const m = repos.cohorts.create('Msgs Q3', 'Hey {firstName}', true, 'message');
+  expect(m.kind).toBe('message');
+  const i = repos.cohorts.getOrCreate('Inv Q3', null, true);
+  expect(i.kind).toBe('invite');
+});
+
+test('profile add dedupes per (url, kind) and stamps the cohort kind', () => {
+  const inv = repos.cohorts.create('I', null, true);
+  const msg = repos.cohorts.create('M', 'hi', true, 'message');
+  const a = repos.profiles.add(inv.id, 'https://www.linkedin.com/in/x', null);
+  const b = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/x', null, 'message');
+  expect(a.id).not.toBe(b.id);
+  expect(a.kind).toBe('invite');
+  expect(b.kind).toBe('message');
+  // Same (url, kind) returns the existing row.
+  expect(repos.profiles.add(msg.id, 'https://www.linkedin.com/in/x', null, 'message').id).toBe(b.id);
+});
+
+test('byStatusKind filters by kind; setStatus accepts the new columns', () => {
+  const msg = repos.cohorts.create('M', 'hi', true, 'message');
+  const p = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/y', null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', {
+    sent_at: '2026-07-28T10:00:00.000Z', full_name: 'Y Person', thread_url: 'https://www.linkedin.com/messaging/thread/t1/',
+  });
+  expect(repos.profiles.byStatusKind('sent', 'message')).toHaveLength(1);
+  expect(repos.profiles.byStatusKind('sent', 'invite')).toHaveLength(0);
+  repos.profiles.setStatus(p.id, 'replied', { replied_at: '2026-07-29T10:00:00.000Z', resolved_at: '2026-07-29T10:00:00.000Z' });
+  expect(repos.profiles.findById(p.id)!.replied_at).toBe('2026-07-29T10:00:00.000Z');
+});
+
+test('countSentSince counts per kind via the profile join', () => {
+  const inv = repos.cohorts.create('I', null, true);
+  const msg = repos.cohorts.create('M', 'hi', true, 'message');
+  const a = repos.profiles.add(inv.id, 'https://www.linkedin.com/in/a', null);
+  const b = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/b', null, 'message');
+  repos.events.recordSend(a.id, 'sent');
+  repos.events.recordSend(b.id, 'sent');
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(1);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'message')).toBe(1);
+});
+
+test('queuedByPriorityKind filters by kind and orders by (priority, id)', () => {
+  const inv = repos.cohorts.create('QI', null, true);
+  const msg = repos.cohorts.create('QM', 'hi', true, 'message');
+  const a = repos.profiles.add(inv.id, 'https://www.linkedin.com/in/qa', null);
+  const b = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/qb', null, 'message');
+  const c = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/qc', null, 'message');
+  repos.profiles.setPriority(c.id, -1);
+  const rows = repos.profiles.queuedByPriorityKind('message');
+  expect(rows.map((r) => r.id)).toEqual([c.id, b.id]);
+  expect(repos.profiles.queuedByPriorityKind('invite').map((r) => r.id)).toEqual([a.id]);
+});
+
+test('appState.setRepliesChecked stamps replies_checked_at', () => {
+  repos.appState.setRepliesChecked('2026-07-28T12:00:00.000Z');
+  expect(repos.appState.get().replies_checked_at).toBe('2026-07-28T12:00:00.000Z');
 });

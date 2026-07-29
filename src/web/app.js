@@ -155,7 +155,8 @@ function fillPill(id, lead, value, tail) {
 // Render the live engine by updating numbers IN PLACE — never re-rendering the
 // DOM — so the conveyor animation runs continuously across 15s status polls.
 function renderEngine(status) {
-  const c = status.counts || {};
+  const c = status.counts || {};   // invite-only, by design (see /api/status)
+  const mc = status.msg_counts || {};
   const f = status.forecast || {};
 
   // --- Pace: weekly "fuel" ---
@@ -185,9 +186,17 @@ function renderEngine(status) {
   setText('acceptedFoot', `checked ${status.acceptance_checked_at ? fmtClock(status.acceptance_checked_at) : 'never'}`);
 
   // --- Terminal outcomes ---
+  // Skipped and Needs-attention are SHARED cards (their drill-downs pass no kind, so they
+  // already list both conveyors) — they must sum invite + message counts. `status.counts`
+  // is invite-only by design, so reading it alone made every message-side failure invisible
+  // AND unreachable: the Attention card is the only entry point to the attention modal, and
+  // it only becomes clickable when the number is non-zero. A message campaign whose template
+  // was blanked would drain silently, each profile burning a slot for nothing.
+  // Expired stays invite-only on purpose: a sent DM never expires, only an invite does.
   setText('outExpired', c.expired || 0);
-  setText('outSkipped', c.skipped || 0);
-  const attention = (c.failed || 0) + (c.needs_attention || 0);
+  setText('outSkipped', (c.skipped || 0) + (mc.skipped || 0));
+  const attention = (c.failed || 0) + (c.needs_attention || 0)
+    + (mc.failed || 0) + (mc.needs_attention || 0);
   setText('outAttn', attention);
   const attnCard = document.getElementById('outAttnCard');
   if (attnCard) {
@@ -201,6 +210,36 @@ function renderEngine(status) {
   if (retryBtn && !retryBtn.dataset.busy) {
     retryBtn.hidden = attention === 0;
     retryBtn.textContent = attention ? `Retry failed (${attention})` : 'Retry failed';
+  }
+
+  // --- Messages engine: same in-place update discipline, its own counts + caps ---
+  const msgPct = status.msg_weekly_cap
+    ? Math.min(100, Math.round(((status.msg_weekly_sent || 0) / status.msg_weekly_cap) * 100)) : 0;
+  setText('msgFuelSent', status.msg_weekly_sent ?? 0);
+  setText('msgFuelCap', status.msg_weekly_cap ?? 0);
+  const msgFuelBar = document.getElementById('msgFuelBar');
+  if (msgFuelBar) msgFuelBar.style.width = `${msgPct}%`;
+
+  const mnb = f.msg_next_batch;
+  if (!mnb) fillPill('msgNextTxt', null, null, 'no batch queued');
+  else if (mnb.blocked) fillPill('msgNextTxt', null, null, mnb.reason);
+  else if (mnb.estimated === false) fillPill('msgNextTxt', 'next batch', mnb.count, `at ${fmtClock(mnb.at)}`);
+  else fillPill('msgNextTxt', 'next batch', `~${mnb.count}`, `${fmtRelDay(mnb.at)} ~${fmtClock(mnb.at)}`);
+
+  setText('msgQueued', mc.queued || 0);
+  setText('msgScheduled', mc.scheduled || 0);
+  setText('msgSent', mc.sent || 0);
+  setText('msgReplied', mc.replied || 0);
+  setText('repliedFoot', `checked ${status.replies_checked_at ? fmtClock(status.replies_checked_at) : 'never'}`);
+
+  // No message profiles at all -> stay collapsed to the slim placeholder row. The
+  // markup ships collapsed so an invites-only account never sees the conveyor flash.
+  const msgTotal = Object.values(mc).reduce((n, v) => n + v, 0);
+  const msgEngine = document.getElementById('msgEngine');
+  if (msgEngine) {
+    msgEngine.classList.toggle('is-idle', msgTotal === 0);
+    const idle = document.getElementById('msgEngineIdle');
+    if (idle) idle.hidden = msgTotal !== 0;
   }
 
   // --- Now processing ---
@@ -217,15 +256,21 @@ function renderEngine(status) {
 }
 
 /* The engine has one visual run-state: running, paused (amber), or halted (red).
-   Stops the conveyor + pulse animations via CSS and shows a badge on the track. */
+   Stops the conveyor + pulse animations via CSS and shows a badge on the track.
+   One pause state, one guardrail: both engines wear it. */
 function applyEngineState(status) {
-  const engine = $('#engine'), badge = $('#engineState'), txt = $('#engineStateTxt');
   const tripped = !!(status.guardrail && status.guardrail.tripped);
   const paused = !!status.paused;
-  engine.classList.toggle('is-paused', paused || tripped);
-  engine.classList.toggle('is-halted', tripped);
-  badge.hidden = !(paused || tripped);
-  if (txt) txt.textContent = tripped ? 'Halted' : 'Paused';
+  for (const [engine, badge, txt] of [
+    [$('#engine'), $('#engineState'), $('#engineStateTxt')],
+    [$('#msgEngine'), $('#msgEngineState'), $('#msgEngineStateTxt')],
+  ]) {
+    if (!engine) continue;
+    engine.classList.toggle('is-paused', paused || tripped);
+    engine.classList.toggle('is-halted', tripped);
+    if (badge) badge.hidden = !(paused || tripped);
+    if (txt) txt.textContent = tripped ? 'Halted' : 'Paused';
+  }
   const dot = $('#refreshDot');
   if (dot) dot.classList.toggle('is-still', paused || tripped);
 }
@@ -303,6 +348,25 @@ async function refreshStatus() {
 const ICON_NOTE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_NONOTE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6 18.4 18.4" stroke-linecap="round"/></svg>';
 
+/* ---------- campaign-kind marker ----------
+   Invite and message rows interleave in the queue and in the shared outcome
+   drill-downs, so each row carries a small glyph: a person-plus for connection
+   requests, an envelope for messages (teal — the messages identity colour). */
+const ICON_KIND_INVITE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M15.5 20v-1.6a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20" stroke-linecap="round"/><circle cx="8.75" cy="7.5" r="3.5"/><path d="M18.5 7.5h4M20.5 5.5v4" stroke-linecap="round"/></svg>';
+const ICON_KIND_MESSAGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="m3.9 7 8.1 5.8L20.1 7" stroke-linecap="round"/></svg>';
+
+function kindMark(kind) {
+  const isMsg = kind === 'message';
+  const node = el('span', {
+    class: 'kind-mark' + (isMsg ? ' message' : ''),
+    role: 'img',
+    'aria-label': isMsg ? 'Message' : 'Connection request',
+    title: isMsg ? 'Message to an existing connection' : 'Connection request',
+  });
+  node.innerHTML = isMsg ? ICON_KIND_MESSAGE : ICON_KIND_INVITE;
+  return node;
+}
+
 let notePop = null;
 function ensureNotePop() {
   if (!notePop) {
@@ -379,6 +443,7 @@ async function refreshQueue() {
 
 function renderCohortGroup(c) {
   const collapsed = isCohortCollapsed(c.id);
+  const groupKind = (c.profiles[0] && c.profiles[0].kind) || 'invite';
   const chevron = el('button', {
     class: 'qg-ico qg-chevron' + (collapsed ? ' is-collapsed' : ''),
     type: 'button',
@@ -405,6 +470,9 @@ function renderCohortGroup(c) {
   },
     chevron,
     el('span', { class: 'qg-drag', 'aria-hidden': 'true' }, '⋮⋮'),
+    // Cohort kind is fixed at creation, so the group speaks for all its rows — which
+    // matters most while the group is collapsed and the rows are hidden.
+    kindMark(groupKind),
     el('span', { class: 'qg-name' }, c.name || '—'),
     el('span', { class: 'qg-count' }, `${c.count} in queue`),
     el('span', { class: 'qg-actions' },
@@ -413,6 +481,7 @@ function renderCohortGroup(c) {
     ),
   );
   const rows = c.profiles.map((p) => el('div', { class: 'qg-row' },
+    kindMark(p.kind),
     el('a', { class: 'qg-slug', href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) }),
     el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') }),
     el('span', { class: 'qg-time mono', text: fmtQueueTime(p) }),
@@ -449,6 +518,7 @@ async function queueAction(path, body) {
 const DRILL_DATE = {
   sent: { field: 'sent_at', label: 'sent' },
   accepted: { field: 'accepted_at', label: 'accepted' },
+  replied: { field: 'replied_at', label: 'replied' },
   expired: { field: 'sent_at', label: 'sent' },
 };
 
@@ -459,6 +529,7 @@ const SKIP_REASON_LABEL = {
   not_found: 'profile no longer exists',
   unavailable: 'composer unavailable',
   dismissed: 'dismissed',
+  not_connected: 'not a 1st-degree connection',
 };
 
 function closeDrawer() {
@@ -466,7 +537,9 @@ function closeDrawer() {
   $('#drawerBackdrop').hidden = true;
 }
 
-async function openDrawer(status, title) {
+/* `kind` narrows the drill to one campaign kind (each engine's stations pass their
+   own); left undefined for the shared outcomes, which list both kinds together. */
+async function openDrawer(status, title, kind) {
   const drawer = $('#statusDrawer'), body = $('#drawerBody');
   $('#drawerTitle').textContent = title;
   $('#drawerCount').textContent = 'loading…';
@@ -474,7 +547,9 @@ async function openDrawer(status, title) {
   drawer.hidden = false;
   $('#drawerBackdrop').hidden = false;
   try {
-    const rows = await api(`/api/profiles?status=${encodeURIComponent(status)}`);
+    const query = `/api/profiles?status=${encodeURIComponent(status)}`
+      + (kind ? `&kind=${encodeURIComponent(kind)}` : '');
+    const rows = await api(query);
     $('#drawerCount').textContent = `${rows.length} profile${rows.length === 1 ? '' : 's'}`;
     if (!rows.length) {
       body.replaceChildren(el('div', { class: 'drawer-empty', text: 'No profiles with this status yet.' }));
@@ -482,7 +557,13 @@ async function openDrawer(status, title) {
     }
     const d = DRILL_DATE[status] || { field: 'sent_at', label: 'sent' };
     body.replaceChildren(...rows.map((p) => el('div', { class: 'drawer-row' },
-      el('a', { class: 'drawer-slug', href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) }),
+      // A kind-filtered drill needs no marker — every row is that kind. The shared
+      // outcomes mix both, and there "not a 1st-degree connection" only parses if you
+      // can see the row is a message.
+      el('div', { class: 'drawer-slug-cell' },
+        kind ? null : kindMark(p.kind),
+        el('a', { class: 'drawer-slug', href: p.profile_url, target: '_blank', rel: 'noopener', text: slugFromUrl(p.profile_url) }),
+      ),
       el('span', { class: 'drawer-cohort', text: p.cohort_name || '—' }),
       status === 'skipped'
         ? el('span', { class: 'drawer-date', text: SKIP_REASON_LABEL[p.skip_reason] || '—' })
@@ -496,7 +577,7 @@ async function openDrawer(status, title) {
 
 function initDrawer() {
   $$('.is-drill').forEach((card) => {
-    const open = () => openDrawer(card.dataset.drill, card.dataset.drillTitle);
+    const open = () => openDrawer(card.dataset.drill, card.dataset.drillTitle, card.dataset.drillKind);
     card.addEventListener('click', open);
     card.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
   });
@@ -524,8 +605,13 @@ async function loadAttention() {
     const rows = await api('/api/attention');
     if (!rows.length) { body.replaceChildren(); empty.hidden = false; return; }
     empty.hidden = true;
+    // Both conveyors land here, so each row carries its kind glyph — same marker the
+    // queue and the shared drill-downs use.
     body.replaceChildren(...rows.map((p) => el('tr', {},
-      el('td', { class: 'trunc' }, el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', title: p.profile_url || '', text: slugFromUrl(p.profile_url) })),
+      el('td', { class: 'trunc' }, el('div', { class: 'attn-profile' },
+        kindMark(p.kind),
+        el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', title: p.profile_url || '', text: slugFromUrl(p.profile_url) }),
+      )),
       el('td', { class: 'mono trunc', title: p.cohort_name || '' }, p.cohort_name || '—'),
       el('td', { class: 'status-cell' }, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
       el('td', { class: 'num mono' }, String(p.attempts ?? 0)),
@@ -578,6 +664,47 @@ function initAttention() {
   });
 }
 
+/* Reasons a forced reconciliation pass didn't run; shared by both recheck buttons
+   (the acceptance and reply checkers report the same gate names). */
+const RECHECK_REASON = {
+  paused: 'Paused',
+  guardrail: 'Blocked — check attention',
+  logged_out: 'Logged out',
+  login_lost: 'Logged out',
+  read_error: 'Read failed',
+};
+
+/* Wire a station's recheck button: POST, then report the verdict through the button's
+   tooltip and a visually-hidden aria-live span, and re-enable after a beat. */
+function wireRecheck({ btn, statusEl, endpoint, countKey, none, reasons }) {
+  if (!btn) return;
+  // The station itself is a drill target; keep the button's own activation keys
+  // (Enter/Space) from bubbling to the station's drill handler. Let every other key
+  // through — notably Escape must still reach the document handler that closes drawers.
+  btn.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); });
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    btn.disabled = true;
+    btn.classList.add('busy');
+    const original = btn.title;
+    try {
+      const res = await api(endpoint, { method: 'POST' });
+      const found = res ? res[countKey] : 0;
+      const label = res && res.ran
+        ? (found > 0 ? `Found ${found}` : none)
+        : ({ ...RECHECK_REASON, ...reasons }[res && res.reason] || 'Done');
+      btn.title = label;
+      if (statusEl) statusEl.textContent = label;
+      await refreshStatus();
+    } catch (_) {
+      btn.title = 'Failed';
+      if (statusEl) statusEl.textContent = 'Recheck failed';
+    }
+    btn.classList.remove('busy');
+    setTimeout(() => { btn.title = original; btn.disabled = false; }, 2500);
+  });
+}
+
 function initDashboard() {
   // The "Needs attention" outcome opens the attention modal — but only when it
   // carries a count (renderEngine toggles `is-clickable`).
@@ -596,37 +723,21 @@ function initDashboard() {
     btn.disabled = false;
   });
 
-  const recheck = $('#recheckAccept');
-  if (recheck) {
-    // The Accepted station is a drill target; keep the button's own activation keys
-    // (Enter/Space) from bubbling to the station's drill handler. Let every other key
-    // through — notably Escape must still reach the document handler that closes drawers.
-    recheck.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); });
-    recheck.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      recheck.disabled = true;
-      recheck.classList.add('busy');
-      const original = recheck.title;
-      try {
-        const res = await api('/api/recheck-acceptance', { method: 'POST' });
-        const label = res && res.ran
-          ? (res.accepted > 0 ? `Found ${res.accepted}` : 'No new acceptances')
-          : ({ paused: 'Paused', guardrail: 'Blocked — check attention', no_pending: 'No pending invites',
-               logged_out: 'Logged out', login_lost: 'Logged out', read_error: 'Read failed',
-               empty_read: 'No new acceptances' }[res && res.reason] || 'Done');
-        recheck.title = label;
-        const status = $('#recheckStatus');
-        if (status) status.textContent = label;
-        await refreshStatus();
-      } catch (_) {
-        recheck.title = 'Failed';
-        const status = $('#recheckStatus');
-        if (status) status.textContent = 'Recheck failed';
-      }
-      recheck.classList.remove('busy');
-      setTimeout(() => { recheck.title = original; recheck.disabled = false; }, 2500);
-    });
-  }
+  // Each engine's terminal station carries a "recheck now" button: same busy/label/
+  // aria-live contract, different endpoint and wording.
+  wireRecheck({
+    btn: $('#recheckAccept'), statusEl: $('#recheckStatus'),
+    endpoint: '/api/recheck-acceptance', countKey: 'accepted', none: 'No new acceptances',
+    reasons: { no_pending: 'No pending invites', empty_read: 'No new acceptances' },
+  });
+  wireRecheck({
+    btn: $('#recheckReplies'), statusEl: $('#recheckRepliesStatus'),
+    endpoint: '/api/recheck-replies', countKey: 'replied', none: 'No new replies',
+    reasons: { no_pending: 'No messages awaiting a reply', empty_read: 'No new replies' },
+  });
+
+  const idleCta = $('#msgEngineIdleCta');
+  if (idleCta) idleCta.addEventListener('click', () => switchTab('add'));
 
   $('#runNow').addEventListener('click', async () => {
     const btn = $('#runNow');
@@ -687,25 +798,65 @@ function countProfiles(text) {
   return seen.size;
 }
 
+/* Which campaign kind the Add List form is building. */
+function selectedListKind() {
+  const checked = $$('input[name="listKind"]').find((r) => r.checked);
+  return (checked && checked.value) === 'message' ? 'message' : 'invite';
+}
+
+/* Cohorts as of the last load — the dropdown only carries names, so picking one needs
+   the full row (its template, its kind) without a second round trip. */
+let cohortCache = [];
+
+function unlockListCohortName() {
+  const name = $('#listCohort');
+  if (!name) return;
+  name.value = '';
+  name.disabled = false;
+}
+
 async function loadCohortOptions() {
   const sel = $('#listCohortSelect');
   if (!sel) return;
   const current = sel.value;
-  try {
-    const cohorts = await api('/api/cohorts');
-    sel.replaceChildren(
-      el('option', { value: '', text: 'New (auto-dated)' }),
-      ...cohorts.map((c) => el('option', { value: c.name, text: c.name })),
-    );
-    sel.value = current; // preserve selection across refreshes when still present
-  } catch (_) { /* leave the default option */ }
+  try { cohortCache = await api('/api/cohorts'); } catch (_) { return; } // leave the options as they are
+  // A cohort only accepts profiles of its own kind (the API 409s otherwise), so the
+  // dropdown offers exactly the cohorts this campaign type can be added to.
+  const kind = selectedListKind();
+  const matching = cohortCache.filter((c) => (c.kind || 'invite') === kind);
+  sel.replaceChildren(
+    el('option', { value: '', text: 'New (auto-dated)' }),
+    ...matching.map((c) => el('option', { value: c.name, text: c.name })),
+  );
+  // Preserve the selection when it survived the filter; otherwise fall back to "New"
+  // and release the name field the old selection had locked.
+  const keep = matching.some((c) => c.name === current);
+  sel.value = keep ? current : '';
+  if (!keep && current) unlockListCohortName();
 }
 
 function initAddList() {
   const tpl = $('#listTemplate'), counter = $('#tplCount'), area = $('#listText');
-  const updateTplCount = () => { counter.textContent = `${tpl.value.length} / 300`; };
+  const updateTplCount = () => { counter.textContent = `${tpl.value.length} / ${tpl.maxLength}`; };
   tpl.addEventListener('input', updateTplCount);
-  updateTplCount();
+
+  // Campaign type reshapes the rail: message bodies are ~7x longer than invite notes,
+  // they're mandatory rather than optional, and only same-kind cohorts can receive them.
+  const applyKindUi = () => {
+    const msg = selectedListKind() === 'message';
+    tpl.maxLength = msg ? 2000 : 300;
+    tpl.placeholder = msg
+      ? 'Hey {firstName}, great to be connected — I wanted to share…'
+      : 'Hi {firstName}, I came across your work and…';
+    $('#tplLabel').textContent = msg ? 'Message' : 'Message template';
+    $('#tplHelp').innerHTML = msg
+      ? 'Use <code>{firstName}</code> to personalize. Required — this is the message that gets sent.'
+      : 'Use <code>{firstName}</code> to personalize. Leave blank to send without a note.';
+    updateTplCount();
+    loadCohortOptions();
+  };
+  $$('input[name="listKind"]').forEach((r) => r.addEventListener('change', applyKindUi));
+  applyKindUi();
 
   $('#listCohort').placeholder = 'e.g. Founders Q3';
 
@@ -736,26 +887,33 @@ function initAddList() {
   });
 
   // Pick an existing cohort -> prefill + lock its name, prefill its template. "New" -> unlock.
-  $('#listCohortSelect').addEventListener('change', async (e) => {
+  $('#listCohortSelect').addEventListener('change', (e) => {
     const name = e.target.value;
-    if (!name) { $('#listCohort').value = ''; $('#listCohort').disabled = false; return; }
-    try {
-      const cohorts = await api('/api/cohorts');
-      const c = cohorts.find((x) => x.name === name);
-      if (c) {
-        $('#listCohort').value = c.name; $('#listCohort').disabled = true;
-        tpl.value = c.message_template || ''; updateTplCount();
-      }
-    } catch (_) { /* ignore */ }
+    if (!name) { unlockListCohortName(); return; }
+    const c = cohortCache.find((x) => x.name === name);
+    if (c) {
+      $('#listCohort').value = c.name; $('#listCohort').disabled = true;
+      tpl.value = c.message_template || ''; updateTplCount();
+    }
   });
 
   $('#listForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const result = $('#listResult');
+    const kind = selectedListKind();
+    const template = tpl.value.trim() || undefined;
+    // The API 400s on this too, but there's no reason to make the user wait for a
+    // round trip to be told a message campaign needs a message.
+    if (kind === 'message' && !template) {
+      toast(result, 'Messages need a template — write the message that should be sent.', true);
+      tpl.focus();
+      return;
+    }
     const payload = {
       cohort: $('#listCohort').value.trim() || undefined,
+      kind,
       text: area.value,
-      message_template: tpl.value.trim() || undefined,
+      message_template: template,
     };
     try {
       const r = await api('/api/lists', { method: 'POST', body: payload });
@@ -765,7 +923,12 @@ function initAddList() {
       updateCount();
       loadCohortOptions();
     } catch (err) {
-      toast(result, `Failed: ${err.message}`, true);
+      // A cohort's kind is fixed at creation. That 409 is the one failure here the
+      // user can act on, so it gets a sentence instead of a raw error.
+      const clash = /is an? (message|invite) cohort/.exec(err.message);
+      toast(result, clash
+        ? `That cohort already exists as a ${clash[1] === 'message' ? 'message' : 'connection request'} campaign. Use a different name, or switch the campaign type.`
+        : `Failed: ${err.message}`, true);
     }
   });
 }
@@ -777,7 +940,12 @@ async function loadCohortsScreen() {
     api('/api/metrics').catch(() => []),
     api('/api/cohorts/archived').catch(() => []),
   ]);
-  renderMetricsTable(metrics);
+  // Two funnels, two tables: invites are measured on acceptance, messages on replies.
+  const msgRows = metrics.filter((m) => m.kind === 'message');
+  renderMetricsTable(metrics.filter((m) => (m.kind || 'invite') === 'invite'));
+  renderMsgMetricsTable(msgRows);
+  // The invite table only needs a heading once there's a second table to tell it from.
+  $('#inviteMetricsHead').hidden = msgRows.length === 0;
   renderCohortList(cohorts, metrics);
   renderArchivedList(archived);
 }
@@ -806,6 +974,32 @@ function renderMetricsTable(rows) {
   }));
 }
 
+/* Message cohorts: same table, reply columns. `sent` counts everything delivered
+   (replied + still awaiting); messages never expire, so there's no expiry column. */
+function renderMsgMetricsTable(rows) {
+  const body = $('#msgMetricsBody'), block = $('#msgMetricsBlock');
+  if (!body) return;
+  block.hidden = rows.length === 0;
+  if (!rows.length) { body.replaceChildren(); return; }
+  body.replaceChildren(...rows.map((m) => {
+    const pct = Math.round((m.reply_rate || 0) * 100);
+    const rateCell = el('div', { class: 'rate-cell' },
+      el('div', { class: 'rate-bar msg' }, el('i', { style: `width:${pct}%` })),
+      el('span', { class: 'rate-val', text: `${pct}%` }),
+    );
+    const median = (m.median_time_to_reply_days == null) ? '—' : m.median_time_to_reply_days.toFixed(1);
+    return el('tr', {},
+      el('td', { class: 'mono' }, m.cohort_name || '—'),
+      el('td', { class: 'num mono' }, String(m.total)),
+      el('td', { class: 'num mono' }, String(m.sent)),
+      el('td', { class: 'num mono' }, String(m.replied)),
+      el('td', { class: 'num mono' }, String(m.pending)),
+      el('td', {}, rateCell),
+      el('td', { class: 'num mono' }, median),
+    );
+  }));
+}
+
 function renderCohortList(cohorts, metrics) {
   const list = $('#cohortList'), empty = $('#cohortEmpty');
   const byName = Object.fromEntries(metrics.map((m) => [m.cohort_name, m]));
@@ -818,21 +1012,27 @@ function renderCohortList(cohorts, metrics) {
 }
 
 function renderCohortCard(c, m) {
+  const kind = c.kind || 'invite';
+  const isMsg = kind === 'message';
+  // Each funnel gets its own headline rate: acceptance for invites, replies for messages.
   const stat = m
-    ? `${m.total} profiles · ${m.sent} sent · ${Math.round((m.acceptance_rate || 0) * 100)}% accepted`
+    ? (isMsg
+      ? `${m.total} profiles · ${m.sent} sent · ${Math.round((m.reply_rate || 0) * 100)}% replied`
+      : `${m.total} profiles · ${m.sent} sent · ${Math.round((m.acceptance_rate || 0) * 100)}% accepted`)
     : 'no sends yet';
   const tplText = (c.message_template && c.message_template.trim())
     ? el('div', { class: 'tpl', text: c.message_template })
-    : el('div', { class: 'tpl none', text: 'No template (bare request)' });
+    : el('div', { class: 'tpl none', text: isMsg ? 'No message set — profiles will need attention' : 'No template (bare request)' });
 
   // Archive asks in place: the card flips to a confirm state, no browser dialogs.
   const card = el('div', {
-    class: 'cohort-card',
+    class: 'cohort-card' + (isMsg ? ' is-message' : ''),
     onclick: () => { if (!card.classList.contains('is-confirming')) openCohortEditor(c); },
   },
     el('div', { class: 'cc-main' },
       el('div', { class: 'name' },
         el('span', { text: c.name }),
+        el('span', { class: `tag kind-tag ${kind}`, text: isMsg ? 'messages' : 'invites' }),
         el('button', {
           class: 'btn btn-ghost cohort-archive', type: 'button', title: 'Archive cohort',
           onclick: (e) => { e.stopPropagation(); card.classList.add('is-confirming'); },
@@ -884,11 +1084,18 @@ function renderArchivedList(archived) {
 }
 
 function openCohortEditor(c) {
+  $('#cohortResult').hidden = true; // stale toast from a previous open
   $('#cohortFormTitle').textContent = c ? `Edit “${c.name}”` : 'New cohort';
   $('#cohortName').value = c ? (c.name || '') : '';
   $('#cohortName').disabled = !!c; // name is the key; edit templates, not names
+  // Kind is chosen once, at creation: its profiles are already queued as that kind
+  // and the API refuses to flip it.
+  const kindSel = $('#cohortKind');
+  kindSel.value = c ? (c.kind || 'invite') : 'invite';
+  kindSel.disabled = !!c;
+  $('#cohortKindHelp').hidden = !c;
   $('#cohortTemplate').value = c ? (c.message_template || '') : '';
-  updateCohortTplCount();
+  applyCohortKindUi();
   $('#cohortModal').hidden = false;
   (c ? $('#cohortTemplate') : $('#cohortName')).focus();
 }
@@ -896,28 +1103,53 @@ function openCohortEditor(c) {
 function closeCohortModal() { $('#cohortModal').hidden = true; }
 
 function updateCohortTplCount() {
-  $('#cohortTplCount').textContent = `${$('#cohortTemplate').value.length} / 300`;
+  const tpl = $('#cohortTemplate');
+  $('#cohortTplCount').textContent = `${tpl.value.length} / ${tpl.maxLength}`;
+}
+
+/* Same rules as the Add List rail: longer, mandatory text for message cohorts. */
+function applyCohortKindUi() {
+  const msg = $('#cohortKind').value === 'message';
+  const tpl = $('#cohortTemplate');
+  tpl.maxLength = msg ? 2000 : 300;
+  tpl.placeholder = msg ? 'Hey {firstName}, great to be connected — …' : 'Hi {firstName}, …';
+  $('#cohortTplLabel').textContent = msg ? 'Message' : 'Message template';
+  $('#cohortTplHelp').innerHTML = msg
+    ? 'Use <code>{firstName}</code> to personalize. Required — this is the message that gets sent.'
+    : 'Use <code>{firstName}</code> to personalize. Leave blank to send bare requests without a note.';
+  updateCohortTplCount();
 }
 
 function initCohorts() {
   $('#cohortTemplate').addEventListener('input', updateCohortTplCount);
+  $('#cohortKind').addEventListener('change', applyCohortKindUi);
   $('#cohortModalClose').addEventListener('click', closeCohortModal);
   $('#cohortCancel').addEventListener('click', closeCohortModal);
   $('#cohortModal').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeCohortModal(); });
   $('#cohortForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const payload = {
-      name: $('#cohortName').value.trim(),
-      message_template: $('#cohortTemplate').value.trim() || undefined,
-    };
+    const result = $('#cohortResult');
+    const kind = $('#cohortKind').value === 'message' ? 'message' : 'invite';
+    const template = $('#cohortTemplate').value.trim() || undefined;
+    const payload = { name: $('#cohortName').value.trim(), kind, message_template: template };
     if (!payload.name) return;
+    // A message cohort with no message has nothing to send: every profile in it would
+    // land in "needs attention". Catch it here rather than at send time.
+    if (kind === 'message' && !template) {
+      toast(result, 'Messages need a template — write the message that should be sent.', true);
+      $('#cohortTemplate').focus();
+      return;
+    }
     try {
       await api('/api/cohorts', { method: 'POST', body: payload });
       $('#cohortForm').reset();
       $('#cohortName').disabled = false;
+      $('#cohortKind').disabled = false;
       closeCohortModal();
       loadCohortsScreen();
-    } catch (_) { /* ignore */ }
+    } catch (err) {
+      toast(result, `Failed: ${err.message}`, true);
+    }
   });
 }
 
@@ -928,6 +1160,10 @@ async function loadSettings() {
     $('#setWeeklyCap').value = s.weekly_cap ?? '';
     $('#setBatchSize').value = s.batch_size ?? '';
     $('#setBatchesPerDay').value = s.batches_per_day ?? '';
+    $('#setMsgWeeklyCap').value = s.msg_weekly_cap ?? '';
+    $('#setMsgBatchSize').value = s.msg_batch_size ?? '';
+    $('#setMsgBatchesPerDay').value = s.msg_batches_per_day ?? '';
+    $('#setReplyChecks').value = s.reply_checks_per_day ?? '';
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
     loadLogs();
@@ -1023,6 +1259,10 @@ function initSettings() {
       weekly_cap: num('#setWeeklyCap'),
       batch_size: num('#setBatchSize'),
       batches_per_day: num('#setBatchesPerDay'),
+      msg_weekly_cap: num('#setMsgWeeklyCap'),
+      msg_batch_size: num('#setMsgBatchSize'),
+      msg_batches_per_day: num('#setMsgBatchesPerDay'),
+      reply_checks_per_day: num('#setReplyChecks'),
       workday_start_hour: num('#setStart'),
       workday_end_hour: num('#setEnd'),
     };

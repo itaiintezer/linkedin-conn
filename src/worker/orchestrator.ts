@@ -2,8 +2,9 @@ import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { Mutex } from '../core/mutex.js';
 import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending } from './scheduler-service.js';
-import { runSenderOnce } from './sender.js';
+import { runSenderOnce, type SenderOptions } from './sender.js';
 import { runAcceptanceCheck } from './acceptance-checker.js';
+import { runReplyCheck } from './reply-checker.js';
 import { log } from '../core/log.js';
 
 /**
@@ -48,13 +49,19 @@ export class Orchestrator {
 
   /**
    * `browserLock` is shared with the API server (run-now) so that the sender, the
-   * acceptance reader and the manual trigger never drive the single browser page
-   * concurrently — concurrent navigations abort each other (net::ERR_ABORTED).
+   * acceptance reader, the reply reader and the manual trigger never drive the single
+   * browser page concurrently — concurrent navigations abort each other (net::ERR_ABORTED).
+   *
+   * `senderOptions` forwards only the delay primitives (`sleep`/`rng`) into every
+   * periodic sender tick — production leaves this empty so runSenderOnce falls back to
+   * the real timer-based sleep; tests inject a no-op so a multi-profile batch in a
+   * periodic tick never performs a real 20-90s wait.
    */
   constructor(
     private repos: Repos,
     private driver: BrowserDriver,
     private browserLock: Mutex = new Mutex(),
+    private senderOptions: Pick<SenderOptions, 'sleep' | 'rng'> = {},
   ) {}
 
   /**
@@ -82,7 +89,7 @@ export class Orchestrator {
         requeueOverdue(this.repos, now);
         // Live clock: a batch runs for minutes, so per-profile timestamps (sent_at,
         // guardrail trips) must not all be stamped with the batch-start `now`.
-        return runSenderOnce(this.repos, this.driver, now, { clock: () => new Date() });
+        return runSenderOnce(this.repos, this.driver, now, { clock: () => new Date(), ...this.senderOptions });
       });
     } catch (err) {
       this.handleTickError('sender', err);
@@ -116,6 +123,28 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Reply pass, at most once per slot (slot math shared with acceptance checks via
+   * acceptanceSlot — it is a generic day-slicer). The gate reads the PERSISTED
+   * replies_checked_at, which runReplyCheck stamps only on a clean, non-empty read — a
+   * bailed-out pass leaves the stamp untouched so the next 30-minute tick retries
+   * (acceptance-checker lesson). Queues behind in-flight browser work rather than being
+   * dropped, for the same reason the acceptance tick does.
+   */
+  async runReplyTick(now: Date = new Date()): Promise<void> {
+    const s = this.repos.settings.get();
+    const app = this.repos.appState.get();
+    if (s.paused || app.guardrail_tripped === 1) return;
+    const slot = acceptanceSlot(now, s.reply_checks_per_day);
+    if (app.replies_checked_at
+      && acceptanceSlot(new Date(app.replies_checked_at), s.reply_checks_per_day) === slot) return;
+    try {
+      await this.browserLock.run(() => runReplyCheck(this.repos, this.driver, now));
+    } catch (err) {
+      this.handleTickError('replies', err);
+    }
+  }
+
   start(): void {
     // Recover rows stranded in 'sending' by a mid-send crash BEFORE re-sorting: a fresh
     // process has nothing genuinely in flight (the browser is in-process), so any 'sending'
@@ -135,6 +164,8 @@ export class Orchestrator {
     // Every 30 min: the slot gate decides whether a pass is actually due, so a tick that
     // finds the current slot already checked is a cheap no-op (and a failed pass retries here).
     this.timers.push(setInterval(() => { void this.runAcceptanceTick(); }, 30 * 60 * 1000));
+    // Same cadence and the same slot-gate reasoning for the messaging inbox scan.
+    this.timers.push(setInterval(() => { void this.runReplyTick(); }, 30 * 60 * 1000));
   }
 
   stop(): void { this.timers.forEach(clearInterval); this.timers = []; }

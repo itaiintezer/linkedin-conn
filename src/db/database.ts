@@ -1,11 +1,21 @@
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, mkdirSync, copyFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export type DB = DatabaseSync;
+
+// Columns a pre-messaging profiles table can have, in the order the rebuild migration
+// carries them over. Keep in sync with the profiles table in schema.sql: a column added
+// there must also be added here, or runMigrations throws (see the orphaned-columns check
+// below) instead of silently dropping it during the rebuild.
+const LEGACY_CARRY_COLUMNS = [
+  'id', 'cohort_id', 'profile_url', 'first_name', 'custom_message', 'status',
+  'attempts', 'last_error', 'skip_reason', 'scheduled_for', 'sent_at', 'accepted_at',
+  'resolved_at', 'priority', 'created_at',
+];
 
 export function openDatabase(path: string): DB {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
@@ -14,6 +24,20 @@ export function openDatabase(path: string): DB {
   db.exec('PRAGMA foreign_keys = ON;');
   const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
   db.exec(schema);
+  // One-time safety net for the only destructive migration in this project's history: the
+  // profiles table rebuild in runMigrations rewrites every row. Snapshot the file first so
+  // an operator can recover manually if the rebuild goes wrong in a way the transaction
+  // wrapper doesn't catch (e.g. disk corruption). :memory: has no file to copy. Detection
+  // mirrors the migration's own guard (profiles lacking `kind`), and is skipped once the
+  // backup already exists so this runs at most once per database.
+  if (path !== ':memory:') {
+    const profileCols = (db.prepare('PRAGMA table_info(profiles)').all() as { name: string }[]).map((c) => c.name);
+    const backupPath = `${path}.pre-kind-backup`;
+    if (profileCols.length > 0 && !profileCols.includes('kind') && !existsSync(backupPath)) {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); // fold the WAL in — a bare file copy misses it
+      copyFileSync(path, backupPath);
+    }
+  }
   runMigrations(db);
   return db;
 }
@@ -70,5 +94,92 @@ export function runMigrations(db: DB): void {
   const cohortCols = (db.prepare('PRAGMA table_info(cohorts)').all() as { name: string }[]).map((c) => c.name);
   if (cohortCols.length > 0 && !cohortCols.includes('archived')) {
     db.exec('ALTER TABLE cohorts ADD COLUMN archived INTEGER NOT NULL DEFAULT 0');
+  }
+  // --- Message campaigns (2026-07-28) ---
+  if (cohortCols.length > 0 && !cohortCols.includes('kind')) {
+    db.exec("ALTER TABLE cohorts ADD COLUMN kind TEXT NOT NULL DEFAULT 'invite'");
+  }
+  // Each column gets its own guard (rather than one guard around all four): an
+  // interruption between ALTERs must not permanently skip whichever ones didn't run yet.
+  if (cols.length > 0 && !cols.includes('msg_weekly_cap')) {
+    db.exec('ALTER TABLE settings ADD COLUMN msg_weekly_cap INTEGER NOT NULL DEFAULT 250');
+  }
+  if (cols.length > 0 && !cols.includes('msg_batch_size')) {
+    db.exec('ALTER TABLE settings ADD COLUMN msg_batch_size INTEGER NOT NULL DEFAULT 5');
+  }
+  if (cols.length > 0 && !cols.includes('msg_batches_per_day')) {
+    db.exec('ALTER TABLE settings ADD COLUMN msg_batches_per_day INTEGER NOT NULL DEFAULT 6');
+  }
+  if (cols.length > 0 && !cols.includes('reply_checks_per_day')) {
+    db.exec('ALTER TABLE settings ADD COLUMN reply_checks_per_day INTEGER NOT NULL DEFAULT 2');
+  }
+  if (appCols.length > 0 && !appCols.includes('replies_checked_at')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN replies_checked_at TEXT');
+  }
+  // profiles: kind/full_name/thread_url/replied_at + UNIQUE(profile_url) -> UNIQUE(profile_url, kind).
+  // SQLite cannot alter a column-level UNIQUE, so rebuild the table once. Detection: the
+  // kind column is absent exactly on pre-messaging databases. IDs are preserved, so
+  // send_log/profile_events FKs stay valid; FKs are suspended for the swap.
+  if (profileCols.length > 0 && !profileCols.includes('kind')) {
+    // Re-read live columns here (not the stale profileCols snapshot above): the
+    // priority/skip_reason ALTERs and the already_connected backfill just ran against
+    // this same table, so the live shape can have columns/data profileCols doesn't know
+    // about. Only carry over columns that actually exist right now.
+    const liveCols = (db.prepare('PRAGMA table_info(profiles)').all() as { name: string }[]).map((c) => c.name);
+    const carryCols = LEGACY_CARRY_COLUMNS.filter((c) => liveCols.includes(c));
+    const orphaned = liveCols.filter((c) => !carryCols.includes(c));
+    // Fail loudly rather than silently drop data: a profiles column added above this
+    // block must also be listed in LEGACY_CARRY_COLUMNS, or legacy databases would lose
+    // it on rebuild.
+    if (orphaned.length > 0) {
+      throw new Error(`profiles rebuild would drop columns: ${orphaned.join(', ')}`);
+    }
+    // PRAGMA foreign_keys is a no-op inside a transaction, so it's toggled outside the
+    // BEGIN/COMMIT below; restored in `finally` regardless of how the transaction ends.
+    db.exec('PRAGMA foreign_keys = OFF;');
+    try {
+      db.exec('BEGIN');
+      db.exec('DROP TABLE IF EXISTS profiles_new'); // stale table from an interrupted earlier attempt
+      db.exec(`
+        -- Keep in sync with the profiles table in schema.sql.
+        CREATE TABLE profiles_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          cohort_id INTEGER NOT NULL REFERENCES cohorts(id),
+          kind TEXT NOT NULL DEFAULT 'invite',
+          profile_url TEXT NOT NULL,
+          first_name TEXT,
+          full_name TEXT,
+          custom_message TEXT,
+          status TEXT NOT NULL DEFAULT 'queued',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          skip_reason TEXT,
+          scheduled_for TEXT,
+          sent_at TEXT,
+          accepted_at TEXT,
+          replied_at TEXT,
+          resolved_at TEXT,
+          thread_url TEXT,
+          priority INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE (profile_url, kind)
+        );
+      `);
+      db.exec(
+        `INSERT INTO profiles_new (${carryCols.join(', ')}) SELECT ${carryCols.join(', ')} FROM profiles;`,
+      );
+      db.exec(`
+        DROP TABLE profiles;
+        ALTER TABLE profiles_new RENAME TO profiles;
+        CREATE INDEX IF NOT EXISTS idx_profiles_status ON profiles(status);
+        CREATE INDEX IF NOT EXISTS idx_profiles_cohort ON profiles(cohort_id);
+      `);
+      db.exec('COMMIT');
+    } catch (e) {
+      try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+      throw e;
+    } finally {
+      db.exec('PRAGMA foreign_keys = ON;');
+    }
   }
 }

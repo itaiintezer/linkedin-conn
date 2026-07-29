@@ -30,6 +30,21 @@ export const SEL = {
   // Verified live (2026-07): connection cards expose /in/ anchors inside <main>, default
   // sort is "Recently added", so the top slice is where fresh acceptances appear.
   connectionCardLink: 'main a[href*="/in/"]',
+
+  // Messaging (live-verified 2026-07-28). The profile's Message control is an anchor to
+  // /messaging/compose/?profileUrn=… — navigate to its href instead of clicking hashed-
+  // class UI. That route renders the CLASSIC messaging surface with stable classes.
+  msgComposeLink: 'a[href*="/messaging/compose/"]',
+  msgBox: 'div.msg-form__contenteditable[contenteditable="true"]',
+  // Disabled until text is typed; re-disabled after a successful send.
+  msgSendButton: 'button.msg-form__send-button',
+  // Thread history items — a sent message appears as the last of these.
+  msgEvent: '[class*="msg-s-event"]',
+  // Inbox conversation list. Snippets are prefixed "You:" when we sent last.
+  inboxList: 'ul.msg-conversations-container__conversations-list',
+  inboxRow: 'li.msg-conversation-listitem',
+  inboxRowName: '[class*="participant-names"]',
+  inboxRowSnippet: '[class*="message-snippet"]',
 };
 
 // Role-based locator builders. getByRole matches the *accessible name*, so these
@@ -78,6 +93,7 @@ export const URLS = {
   login: 'https://www.linkedin.com/login',
   sentInvitations: 'https://www.linkedin.com/mynetwork/invitation-manager/sent/',
   connections: 'https://www.linkedin.com/mynetwork/invite-connect/connections/',
+  messaging: 'https://www.linkedin.com/messaging/',
 };
 
 /** The direct invite-composer route for a profile slug (e.g. "liron-lalezary"). */

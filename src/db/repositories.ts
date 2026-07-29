@@ -1,13 +1,14 @@
 import type { DB } from './database.js';
-import type { Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason } from '../types.js';
+import type { Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind } from '../types.js';
 
 const PROFILE_COLUMNS = new Set([
-  'first_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
-  'scheduled_for', 'sent_at', 'accepted_at', 'resolved_at',
+  'first_name', 'full_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
+  'scheduled_for', 'sent_at', 'accepted_at', 'replied_at', 'resolved_at', 'thread_url',
 ]);
 const SETTINGS_COLUMNS = new Set([
   'workday_start_hour', 'workday_end_hour', 'weekdays_only', 'weekly_cap',
   'batch_size', 'batches_per_day', 'acceptance_checks_per_day',
+  'msg_weekly_cap', 'msg_batch_size', 'msg_batches_per_day', 'reply_checks_per_day',
   'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
   'onboarded',
   'failure_threshold',
@@ -16,10 +17,10 @@ const SETTINGS_COLUMNS = new Set([
 
 export class CohortRepo {
   constructor(private db: DB) {}
-  create(name: string, template: string | null, allowNoNote: boolean): Cohort {
+  create(name: string, template: string | null, allowNoNote: boolean, kind: CampaignKind = 'invite'): Cohort {
     this.db.prepare(
-      'INSERT INTO cohorts (name, message_template, allow_no_note) VALUES (?, ?, ?)',
-    ).run(name, template, allowNoNote ? 1 : 0);
+      'INSERT INTO cohorts (name, message_template, allow_no_note, kind) VALUES (?, ?, ?, ?)',
+    ).run(name, template, allowNoNote ? 1 : 0, kind);
     return this.findByName(name)!;
   }
   findByName(name: string): Cohort | undefined {
@@ -37,9 +38,9 @@ export class CohortRepo {
   setArchived(id: number, archived: boolean): void {
     this.db.prepare('UPDATE cohorts SET archived = ? WHERE id = ?').run(archived ? 1 : 0, id);
   }
-  getOrCreate(name: string, template: string | null, allowNoNote: boolean): Cohort {
+  getOrCreate(name: string, template: string | null, allowNoNote: boolean, kind: CampaignKind = 'invite'): Cohort {
     const existing = this.findByName(name);
-    if (!existing) return this.create(name, template, allowNoNote);
+    if (!existing) return this.create(name, template, allowNoNote, kind);
     // Adding under an archived name resurrects the cohort — otherwise the new
     // profiles would queue into a cohort the UI can't show.
     if (existing.archived) { this.setArchived(existing.id, false); return this.findById(existing.id)!; }
@@ -49,15 +50,16 @@ export class CohortRepo {
 
 export class ProfileRepo {
   constructor(private db: DB) {}
-  add(cohortId: number, normalizedUrl: string, customMessage: string | null): Profile {
+  add(cohortId: number, normalizedUrl: string, customMessage: string | null, kind: CampaignKind = 'invite'): Profile {
     const existing = this.db
-      .prepare('SELECT * FROM profiles WHERE profile_url = ?')
-      .get(normalizedUrl) as unknown as Profile | undefined;
+      .prepare('SELECT * FROM profiles WHERE profile_url = ? AND kind = ?')
+      .get(normalizedUrl, kind) as unknown as Profile | undefined;
     if (existing) return existing;
     this.db.prepare(
-      'INSERT INTO profiles (cohort_id, profile_url, custom_message) VALUES (?, ?, ?)',
-    ).run(cohortId, normalizedUrl, customMessage);
-    return this.db.prepare('SELECT * FROM profiles WHERE profile_url = ?').get(normalizedUrl) as unknown as Profile;
+      'INSERT INTO profiles (cohort_id, profile_url, custom_message, kind) VALUES (?, ?, ?, ?)',
+    ).run(cohortId, normalizedUrl, customMessage, kind);
+    return this.db.prepare('SELECT * FROM profiles WHERE profile_url = ? AND kind = ?')
+      .get(normalizedUrl, kind) as unknown as Profile;
   }
   findById(id: number): Profile | undefined {
     return this.db.prepare('SELECT * FROM profiles WHERE id = ?').get(id) as unknown as Profile | undefined;
@@ -67,6 +69,10 @@ export class ProfileRepo {
   }
   byStatus(status: ProfileStatus): Profile[] {
     return this.db.prepare('SELECT * FROM profiles WHERE status = ? ORDER BY id').all(status) as unknown as Profile[];
+  }
+  byStatusKind(status: ProfileStatus, kind: CampaignKind): Profile[] {
+    return this.db.prepare('SELECT * FROM profiles WHERE status = ? AND kind = ? ORDER BY id')
+      .all(status, kind) as unknown as Profile[];
   }
   setStatus(id: number, status: ProfileStatus, fields: Partial<Profile> = {}): void {
     const sets: string[] = ['status = ?'];
@@ -86,6 +92,10 @@ export class ProfileRepo {
   }
   queuedByPriority(): Profile[] {
     return this.db.prepare("SELECT * FROM profiles WHERE status='queued' ORDER BY priority, id").all() as unknown as Profile[];
+  }
+  queuedByPriorityKind(kind: CampaignKind): Profile[] {
+    return this.db.prepare("SELECT * FROM profiles WHERE status='queued' AND kind = ? ORDER BY priority, id")
+      .all(kind) as unknown as Profile[];
   }
   setPriority(id: number, priority: number): void {
     this.db.prepare('UPDATE profiles SET priority = ? WHERE id = ?').run(priority, id);
@@ -124,10 +134,10 @@ export class EventRepo {
   recordEvent(profileId: number, type: EventType): void {
     this.db.prepare('INSERT INTO profile_events (profile_id, event_type) VALUES (?, ?)').run(profileId, type);
   }
-  countSentSince(iso: string): number {
-    return (this.db
-      .prepare("SELECT COUNT(*) c FROM send_log WHERE outcome='sent' AND at >= ?")
-      .get(iso) as unknown as { c: number }).c;
+  countSentSince(iso: string, kind: CampaignKind): number {
+    return (this.db.prepare(`
+      SELECT COUNT(*) c FROM send_log s JOIN profiles p ON p.id = s.profile_id
+      WHERE s.outcome='sent' AND s.at >= ? AND p.kind = ?`).get(iso, kind) as unknown as { c: number }).c;
   }
 }
 
@@ -183,6 +193,10 @@ export class AppStateRepo {
 
   setAcceptanceChecked(iso: string): void {
     this.db.prepare('UPDATE app_state SET acceptance_checked_at = ? WHERE id = 1').run(iso);
+  }
+
+  setRepliesChecked(iso: string): void {
+    this.db.prepare('UPDATE app_state SET replies_checked_at = ? WHERE id = 1').run(iso);
   }
 }
 

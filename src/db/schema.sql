@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS cohorts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'invite',
   message_template TEXT,
   allow_no_note INTEGER NOT NULL DEFAULT 0,
   archived INTEGER NOT NULL DEFAULT 0,
@@ -10,21 +11,26 @@ CREATE TABLE IF NOT EXISTS cohorts (
 CREATE TABLE IF NOT EXISTS profiles (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   cohort_id INTEGER NOT NULL REFERENCES cohorts(id),
-  profile_url TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'invite',
+  profile_url TEXT NOT NULL,
   first_name TEXT,
+  full_name TEXT,
   custom_message TEXT,
   status TEXT NOT NULL DEFAULT 'queued',
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   -- Why a skipped profile was skipped: already_connected | email_required |
-  -- unavailable | dismissed. NULL for rows skipped before this column existed.
+  -- unavailable | dismissed | not_found | not_connected. NULL for legacy rows.
   skip_reason TEXT,
   scheduled_for TEXT,
   sent_at TEXT,
   accepted_at TEXT,
+  replied_at TEXT,
   resolved_at TEXT,
+  thread_url TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (profile_url, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_profiles_status ON profiles(status);
 CREATE INDEX IF NOT EXISTS idx_profiles_cohort ON profiles(cohort_id);
@@ -56,6 +62,11 @@ CREATE TABLE IF NOT EXISTS settings (
   -- Acceptance passes per day, spread across equal slots of the day (2 = morning +
   -- afternoon). Honored by Orchestrator.runAcceptanceTick via acceptanceSlot().
   acceptance_checks_per_day INTEGER NOT NULL DEFAULT 2,
+  msg_weekly_cap INTEGER NOT NULL DEFAULT 250,
+  msg_batch_size INTEGER NOT NULL DEFAULT 5,
+  msg_batches_per_day INTEGER NOT NULL DEFAULT 6,
+  -- Reply-check passes per day (messages funnel), same slot mechanism as acceptance.
+  reply_checks_per_day INTEGER NOT NULL DEFAULT 2,
   note_quota_exhausted INTEGER NOT NULL DEFAULT 0,
   min_delay_ms INTEGER NOT NULL DEFAULT 20000,
   max_delay_ms INTEGER NOT NULL DEFAULT 90000,
@@ -80,7 +91,8 @@ CREATE TABLE IF NOT EXISTS app_state (
   guardrail_detail TEXT,
   guardrail_tripped_at TEXT,
   failure_streak INTEGER NOT NULL DEFAULT 0,
-  acceptance_checked_at TEXT
+  acceptance_checked_at TEXT,
+  replies_checked_at TEXT
 );
 
 INSERT OR IGNORE INTO app_state (id) VALUES (1);

@@ -28,8 +28,10 @@ export async function runAcceptanceCheck(
   if (!opts.force && repos.settings.get().paused) return { ran: false, reason: 'paused', accepted: 0, expired: 0 };
   if (isTripped(repos)) return { ran: false, reason: 'guardrail', accepted: 0, expired: 0 };
 
-  // Nothing to verify -> stay dark (DB only, no browser).
-  const sent = repos.profiles.byStatus('sent').map((p) => ({ id: p.id, profile_url: p.profile_url, sent_at: p.sent_at }));
+  // Nothing to verify -> stay dark (DB only, no browser). Kind-scoped to 'invite':
+  // message-kind 'sent' rows belong to the reply funnel (see reply-checker.ts) and
+  // must never be promoted to 'accepted'/'expired' by this pass.
+  const sent = repos.profiles.byStatusKind('sent', 'invite').map((p) => ({ id: p.id, profile_url: p.profile_url, sent_at: p.sent_at }));
   if (sent.length === 0) return { ran: false, reason: 'no_pending', accepted: 0, expired: 0 };
 
   if (repos.appState.get().login_logged_in !== 1) return { ran: false, reason: 'logged_out', accepted: 0, expired: 0 };

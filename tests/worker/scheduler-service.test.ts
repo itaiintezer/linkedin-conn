@@ -258,3 +258,35 @@ test('recoverOrphanedSending ignores non-sending profiles', () => {
   expect(repos.profiles.findById(sch.id)!.status).toBe('scheduled');
   expect(repos.profiles.findById(sent.id)!.status).toBe('sent');
 });
+
+test('planAndAssignToday schedules invite and message queues independently with their own caps', () => {
+  const repos = new Repos(openDatabase(':memory:'));
+  repos.settings.update({
+    weekly_cap: 100, batch_size: 2, batches_per_day: 1,
+    msg_weekly_cap: 200, msg_batch_size: 3, msg_batches_per_day: 1,
+    workday_start_hour: 8, workday_end_hour: 20, weekdays_only: 0,
+  });
+  const inv = repos.cohorts.create('I', null, true);
+  const msg = repos.cohorts.create('M', 'hi', true, 'message');
+  for (let i = 0; i < 5; i++) repos.profiles.add(inv.id, `https://www.linkedin.com/in/i${i}`, null);
+  for (let i = 0; i < 5; i++) repos.profiles.add(msg.id, `https://www.linkedin.com/in/m${i}`, null, 'message');
+
+  planAndAssignToday(repos, new Date('2026-07-28T09:00:00'), () => 0.5);
+
+  expect(repos.profiles.byStatusKind('scheduled', 'invite')).toHaveLength(2);   // 1 batch x 2
+  expect(repos.profiles.byStatusKind('scheduled', 'message')).toHaveLength(3);  // 1 batch x 3
+});
+
+test('a capacity-exhausted kind does not affect scheduling of the other kind', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 50; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  const msg = repos.cohorts.create('M', 'hi', true, 'message');
+  for (let i = 0; i < 10; i++) repos.profiles.add(msg.id, `https://www.linkedin.com/in/m${i}`, null, 'message');
+  repos.settings.update({ msg_weekly_cap: 0 }); // message capacity fully exhausted
+  let i = 0; const seq = [0.1, 0.35, 0.6, 0.85]; // same seq as the invite-only 20-cap baseline
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => seq[(i++) % seq.length]);
+  // Invites schedule exactly as they would with no message cohort present (4 batches * 5 = 20).
+  expect(repos.profiles.byStatusKind('scheduled', 'invite')).toHaveLength(20);
+  expect(repos.profiles.byStatusKind('scheduled', 'message')).toHaveLength(0);
+  expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(10);
+});
