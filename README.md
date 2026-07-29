@@ -181,6 +181,7 @@ Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 | **Connect LinkedIn** hangs for minutes on first click | The browser wasn't downloaded at install time. Run `npm run install-browser`. |
 | `npm start` warns that port 4400 is in use | Another copy is already running — use it, or start on another port (see platform notes). |
 | `npm start` fails to launch the browser, or the window never appears | A previous run was killed instead of `Ctrl+C`, leaving an orphaned browser holding `.linkedin-profile`. Quit any leftover Chromium windows (Task Manager / Activity Monitor: `chrome`/`Chromium`), then start again. |
+| A message sits in **Needs attention** saying `interrupted mid-send` | The app stopped (crash, Task Manager, antivirus) while that DM was mid-flight, and nothing in the queue records whether it actually went out — the name, thread link and send log are all written from an outcome that never arrived. Open that conversation on LinkedIn: if the message is there, dismiss the row; if not, retry it. Invites in the same situation recover automatically, because a duplicate invite is harmless and a duplicate DM isn't. |
 
 ## Tests
 
