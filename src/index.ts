@@ -1,5 +1,6 @@
 import { openDatabase } from './db/database.js';
 import { Repos } from './db/repositories.js';
+import { seedConnectionsFromProfiles } from './db/seed-connections.js';
 import { LinkedInDriver } from './browser/linkedin-driver.js';
 import { Orchestrator } from './worker/orchestrator.js';
 import { buildServer } from './api/server.js';
@@ -19,6 +20,11 @@ process.on('uncaughtException', (err) => {
 });
 
 const repos = new Repos(openDatabase(DB_PATH));
+// One-time roster back-fill from campaign data that already proves a connection.
+// No-op after the first run (gated on app_state.connections_seeded_at).
+const seeded = seedConnectionsFromProfiles(repos, new Date().toISOString());
+if (seeded > 0) log.info('roster', 'seeded connections from existing profiles', { seeded });
+
 const driver = new LinkedInDriver();
 // One lock shared between the scheduler and the API so the periodic sender, the acceptance
 // reader, the reply reader and the manual "run now" trigger never drive the browser at once.

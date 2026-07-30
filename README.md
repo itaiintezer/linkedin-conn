@@ -124,6 +124,39 @@ invites. 6 batches × 5 is ~30 messages a day; there's headroom to raise
 If a profile turns out not to be a 1st-degree connection at send time, The Machine skips it
 (**Skipped**, reason `not_connected`) rather than send an InMail.
 
+## Connections
+
+Separate from the campaigns, The Machine keeps a **roster** of the people you're actually
+connected to — one row per person, independent of any cohort. It's the foundation for
+searching your network; enrichment and search arrive in later releases.
+
+Three things fill it:
+
+1. **Your `Connections.csv` export** — in LinkedIn: Settings & Privacy → Get a copy of your
+   data → Connections. Import it under **Settings → Connections**, or during first-run
+   setup (optional there — you can always do it later). It gives name, company, position
+   and the date you connected.
+2. **A bare list of profile URLs** — same box, same button; the format is detected.
+3. **Automatic discovery** — twice a day (`roster_sync_per_day`) The Machine reads your
+   connections page and adds anyone new. This read is free of the weekly cap.
+
+On first start, the roster is also back-filled from campaign history: everyone whose invite
+you accepted, plus everyone you successfully messaged (a DM only goes out after the live
+1st-degree check passes, so it's proof of connection). A pending invite is *not* counted —
+that's a request, not a connection.
+
+Re-importing the same file is safe and cheap: it updates existing rows rather than
+duplicating them. **Sync now** on the Settings panel forces a read immediately and tells you
+what it found — or why it declined to run.
+
+Two deliberate limits:
+
+- **Removals aren't tracked.** Nothing here ever deletes a connection, so someone who
+  disconnects stays in the roster. If they end up in a message campaign, the send-time check
+  skips them as `not_connected`.
+- **Discovery reads the top of the list.** Someone who connected while The Machine was off
+  for a long stretch is picked up by re-importing the CSV rather than by sync.
+
 ## Safety
 
 - If LinkedIn shows a captcha/checkpoint, the queue auto-pauses and the dashboard shows a
@@ -167,6 +200,8 @@ card forces a pass immediately.
 - `POST /api/lists` `{ cohort, text, message_template?, kind? }` — bulk enqueue; the only
   endpoint that can create a message campaign.
 - `GET /api/status` — queue + weekly counts, per kind.
+- `POST /api/connections/import` `{ text }` — ingest a `Connections.csv` export or a URL list.
+- `GET /api/connections/stats` — roster size and enrichment breakdown.
 
 Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 

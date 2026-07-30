@@ -22,6 +22,19 @@ export function openDatabase(path: string): DB {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
+  // Safety net before the connection-roster migration first touches a production database.
+  // Detection: the connections table is absent exactly on pre-roster databases — so this
+  // MUST run before schema.sql's CREATE TABLE IF NOT EXISTS makes that undetectable. Runs
+  // at most once, skipped as soon as the backup exists. :memory: has no file to copy.
+  if (path !== ':memory:') {
+    const hasTable = (name: string) =>
+      db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) !== undefined;
+    const rosterBackup = `${path}.pre-connections-backup`;
+    if (hasTable('profiles') && !hasTable('connections') && !existsSync(rosterBackup)) {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); // fold the WAL in — a bare file copy misses it
+      copyFileSync(path, rosterBackup);
+    }
+  }
   const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
   db.exec(schema);
   // One-time safety net for the only destructive migration in this project's history: the
@@ -115,6 +128,20 @@ export function runMigrations(db: DB): void {
   }
   if (appCols.length > 0 && !appCols.includes('replies_checked_at')) {
     db.exec('ALTER TABLE app_state ADD COLUMN replies_checked_at TEXT');
+  }
+  // --- Connection roster (2026-07-31) ---
+  // The connections/connection_aliases tables need no migration: schema.sql's
+  // CREATE TABLE IF NOT EXISTS back-fills them on every openDatabase. Only new columns on
+  // pre-existing tables need an ALTER. One guard each, so an interruption between ALTERs
+  // cannot permanently skip whichever ones did not run yet.
+  if (cols.length > 0 && !cols.includes('roster_sync_per_day')) {
+    db.exec('ALTER TABLE settings ADD COLUMN roster_sync_per_day INTEGER NOT NULL DEFAULT 2');
+  }
+  if (appCols.length > 0 && !appCols.includes('roster_synced_at')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN roster_synced_at TEXT');
+  }
+  if (appCols.length > 0 && !appCols.includes('connections_seeded_at')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN connections_seeded_at TEXT');
   }
   // profiles: kind/full_name/thread_url/replied_at + UNIQUE(profile_url) -> UNIQUE(profile_url, kind).
   // SQLite cannot alter a column-level UNIQUE, so rebuild the table once. Detection: the

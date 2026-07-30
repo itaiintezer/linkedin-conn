@@ -33,6 +33,20 @@
         <div class="wizard-actions">
           <button class="btn btn-green" type="button" id="wizFinish" disabled>Finish setup</button>
         </div>
+
+        <!-- Optional, and deliberately collapsed: "Finish setup" above must stay reachable
+             without importing anything. -->
+        <details class="wizard-optional" id="wizImport">
+          <summary>Import your connections now <span class="hint">optional</span></summary>
+          <p class="hint">
+            Paste your LinkedIn <code>Connections.csv</code> export or a list of profile URLs.
+            You can always do this later under Settings → Connections.
+          </p>
+          <textarea id="wizImportText" rows="4" spellcheck="false"
+            placeholder="Paste Connections.csv contents or profile URLs"></textarea>
+          <button class="btn" id="wizImportBtn" type="button">Import</button>
+          <div class="toast slim" id="wizImportResult" hidden></div>
+        </details>
       </div>
     </div>
   </div>
@@ -425,6 +439,7 @@
         <div class="section-divider span-all"><span>Both engines</span></div>
         <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" min="0" max="23" /></div>
         <div class="field"><label for="setEnd">Workday end hour</label><input id="setEnd" type="number" min="0" max="23" /></div>
+        <div class="field"><label for="setRosterSync">Connection syncs / day <span class="hint">1–24</span></label><input id="setRosterSync" type="number" min="1" max="24" /></div>
         <p class="hint span-all settings-note">Invites and messages are paced independently but share this window — and one pause, one halt. A captcha or lost session stops both.</p>
 
         <div class="field span-all">
@@ -432,6 +447,53 @@
         </div>
       </form>
       <div class="toast" id="settingsResult" hidden></div>
+
+      <div class="panel-head sub">
+        <div class="panel-title">
+          <h3>Connections</h3>
+          <p class="panel-sub">Your connection list — imported once, then kept current automatically</p>
+        </div>
+        <div class="panel-actions">
+          <button class="btn" id="connSyncNow" type="button" title="Read the connections page now">Sync now</button>
+        </div>
+      </div>
+
+      <div class="card-surface conn-panel">
+        <dl class="conn-stats">
+          <div class="conn-stat">
+            <dd class="conn-stat-n" id="connTotal">—</dd><dt class="conn-stat-l">total</dt>
+          </div>
+          <div class="conn-stat is-good">
+            <dd class="conn-stat-n" id="connEnriched">—</dd><dt class="conn-stat-l">enriched</dt>
+          </div>
+          <div class="conn-stat">
+            <dd class="conn-stat-n" id="connPending">—</dd><dt class="conn-stat-l">awaiting enrichment</dt>
+          </div>
+          <div class="conn-stat">
+            <dd class="conn-stat-n is-time" id="connSynced">—</dd><dt class="conn-stat-l">last synced</dt>
+          </div>
+        </dl>
+
+        <form id="connImportForm" class="conn-import">
+          <div class="field">
+            <label for="connImportText">Import connections</label>
+            <p class="hint">
+              Paste your LinkedIn <code>Connections.csv</code> export (Settings &amp; Privacy →
+              Get a copy of your data → Connections), or just a list of profile URLs.
+              Re-importing the same file updates existing entries rather than duplicating them.
+            </p>
+          </div>
+          <label class="conn-file" for="connImportFile">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke-linecap="round"/></svg>
+            <span>Choose a file…</span>
+            <input type="file" id="connImportFile" accept=".csv,.txt" />
+          </label>
+          <textarea id="connImportText" rows="6" spellcheck="false"
+            placeholder="First Name,Last Name,URL,…&#10;— or —&#10;https://www.linkedin.com/in/someone"></textarea>
+          <div><button class="btn btn-green" type="submit">Import</button></div>
+        </form>
+        <div class="toast" id="connImportResult" hidden></div>
+      </div>
 
       <div class="panel-head sub">
         <div class="panel-title"><h3>Run log</h3><p class="panel-sub">Full debug log for audit &amp; troubleshooting</p></div>

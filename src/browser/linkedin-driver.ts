@@ -1,5 +1,5 @@
 import type { Page } from 'playwright-core';
-import type { BrowserDriver, SendOutcome, LoginSnapshot, CheckpointScan, InboxRow } from '../types.js';
+import type { BrowserDriver, SendOutcome, LoginSnapshot, CheckpointScan, InboxRow, ConnectionCard } from '../types.js';
 import { CloakSession } from './cloak-session.js';
 import { SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
@@ -556,6 +556,41 @@ export class LinkedInDriver implements BrowserDriver {
     }
     await this.scrollConnections(page, 6); // a few pages of "recently added" (weeks of history)
     return this.collectProfileLinks(page, SEL.connectionCardLink);
+  }
+
+  /**
+   * Roster sync's read of the connections page: same navigation and scroll as
+   * readRecentConnections, but returns the display name alongside each URL so a
+   * scrape-discovered connection has a name before enrichment ever runs.
+   *
+   * The name comes from the anchor's own text, NOT a class selector — the connections
+   * page renders hashed class names that churn. Each card contributes several anchors
+   * (avatar, name), so results are deduped by URL, preferring whichever anchor had text.
+   */
+  async readConnectionCards(): Promise<ConnectionCard[]> {
+    const page = await this.session.page();
+    await page.goto(URLS.connections, { waitUntil: 'domcontentloaded' });
+    await sleep(rand(2000, 4000));
+    if ((await this.scanCheckpoint(page)).hit) {
+      await captureEvidence(page, 'checkpoint', { during: 'roster sync' });
+      throw new Error('checkpoint detected during roster sync');
+    }
+    await this.scrollConnections(page, 6);
+    const raw = await page.locator(SEL.connectionCardLink).evaluateAll(
+      (els) => els.map((e) => ({
+        href: (e as HTMLAnchorElement).href,
+        text: (e as HTMLElement).innerText ?? '',
+      })),
+    );
+    const byUrl = new Map<string, ConnectionCard>();
+    for (const { href, text } of raw) {
+      const url = normalizeProfileUrl(href);
+      if (!url) continue;
+      const name = text.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? null;
+      const existing = byUrl.get(url);
+      if (!existing || (!existing.name && name)) byUrl.set(url, { url, name });
+    }
+    return [...byUrl.values()];
   }
 
   /**

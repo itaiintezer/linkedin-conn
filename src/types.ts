@@ -59,6 +59,7 @@ export interface Settings {
   msg_batch_size: number;
   msg_batches_per_day: number;
   reply_checks_per_day: number;
+  roster_sync_per_day: number;
   note_quota_exhausted: number;
   min_delay_ms: number;
   max_delay_ms: number;
@@ -107,6 +108,9 @@ export interface BrowserDriver {
   readInboxSnapshot(): Promise<InboxRow[]>;
   readPendingInvites(): Promise<string[]>;     // normalized profile URLs
   readRecentConnections(): Promise<string[]>;  // normalized profile URLs
+  /** One scroll-loaded read of the connections page, returning URL + display name per card.
+   *  Roster sync uses this; `readRecentConnections` above stays until the phase-3 cutover. */
+  readConnectionCards(): Promise<ConnectionCard[]>;
   /** Scan the currently-loaded page for a checkpoint/captcha (url + what matched). */
   checkpointScan(): Promise<CheckpointScan>;
   close(): Promise<void>;
@@ -126,6 +130,8 @@ export interface AppState {
   failure_streak: number;
   acceptance_checked_at: string | null; // ISO, last successful acceptance read
   replies_checked_at: string | null;    // ISO, last successful reply-check read
+  roster_synced_at: string | null;      // ISO, last successful roster read
+  connections_seeded_at: string | null; // ISO, one-time seed from existing profiles
 }
 
 /** A point-in-time read of LinkedIn auth from the browser's li_at cookie. */
@@ -142,4 +148,55 @@ export interface InboxRow {
   /** Thread URL from the row's anchor href, when the driver can extract one. Preferred
    *  match key over `name` — exact and unaffected by display-name rendering drift. */
   threadUrl?: string;
+}
+
+export type ConnectionSource = 'csv' | 'urls' | 'scrape' | 'migration';
+
+/** Lifecycle of a connection's Apify enrichment (phase 2 drives this; phase 1 only writes 'pending'). */
+export type EnrichStatus = 'pending' | 'enriching' | 'enriched' | 'empty' | 'failed';
+
+/** One person you are connected to. Independent of cohorts and campaign status. */
+export interface Connection {
+  id: number;
+  profile_url: string;              // normalized
+  linkedin_id: string | null;
+  public_identifier: string | null;
+  full_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  headline: string | null;
+  location_raw: string | null;
+  location_city: string | null;
+  location_region: string | null;
+  location_country: string | null;
+  current_title: string | null;
+  current_company: string | null;
+  /** ISO date. ONLY from the CSV export or a known accepted_at — never inferred. */
+  connected_on: string | null;
+  source: ConnectionSource;
+  first_seen_at: string;
+  last_seen_at: string;
+  enrich_status: EnrichStatus;
+  enrich_attempts: number;
+  enrich_error: string | null;
+  enriched_at: string | null;
+  raw_json: string | null;
+  created_at: string;
+}
+
+/** An incoming roster row from any non-Apify source (CSV, URL list, connection card). */
+export interface ConnectionInput {
+  profile_url: string;              // normalized
+  full_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  current_title?: string | null;
+  current_company?: string | null;
+  connected_on?: string | null;
+}
+
+/** One card read off the LinkedIn connections page. */
+export interface ConnectionCard {
+  url: string;                      // normalized
+  name: string | null;
 }
