@@ -106,18 +106,17 @@ education, skills, certifications, and `location_raw`.
 
 ## Phasing
 
-| Phase | Contents | Risk |
+| Phase | Contents | Status |
 |---|---|---|
-| **1 — Roster foundation** | `connections` table, seed migration, CSV + URL-list import, `roster-sync` worker, Settings/wizard import panel, stats + list API | Acceptance pipeline **untouched** |
-| **2 — Enrichment** | TS Apify client, enrichment queue + concurrent worker, FTS index build, failure handling, progress UI | Spends money; no LinkedIn risk |
-| **3 — Search + UI** | `POST /api/connections/search`, `GET /api/connections/:slug`, Connections tab. **Then** the acceptance cutover to the DB read | Acceptance cutover is a small, revertible diff at the end |
-| **4 — Deferred** | Search → select → create message cohort | — |
+| **1 — Roster foundation** | `connections` table, seed migration, CSV + URL-list import, `roster-sync` worker, Settings/wizard import panel, stats + list API | **Done** — merged 2026-07-31 |
+| **2 — Enrichment** | TS Apify client, enrichment queue + concurrent worker, FTS index build, failure handling, progress UI | **Done** |
+| **3 — Search + UI** | `POST /api/connections/search`, `GET /api/connections/:slug`, Connections tab, acceptance cutover to the DB read | **Done** |
+| **4 — Deferred** | Search → select → create message cohort | Not started |
 
-During phase 1 and 2 the connections page is scraped twice per slot — once by `roster-sync`,
-once by the untouched acceptance checker. That is 2 extra page loads a day, accepted
-deliberately so a live pipeline with 247 sent invites in flight is never exposed to unproven
-code. The duplicate disappears with the phase-3 cutover, when `readRecentConnections()` is
-deleted.
+During phases 1 and 2 the connections page was scraped twice per slot — once by
+`roster-sync`, once by the untouched acceptance checker — deliberately, so a live pipeline
+with 250 sent invites in flight was never exposed to unproven code. The phase-3 cutover
+removed the duplicate and deleted `readRecentConnections()`.
 
 ## Search contract (phase 3)
 
