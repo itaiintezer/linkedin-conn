@@ -1171,8 +1171,88 @@ async function loadSettings() {
     $('#setReplyChecks').value = s.reply_checks_per_day ?? '';
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
+    $('#setRosterSync').value = s.roster_sync_per_day ?? '';
+    refreshConnections();
     loadLogs();
   } catch (_) { /* ignore */ }
+}
+
+/* ---------- connections roster (Settings → Connections) ----------
+   The only surface that tells an operator whether their roster actually landed, so
+   every path here reports what happened — including the ones that did nothing. */
+const fmtInt = (n) => Number(n ?? 0).toLocaleString();
+
+async function refreshConnections() {
+  try {
+    const s = await api('/api/connections/stats');
+    $('#connTotal').textContent = fmtInt(s.total);
+    $('#connEnriched').textContent = fmtInt(s.by_enrich_status.enriched);
+    $('#connPending').textContent = fmtInt(s.by_enrich_status.pending);
+    $('#connSynced').textContent = s.last_synced_at ? fmtTime(s.last_synced_at) : 'never';
+  } catch (_) { /* leave the last-known figures rather than blanking the panel */ }
+}
+
+/** One import path for both the pasted textarea and the wizard — the endpoint only ever
+ *  receives text, so an uploaded file is read into the textarea rather than posted. */
+async function importConnections(text, resultNode) {
+  try {
+    const r = await api('/api/connections/import', { method: 'POST', body: { text } });
+    const bits = [`${fmtInt(r.inserted)} added`, `${fmtInt(r.updated)} updated`];
+    if (r.skipped) bits.push(`${fmtInt(r.skipped)} skipped (no usable URL)`);
+    toast(resultNode, bits.join(' · '));
+    await refreshConnections();
+  } catch (err) {
+    toast(resultNode, err.message, true);
+  }
+}
+
+function initConnections() {
+  const file = $('#connImportFile');
+  if (file) {
+    file.addEventListener('change', async (ev) => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      $('#connImportText').value = await f.text();
+      const label = $('.conn-file span');
+      if (label) label.textContent = f.name;
+    });
+  }
+
+  const form = $('#connImportForm');
+  if (form) {
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      await importConnections($('#connImportText').value, $('#connImportResult'));
+    });
+  }
+
+  const wizBtn = $('#wizImportBtn');
+  if (wizBtn) {
+    wizBtn.addEventListener('click', async () => {
+      await importConnections($('#wizImportText').value, $('#wizImportResult'));
+    });
+  }
+
+  const sync = $('#connSyncNow');
+  if (sync) {
+    sync.addEventListener('click', async () => {
+      const result = $('#connImportResult');
+      sync.disabled = true;
+      try {
+        const r = await api('/api/roster/sync-now', { method: 'POST', body: {} });
+        // A pass that declined to run must say WHY — reporting it as a no-op success is
+        // how a broken selector or a lost session goes unnoticed for days.
+        toast(result, r.ran
+          ? `Synced — ${fmtInt(r.seen)} read, ${fmtInt(r.discovered)} new`
+          : `Did not run (${r.reason})`, !r.ran);
+        await refreshConnections();
+      } catch (err) {
+        toast(result, `Sync failed: ${err.message}`, true);
+      } finally {
+        sync.disabled = false;
+      }
+    });
+  }
 }
 
 /* ---------- run log viewer ----------
@@ -1270,6 +1350,7 @@ function initSettings() {
       reply_checks_per_day: num('#setReplyChecks'),
       workday_start_hour: num('#setStart'),
       workday_end_hour: num('#setEnd'),
+      roster_sync_per_day: num('#setRosterSync'),
     };
     Object.keys(patch).forEach((k) => patch[k] === undefined && delete patch[k]);
     try {
@@ -1330,6 +1411,7 @@ function init() {
   initAddList();
   initCohorts();
   initSettings();
+  initConnections();
   initAttention();
   initLogViewer();
   initWizard();

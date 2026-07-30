@@ -24,6 +24,8 @@ export interface AppInternals {
   applyEngineState: (status: Record<string, unknown>) => void;
   loadAttention: () => Promise<void>;
   kindMark: (kind: string) => HTMLElement;
+  refreshConnections: () => Promise<void>;
+  initConnections: () => void;
   /** The bootstrap. Never called by loadApp — see the readyState note below. */
   init: () => void;
 }
@@ -55,7 +57,7 @@ export function loadApp(): AppInternals {
   const src = readFileSync(join(WEB_DIR, 'app.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, kindMark, init };`,
+    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, kindMark, refreshConnections, initConnections, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }
@@ -77,4 +79,46 @@ export function byId<T extends HTMLElement = HTMLElement>(id: string): T {
 /** Stub `fetch` with one canned JSON body, mirroring what api() consumes (ok + json()). */
 export function stubFetchJson(payload: unknown): void {
   globalThis.fetch = (async () => ({ ok: true, json: async () => payload })) as unknown as typeof fetch;
+}
+
+/** One canned response for a route: a JSON body, or an error to make api() throw. */
+export interface RouteStub {
+  body?: unknown;
+  status?: number;
+  error?: string;
+}
+
+/** A fetch call the router observed. */
+export interface RecordedCall {
+  path: string;
+  method: string;
+  body: unknown;
+}
+
+/**
+ * Stub `fetch` with a path-prefix router, for controllers that hit several endpoints.
+ * Returns the recorded calls so a test can assert what was sent, not just what rendered.
+ * An unrouted path rejects loudly rather than silently resolving — a controller quietly
+ * calling an endpoint the test never anticipated is a bug worth surfacing.
+ */
+export function stubFetchRoutes(routes: Record<string, RouteStub>): RecordedCall[] {
+  const calls: RecordedCall[] = [];
+  globalThis.fetch = (async (input: string, init?: RequestInit) => {
+    const path = String(input);
+    calls.push({
+      path,
+      method: init?.method ?? 'GET',
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    const key = Object.keys(routes)
+      .sort((a, b) => b.length - a.length)      // longest prefix wins
+      .find((r) => path.startsWith(r));
+    if (!key) throw new Error(`unrouted fetch in test: ${path}`);
+    const stub = routes[key];
+    if (stub.error !== undefined) {
+      return { ok: false, status: stub.status ?? 400, statusText: 'Bad Request', json: async () => ({ error: stub.error }) };
+    }
+    return { ok: true, status: 200, json: async () => stub.body };
+  }) as unknown as typeof fetch;
+  return calls;
 }
