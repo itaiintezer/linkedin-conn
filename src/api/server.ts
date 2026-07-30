@@ -6,7 +6,7 @@ import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { INCIDENTS_DIR } from '../config.js';
 import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
-import type { BrowserDriver, CampaignKind, ProfileStatus } from '../types.js';
+import type { BrowserDriver, CampaignKind, ProfileStatus, Settings } from '../types.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
 import { estimateQueueCompletion, nextBatchForecast, orderUpcoming } from '../core/forecast.js';
@@ -18,6 +18,9 @@ import { runAcceptanceCheck } from '../worker/acceptance-checker.js';
 import { runReplyCheck } from '../worker/reply-checker.js';
 import { runRosterSync } from '../worker/roster-sync.js';
 import { parseRosterInput } from '../core/roster-input.js';
+import { HttpApifyClient, COST_PER_PROFILE_USD, type ApifyClient } from '../core/apify-client.js';
+import { runEnrichment, enrichmentProgress, isEnrichmentRunning, pauseEnrichment } from '../worker/enrichment.js';
+import { extractProfile, isEmptyProfile } from '../core/apify-extract.js';
 import { planAndAssignToday } from '../worker/scheduler-service.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE } from '../core/message.js';
@@ -35,11 +38,30 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'onboarded', 'expiry_days',
   'msg_weekly_cap', 'msg_batch_size', 'msg_batches_per_day', 'reply_checks_per_day',
   'roster_sync_per_day',
+  'apify_api_key', 'enrich_ttl_days', 'enrich_concurrency',
 ]);
+
+/**
+ * Strip the Apify credential from anything leaving over HTTP, replacing it with a boolean.
+ *
+ * Applied to EVERY settings read path, not just GET: the POST handler echoes the row back,
+ * so sanitizing one and not the other still leaks the key to any local process that can
+ * reach the port — and into the browser devtools of whoever is looking at Settings.
+ */
+function publicSettings(s: Settings): Omit<Settings, 'apify_api_key'> & { apify_key_set: boolean } {
+  const { apify_api_key, ...rest } = s;
+  return { ...rest, apify_key_set: !!apify_api_key };
+}
 
 export function buildServer(
   repos: Repos, driver: BrowserDriver, browserLock: Mutex = new Mutex(), logger: Logger = defaultLog,
-  opts: { incidentsDir?: string; senderOptions?: Pick<SenderOptions, 'sleep' | 'rng'> } = {},
+  opts: {
+    incidentsDir?: string;
+    senderOptions?: Pick<SenderOptions, 'sleep' | 'rng'>;
+    /** Injected so tests never reach Apify. Production builds a real HTTP client per run
+     *  from the key currently in settings, so a re-keyed operator takes effect immediately. */
+    apifyClientFactory?: (token: string) => ApifyClient;
+  } = {},
 ): FastifyInstance {
   const app = Fastify({ logger: false });
   const incidentsDir = opts.incidentsDir ?? INCIDENTS_DIR;
@@ -285,6 +307,65 @@ export function buildServer(
     return { total: repos.connections.count(), limit, offset, results: repos.connections.list(limit, offset) };
   });
 
+  /* ---------- enrichment ---------- */
+
+  /** Build a client from the key currently in settings, or explain what is missing. */
+  const apifyClient = (): ApifyClient => {
+    const token = repos.settings.get().apify_api_key;
+    if (!token) throw Object.assign(new Error('No Apify API key configured — add one under Settings → Connections'), { statusCode: 400 });
+    return (opts.apifyClientFactory ?? ((t: string) => new HttpApifyClient(t)))(token);
+  };
+
+  app.post('/api/enrichment/start', async (reqm, reply) => {
+    if (isEnrichmentRunning()) return reply.code(409).send({ error: 'Enrichment is already running' });
+    const client = apifyClient(); // throws 400 when unconfigured
+    const queued = repos.connections.countsByEnrichStatus().pending;
+    const concurrency = repos.settings.get().enrich_concurrency;
+    logger.info('enrich', 'start', { queued, concurrency });
+    // Fire and forget: a 7k backfill runs for over an hour, so the request returns
+    // immediately and the operator polls /status. Errors are logged by the worker.
+    void runEnrichment(repos, { client, concurrency })
+      .catch((e: Error) => logger.error('enrich', 'run failed', { error: e.message }));
+    return { started: true, queued, estimated_cost_usd: Number((queued * COST_PER_PROFILE_USD).toFixed(2)) };
+  });
+
+  app.get('/api/enrichment/status', async () => enrichmentProgress(repos));
+
+  app.post('/api/enrichment/pause', async () => {
+    const paused = pauseEnrichment();
+    if (paused) logger.info('enrich', 'pause requested');
+    return { paused };
+  });
+
+  app.post('/api/enrichment/retry-failed', async () => {
+    const requeued = repos.connections.resetFailed();
+    logger.info('enrich', 'retry failed', { requeued });
+    return { requeued };
+  });
+
+  /** Enrich one person right now — the detail-view "Refresh" action. */
+  app.post('/api/connections/:slug/refresh', async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const url = normalizeProfileUrl(`https://www.linkedin.com/in/${slug}`);
+    const existing = url ? repos.connections.findByUrl(url) : undefined;
+    if (!existing) return reply.code(404).send({ error: 'No such connection' });
+
+    const client = apifyClient();
+    try {
+      const raw = await client.fetchProfile(existing.profile_url);
+      if (isEmptyProfile(raw)) {
+        repos.connections.markEnrichEmpty(existing.id);
+        return { status: 'empty' };
+      }
+      repos.connections.applyEnrichment(existing.id, extractProfile(raw), new Date().toISOString());
+      return { status: 'enriched' };
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      repos.connections.markEnrichFailure(existing.id, error, repos.settings.get().enrich_ttl_days > 0 ? 3 : 3);
+      return reply.code(502).send({ error });
+    }
+  });
+
   app.post('/api/roster/sync-now', async () => {
     logger.info('api', 'roster sync now');
     return browserLock.run(() => runRosterSync(repos, driver, new Date(), { force: true }));
@@ -330,7 +411,7 @@ export function buildServer(
     return { upcoming: ordered.slice(0, limit), total_remaining: ordered.length };
   });
 
-  app.get('/api/settings', async () => repos.settings.get());
+  app.get('/api/settings', async () => publicSettings(repos.settings.get()));
   app.post('/api/settings', async (req) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const patch: Record<string, unknown> = {};
@@ -338,7 +419,7 @@ export function buildServer(
       if (ALLOWED_SETTINGS_KEYS.has(k)) patch[k] = body[k];
     }
     repos.settings.update(patch as any);
-    return repos.settings.get();
+    return publicSettings(repos.settings.get());
   });
 
   app.post('/api/pause', async () => { defaultLog.info('api', 'pause'); repos.settings.update({ paused: 1, pause_reason: 'Manual pause' }); return { ok: true }; });

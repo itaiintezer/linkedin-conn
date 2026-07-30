@@ -168,6 +168,21 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Return TTL-stale enriched rows to the queue so the next enrichment run refreshes them.
+   * Job titles and locations decay; `enrich_ttl_days` (default 180) decides how stale is too
+   * stale. Only `enriched` rows are re-armed — parked `failed`/`empty` rows are left alone,
+   * because each retry bills and a restricted profile will not have become scrapeable.
+   *
+   * Requeue only: this never starts a run or spends anything on its own.
+   */
+  runEnrichRefreshTick(now: Date = new Date()): void {
+    const s = this.repos.settings.get();
+    if (!s.apify_api_key) return; // nothing can drain the queue without a key
+    const n = this.repos.connections.requeueForRefresh(s.enrich_ttl_days, now);
+    if (n > 0) log.info('enrich', 'requeued stale profiles for refresh', { count: n, ttlDays: s.enrich_ttl_days });
+  }
+
   start(): void {
     // Recover rows stranded in 'sending' by a mid-send crash BEFORE re-sorting: a fresh
     // process has nothing genuinely in flight (the browser is in-process), so any 'sending'
@@ -191,6 +206,9 @@ export class Orchestrator {
     this.timers.push(setInterval(() => { void this.runReplyTick(); }, 30 * 60 * 1000));
     // Roster discovery of newly-added connections — same cadence, same slot-gate reasoning.
     this.timers.push(setInterval(() => { void this.runRosterSyncTick(); }, 30 * 60 * 1000));
+    // Enrichment staleness sweep. Six-hourly is plenty for a 180-day TTL, and it only moves
+    // rows back to `pending` — the operator still decides when to spend.
+    this.timers.push(setInterval(() => this.runEnrichRefreshTick(), 6 * 60 * 60 * 1000));
   }
 
   stop(): void { this.timers.forEach(clearInterval); this.timers = []; }

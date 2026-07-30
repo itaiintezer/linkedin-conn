@@ -13,6 +13,7 @@ const SETTINGS_COLUMNS = new Set([
   'batch_size', 'batches_per_day', 'acceptance_checks_per_day',
   'msg_weekly_cap', 'msg_batch_size', 'msg_batches_per_day', 'reply_checks_per_day',
   'roster_sync_per_day',
+  'apify_api_key', 'enrich_ttl_days', 'enrich_concurrency',
   'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
   'onboarded',
   'failure_threshold',

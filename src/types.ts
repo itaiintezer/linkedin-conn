@@ -60,6 +60,10 @@ export interface Settings {
   msg_batches_per_day: number;
   reply_checks_per_day: number;
   roster_sync_per_day: number;
+  /** Apify credential. Never leaves the process over HTTP — see publicSettings(). */
+  apify_api_key: string | null;
+  enrich_ttl_days: number;
+  enrich_concurrency: number;
   note_quota_exhausted: number;
   min_delay_ms: number;
   max_delay_ms: number;
