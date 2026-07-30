@@ -80,6 +80,39 @@ test('counts report the total and a breakdown by enrichment status', () => {
   });
 });
 
+test('upsertMany returns the insert/update split', () => {
+  const first = repos.connections.upsertMany(
+    [{ profile_url: URL_A }, { profile_url: 'https://www.linkedin.com/in/bob' }],
+    'csv', '2026-07-31T00:00:00.000Z',
+  );
+  expect(first).toEqual({ inserted: 2, updated: 0 });
+
+  const second = repos.connections.upsertMany(
+    [{ profile_url: URL_A, current_title: 'CTO' }, { profile_url: 'https://www.linkedin.com/in/carol' }],
+    'csv', '2026-08-01T00:00:00.000Z',
+  );
+  expect(second).toEqual({ inserted: 1, updated: 1 });
+  expect(repos.connections.count()).toBe(3);
+  expect(repos.connections.findByUrl(URL_A)!.current_title).toBe('CTO');
+});
+
+test('upsertMany is atomic: a bad row late in the file rolls the whole import back', () => {
+  repos.connections.upsert({ profile_url: URL_A }, 'csv', '2026-07-01T00:00:00.000Z');
+
+  const rows = [
+    { profile_url: 'https://www.linkedin.com/in/good1' },
+    { profile_url: 'https://www.linkedin.com/in/good2' },
+    { profile_url: null as unknown as string }, // violates NOT NULL — throws mid-loop
+  ];
+  expect(() => repos.connections.upsertMany(rows, 'csv', '2026-07-31T00:00:00.000Z')).toThrow();
+
+  // Neither good row survives, and the pre-existing row is untouched: a half-written
+  // roster is worse than a rejected import.
+  expect(repos.connections.findByUrl('https://www.linkedin.com/in/good1')).toBeUndefined();
+  expect(repos.connections.findByUrl('https://www.linkedin.com/in/good2')).toBeUndefined();
+  expect(repos.connections.count()).toBe(1);
+});
+
 test('list is newest-first and paginates', () => {
   for (let i = 0; i < 5; i++) {
     repos.connections.upsert({ profile_url: `https://www.linkedin.com/in/p${i}` }, 'csv', '2026-07-31T00:00:00.000Z');

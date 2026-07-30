@@ -273,6 +273,35 @@ export class ConnectionRepo {
     return 'updated';
   }
 
+  /**
+   * Upsert a whole roster in ONE transaction.
+   *
+   * Not a convenience wrapper — a correctness and liveness fix. `node:sqlite` is
+   * synchronous, so an import runs on the event loop and blocks the entire server for its
+   * duration. Un-batched, each row is its own implicit commit with an fsync: a real 8k
+   * Connections.csv measured 6.5s on-disk versus 0.36s in memory, and a 30k export (the
+   * LinkedIn maximum) would stall the server for ~25s. One transaction collapses that to a
+   * single commit. It also makes the import atomic — a malformed row late in the file can
+   * no longer leave the roster half-written.
+   */
+  upsertMany(
+    rows: ConnectionInput[], source: ConnectionSource, nowIso: string,
+  ): { inserted: number; updated: number } {
+    let inserted = 0; let updated = 0;
+    this.db.exec('BEGIN');
+    try {
+      for (const row of rows) {
+        if (this.upsert(row, source, nowIso) === 'inserted') inserted++;
+        else updated++;
+      }
+      this.db.exec('COMMIT');
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+      throw e;
+    }
+    return { inserted, updated };
+  }
+
   count(): number {
     return (this.db.prepare('SELECT COUNT(*) c FROM connections').get() as unknown as { c: number }).c;
   }

@@ -59,6 +59,24 @@ test('rejects a CSV whose rows have no usable URL', async () => {
   expect(res.statusCode).toBe(400);
 });
 
+/**
+ * Regression: Fastify's 1 MiB default bodyLimit rejected a real Connections.csv with a
+ * bare 413. An 8k-connection export is ~1.15 MiB and LinkedIn allows up to 30k, so the
+ * default made the feature's primary input path unusable at real scale.
+ */
+test('accepts an export larger than Fastify\'s 1 MiB default body limit', async () => {
+  const rows = ['First Name,Last Name,URL,Email Address,Company,Position,Connected On'];
+  for (let i = 0; i < 9000; i++) {
+    rows.push(`First${i},Last${i},https://www.linkedin.com/in/some-person-slug-${i},,Company Name Incorporated ${i},Senior Director of Something,04 Mar 2024`);
+  }
+  const text = rows.join('\n');
+  expect(Buffer.byteLength(text)).toBeGreaterThan(1024 * 1024);
+
+  const res = await app.inject({ method: 'POST', url: '/api/connections/import', payload: { text } });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toMatchObject({ inserted: 9000, skipped: 0 });
+});
+
 test('stats report totals, the enrichment breakdown and the last sync', async () => {
   await app.inject({ method: 'POST', url: '/api/connections/import', payload: { text: CSV } });
   const res = await app.inject({ method: 'GET', url: '/api/connections/stats' });

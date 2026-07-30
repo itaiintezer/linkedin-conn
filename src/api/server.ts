@@ -251,7 +251,10 @@ export function buildServer(
    * or a bare list of profile URLs — the body is the same either way and the format is
    * sniffed. Idempotent: re-importing the same file updates rather than duplicates.
    */
-  app.post('/api/connections/import', async (req, reply) => {
+  // bodyLimit: a real Connections.csv is far bigger than Fastify's 1 MiB default — 8k
+  // connections is ~1.15 MiB, and LinkedIn allows up to 30k (~4 MiB). The default rejects
+  // a normal export with a bare 413. 32 MiB leaves headroom for the largest plausible one.
+  app.post('/api/connections/import', { bodyLimit: 32 * 1024 * 1024 }, async (req, reply) => {
     const { text } = (req.body ?? {}) as { text?: string };
     if (typeof text !== 'string' || text.trim() === '') {
       return reply.code(400).send({ error: 'No LinkedIn profile URLs found in the input' });
@@ -263,11 +266,7 @@ export function buildServer(
       return reply.code(400).send({ error: 'No LinkedIn profile URLs found in the input' });
     }
     const nowIso = new Date().toISOString();
-    let inserted = 0; let updated = 0;
-    for (const row of rows) {
-      if (repos.connections.upsert(row, format === 'csv' ? 'csv' : 'urls', nowIso) === 'inserted') inserted++;
-      else updated++;
-    }
+    const { inserted, updated } = repos.connections.upsertMany(rows, format === 'csv' ? 'csv' : 'urls', nowIso);
     logger.info('roster', 'import', { format, parsed: rows.length, inserted, updated, skipped });
     return { format, parsed: rows.length, inserted, updated, skipped };
   });
