@@ -115,6 +115,61 @@ rows. Two shape notes:
 - `pending` is status `sent` in both cases — an invite awaiting acceptance, or a message
   awaiting a reply. `median_time_to_reply_days` is `null` until something replies.
 
+## Connections (roster)
+
+The connection roster is separate from the campaign queue: one row per person you are
+connected to, with no cohort and no campaign status. A person in two campaigns is still one
+connection, and a connection you never contacted is still a first-class record.
+
+The roster is **append-only** — nothing here removes a connection, and absence from a scrape
+never deletes anyone. Enrichment and search land in later phases; today the roster holds
+what the CSV, the connections page and your own campaign history already know.
+
+### POST /api/connections/import
+Ingest a roster. Request: `{ "text": "…" }`. The body is the same whether you send a
+LinkedIn `Connections.csv` export or a bare list of profile URLs — the format is sniffed.
+Response: `{ "format": "csv" | "urls", "parsed", "inserted", "updated", "skipped" }`.
+
+- **CSV** — the export's `Notes:` preamble is skipped automatically, and columns are mapped
+  by header **name**, not position, so a reordered or trimmed export still works. Yields
+  name, company, position and `connected_on`.
+- **URL list** — newline- or comma-separated, or any pasted text containing profile URLs.
+  Yields only the URL; everything else waits for enrichment.
+- **Idempotent.** Re-importing the same file updates existing rows rather than duplicating
+  them (`inserted: 0, updated: N`).
+- `skipped` counts data rows that had no usable LinkedIn profile URL.
+- `400` when the input contains no usable URLs, or when a CSV has no recognizable header.
+
+Merge rules on an existing row: `first_seen_at` and `source` record the first sighting and
+never change; `last_seen_at` always advances; `connected_on` fills a NULL and is then
+immutable (the CSV is its only real source). Other fields fill NULLs, and overwrite only
+while the row is un-enriched — once enriched, scraped data wins over a stale CSV.
+
+### GET /api/connections?limit=N&offset=M
+Browse the roster, newest first. Response:
+`{ "total", "limit", "offset", "results": [ …connection rows… ] }`.
+`limit` defaults to 50 and is clamped to 200. **This is not the search API** — structured
+search (`title_any`, `location_any`, `exclude_any`, …) arrives in a later phase.
+
+### GET /api/connections/stats
+`{ "total", "by_enrich_status": { "pending", "enriching", "enriched", "empty", "failed" }, "last_synced_at" }`.
+Every row is `pending` until the enrichment phase ships.
+
+### POST /api/roster/sync-now
+Force one read of the connections page immediately. Response is the pass result:
+`{ "ran", "reason"?, "seen", "discovered", "syncedAt"? }`.
+
+`ran: false` always carries a `reason` — `paused` (never, for this endpoint: it forces past
+a pause), `guardrail`, `logged_out`, `login_lost`, `read_error`, or `empty_read`. A pass
+that declines to run is reported, never silently treated as a successful no-op.
+
+### Roster sync (scheduled)
+`roster_sync_per_day` (default 2) governs automatic discovery of newly-added connections,
+using the same day-slicing as acceptance and reply checks: at most one successful pass per
+equal slot of the day, retried on the next 30-minute tick if a pass bails out. The pass is
+read-only against LinkedIn and does not consume any weekly cap. An empty read changes
+nothing and does not consume the slot.
+
 ## Queue
 
 ### GET /api/profiles?status=X&kind=Y
