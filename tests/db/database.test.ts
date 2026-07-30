@@ -263,3 +263,33 @@ test('runMigrations restores PRAGMA foreign_keys = ON after the profiles rebuild
   const fk = db.prepare('PRAGMA foreign_keys').get() as any;
   expect(fk.foreign_keys).toBe(1);
 });
+
+test('migrates a pre-connections database: adds roster columns, creates connections tables', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), weekly_cap INTEGER NOT NULL DEFAULT 100);
+    INSERT INTO settings (id) VALUES (1);
+    CREATE TABLE app_state (id INTEGER PRIMARY KEY CHECK (id = 1), failure_streak INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO app_state (id) VALUES (1);
+  `);
+
+  runMigrations(db);
+
+  const settingsCols = (db.prepare('PRAGMA table_info(settings)').all() as { name: string }[]).map((c) => c.name);
+  expect(settingsCols).toContain('roster_sync_per_day');
+  const appCols = (db.prepare('PRAGMA table_info(app_state)').all() as { name: string }[]).map((c) => c.name);
+  expect(appCols).toContain('roster_synced_at');
+  expect(appCols).toContain('connections_seeded_at');
+
+  // Idempotent: a second pass must not throw.
+  expect(() => runMigrations(db)).not.toThrow();
+});
+
+test('a fresh database has the connections tables with a unique profile_url', () => {
+  const db = openDatabase(':memory:');
+  db.exec("INSERT INTO connections (profile_url, source, first_seen_at, last_seen_at) VALUES ('https://www.linkedin.com/in/a','csv','2026-07-31T00:00:00Z','2026-07-31T00:00:00Z')");
+  expect(() =>
+    db.exec("INSERT INTO connections (profile_url, source, first_seen_at, last_seen_at) VALUES ('https://www.linkedin.com/in/a','csv','2026-07-31T00:00:00Z','2026-07-31T00:00:00Z')"),
+  ).toThrow();
+  expect((db.prepare('SELECT enrich_status s FROM connections').get() as { s: string }).s).toBe('pending');
+});

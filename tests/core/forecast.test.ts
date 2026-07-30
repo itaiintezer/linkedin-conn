@@ -7,6 +7,7 @@ function settings(over: Partial<Settings> = {}): Settings {
     id: 1, workday_start_hour: 8, workday_end_hour: 20, weekdays_only: 1,
     weekly_cap: 100, batch_size: 5, batches_per_day: 4, acceptance_checks_per_day: 1,
     msg_weekly_cap: 200, msg_batch_size: 5, msg_batches_per_day: 4, reply_checks_per_day: 2,
+    roster_sync_per_day: 2,
     note_quota_exhausted: 0, min_delay_ms: 20000, max_delay_ms: 90000,
     paused: 0, pause_reason: null, onboarded: 1, failure_threshold: 3, expiry_days: 0, ...over,
   };

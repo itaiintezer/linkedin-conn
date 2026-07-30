@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS settings (
   msg_batches_per_day INTEGER NOT NULL DEFAULT 6,
   -- Reply-check passes per day (messages funnel), same slot mechanism as acceptance.
   reply_checks_per_day INTEGER NOT NULL DEFAULT 2,
+  -- Roster syncs per day, same slot mechanism as acceptance/reply checks.
+  roster_sync_per_day INTEGER NOT NULL DEFAULT 2,
   note_quota_exhausted INTEGER NOT NULL DEFAULT 0,
   min_delay_ms INTEGER NOT NULL DEFAULT 20000,
   max_delay_ms INTEGER NOT NULL DEFAULT 90000,
@@ -92,7 +94,49 @@ CREATE TABLE IF NOT EXISTS app_state (
   guardrail_tripped_at TEXT,
   failure_streak INTEGER NOT NULL DEFAULT 0,
   acceptance_checked_at TEXT,
-  replies_checked_at TEXT
+  replies_checked_at TEXT,
+  roster_synced_at TEXT,
+  connections_seeded_at TEXT
 );
 
 INSERT OR IGNORE INTO app_state (id) VALUES (1);
+
+-- The connection roster. One row per person you are connected to, independent of any
+-- cohort or campaign. Append-only: nothing in this app removes a connection (see the
+-- 2026-07-31 design doc — removals are deliberately not tracked).
+CREATE TABLE IF NOT EXISTS connections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_url TEXT NOT NULL UNIQUE,   -- normalizeProfileUrl()
+  linkedin_id TEXT,                   -- stable id from Apify; merge key for slug changes
+  public_identifier TEXT,
+  full_name TEXT,
+  first_name TEXT,
+  last_name TEXT,
+  headline TEXT,
+  location_raw TEXT,
+  location_city TEXT,
+  location_region TEXT,
+  location_country TEXT,
+  current_title TEXT,
+  current_company TEXT,
+  -- ISO date. ONLY from the CSV export or a known accepted_at. Never inferred from
+  -- first_seen_at: "when we first saw them" is not "when you connected".
+  connected_on TEXT,
+  source TEXT NOT NULL,               -- csv | urls | scrape | migration
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  enrich_status TEXT NOT NULL DEFAULT 'pending',
+  enrich_attempts INTEGER NOT NULL DEFAULT 0,
+  enrich_error TEXT,
+  enriched_at TEXT,
+  raw_json TEXT,                      -- cherry-picked Apify payload (phase 2)
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_connections_enrich ON connections(enrich_status);
+CREATE INDEX IF NOT EXISTS idx_connections_linkedin_id ON connections(linkedin_id);
+
+-- Old profile URLs kept after a slug-change merge, so a stale link still resolves.
+CREATE TABLE IF NOT EXISTS connection_aliases (
+  profile_url TEXT PRIMARY KEY,
+  connection_id INTEGER NOT NULL REFERENCES connections(id)
+);

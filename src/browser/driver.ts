@@ -1,4 +1,4 @@
-import type { BrowserDriver, SendOutcome, SendResult, SendEvidence, LoginSnapshot, CheckpointScan, InboxRow } from '../types.js';
+import type { BrowserDriver, SendOutcome, SendResult, SendEvidence, LoginSnapshot, CheckpointScan, InboxRow, ConnectionCard } from '../types.js';
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 export type { BrowserDriver };
 
@@ -69,6 +69,7 @@ export class FakeDriver implements BrowserDriver {
   }
   async readPendingInvites() { return this.pending; }
   async readRecentConnections() { return this.connections; }
+  async readConnectionCards(): Promise<ConnectionCard[]> { return []; }
   async checkpointScan(): Promise<CheckpointScan> {
     return this.checkpoint
       ? { hit: true, via: 'url', matched: 'linkedin.com/checkpoint/', url: 'https://www.linkedin.com/checkpoint/challenge/fake', title: '' }
