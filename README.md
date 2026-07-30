@@ -127,8 +127,8 @@ If a profile turns out not to be a 1st-degree connection at send time, The Machi
 ## Connections
 
 Separate from the campaigns, The Machine keeps a **roster** of the people you're actually
-connected to — one row per person, independent of any cohort. It's the foundation for
-searching your network; enrichment and search arrive in later releases.
+connected to — one row per person, independent of any cohort. Enrich it once and the whole
+network becomes searchable.
 
 Three things fill it:
 
@@ -169,6 +169,25 @@ skills — which is what makes the list searchable. Paste an Apify API key under
 Some people can't be scraped — restricted or deleted profiles come back empty. Those are
 marked and never retried automatically (each attempt costs money); **Retry failed** re-arms
 them if you want to try again later.
+
+### Searching
+
+The **Connections** tab searches the enriched roster by title, location, company and free
+text. Each box takes a comma-separated list of alternatives, and the boxes combine: *(CISO
+**or** SOC **or** appsec) **and** (Seattle **or** Bellevue)*. The **Exclude** box drops
+anyone whose profile mentions a term anywhere — which is how you get "security people" from
+a network that also contains physical-security and asset-protection roles.
+
+Two things worth knowing:
+
+- Matching is by substring, so `CISO` will not find someone whose title is spelled out as
+  "Chief Information Security Officer". List both spellings.
+- The header always shows how much of your roster is searchable. If enrichment is still
+  running, an empty result may just mean those people haven't been scraped yet — the app
+  says so rather than pretending nobody matched.
+
+The same query is available to AI agents at `POST /api/connections/search` — see
+[API.md](API.md).
 
 Two deliberate limits:
 

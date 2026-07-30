@@ -122,8 +122,7 @@ connected to, with no cohort and no campaign status. A person in two campaigns i
 connection, and a connection you never contacted is still a first-class record.
 
 The roster is **append-only** — nothing here removes a connection, and absence from a scrape
-never deletes anyone. Enrichment and search land in later phases; today the roster holds
-what the CSV, the connections page and your own campaign history already know.
+never deletes anyone.
 
 ### POST /api/connections/import
 Ingest a roster. Request: `{ "text": "…" }`. The body is the same whether you send a
@@ -148,8 +147,8 @@ while the row is un-enriched — once enriched, scraped data wins over a stale C
 ### GET /api/connections?limit=N&offset=M
 Browse the roster, newest first. Response:
 `{ "total", "limit", "offset", "results": [ …connection rows… ] }`.
-`limit` defaults to 50 and is clamped to 200. **This is not the search API** — structured
-search (`title_any`, `location_any`, `exclude_any`, …) arrives in a later phase.
+`limit` defaults to 50 and is clamped to 200. This is a plain browse view over the whole
+roster including un-enriched rows; for filtered queries use `POST /api/connections/search`.
 
 ### GET /api/connections/stats
 `{ "total", "by_enrich_status": { "pending", "enriching", "enriched", "empty", "failed" }, "last_synced_at" }`.
@@ -175,6 +174,72 @@ invites against the roster rather than scraping separately, so `roster_sync_per_
 determines how quickly an accepted invite is noticed. `acceptance_checks_per_day` is retained
 in settings for backwards compatibility but nothing reads it: the acceptance pass is now a
 pure database read and runs every minute.
+
+### POST /api/connections/search
+
+Structured search over the **enriched** roster. This is the endpoint an AI agent should use.
+
+```jsonc
+{
+  "title_any":    ["CISO", "Chief Information Security", "SOC", "appsec", "threat intel"],
+  "location_any": ["Seattle", "Bellevue"],
+  "company_any":  [],
+  "exclude_any":  ["physical security", "asset protection"],
+  "q":            "",              // free text over the whole profile document
+  "include_past_roles": false,
+  "limit": 25, "offset": 0
+}
+```
+
+**Semantics: OR within a field, AND across fields.** Every array is a group of alternatives;
+the groups are combined with AND. That is what lets one concept ("security practitioner") be
+fanned out into many keywords in a single round trip.
+
+- `title_any` matches `current_title` OR `headline` — the headline matters, because senior
+  people often describe themselves there rather than in their job title. Matching is
+  **substring**, so supply the spellings you want: `"CISO"` does not match
+  `"Chief Information Security Officer"`.
+- `location_any` matches `location_raw` / city / region / country as substrings, so
+  `"Seattle"` finds `"Seattle Metropolitan Area"`. A **two-letter** term is treated as an
+  ISO-3166 country code and matched exactly — otherwise `"US"` would match Ho*us*ton,
+  A*us*tralia and Br*us*sels.
+- `company_any` matches the current employer; with `include_past_roles` it also matches
+  anyone who ever worked there.
+- `include_past_roles` widens `title_any`/`company_any` to the full experience history.
+  Default `false`, because "is a security practitioner" is a present-tense claim.
+- `exclude_any` drops a person if any term appears **anywhere** in their profile document.
+- `q` is free text over the whole document — certifications, technologies, schools.
+- `limit` defaults to 25, max 200. A bare string is accepted anywhere an array is expected.
+
+Response:
+
+```jsonc
+{
+  "total": 34, "limit": 25, "offset": 0,
+  "coverage": { "total": 7147, "enriched": 6140, "pending": 986, "unresolvable": 21 },
+  "results": [{
+    "profile_url": "…", "full_name": "…", "headline": "…",
+    "current_title": "…", "current_company": "…",
+    "location_raw": "…", "location_city": "…", "location_country": "…",
+    "connected_on": "2023-04-11", "enriched_at": "…",
+    "matched": { "title_any": ["CISO"], "location_any": ["Seattle"] }
+  }]
+}
+```
+
+`matched` reports which supplied terms hit which field, so a strong hit is distinguishable
+from a weak one. **Always read `coverage`**: search covers enriched rows only, so a thin
+result set may mean the corpus is still filling rather than that nobody matches.
+
+Results are ordered current-role-first, then most-recently-connected. Deliberately not bm25:
+term frequency across a profile rewards headline-stuffers, which is the wrong bias for
+"who does this job".
+
+### GET /api/connections/:slug
+
+Everything known about one person: every roster column plus `profile`, the full stored Apify
+payload (about, experience, education, skills, certifications). An old slug still resolves
+via its alias after a merge. `404` if unknown.
 
 ## Enrichment
 
