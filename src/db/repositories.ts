@@ -1,5 +1,8 @@
 import type { DB } from './database.js';
-import type { Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind } from '../types.js';
+import type {
+  Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind,
+  Connection, ConnectionInput, ConnectionSource, EnrichStatus,
+} from '../types.js';
 
 const PROFILE_COLUMNS = new Set([
   'first_name', 'full_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
@@ -9,6 +12,7 @@ const SETTINGS_COLUMNS = new Set([
   'workday_start_hour', 'workday_end_hour', 'weekdays_only', 'weekly_cap',
   'batch_size', 'batches_per_day', 'acceptance_checks_per_day',
   'msg_weekly_cap', 'msg_batch_size', 'msg_batches_per_day', 'reply_checks_per_day',
+  'roster_sync_per_day',
   'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
   'onboarded',
   'failure_threshold',
@@ -198,6 +202,93 @@ export class AppStateRepo {
   setRepliesChecked(iso: string): void {
     this.db.prepare('UPDATE app_state SET replies_checked_at = ? WHERE id = 1').run(iso);
   }
+
+  setRosterSynced(iso: string): void {
+    this.db.prepare('UPDATE app_state SET roster_synced_at = ? WHERE id = 1').run(iso);
+  }
+
+  setConnectionsSeeded(iso: string): void {
+    this.db.prepare('UPDATE app_state SET connections_seeded_at = ? WHERE id = 1').run(iso);
+  }
+}
+
+/** Fields an import or scrape may fill. Enrichment columns are deliberately NOT here —
+ *  only the phase-2 enrichment worker writes those. */
+const CONNECTION_INPUT_COLUMNS = [
+  'full_name', 'first_name', 'last_name', 'current_title', 'current_company',
+] as const;
+
+const ENRICH_STATUSES: EnrichStatus[] = ['pending', 'enriching', 'enriched', 'empty', 'failed'];
+
+export class ConnectionRepo {
+  constructor(private db: DB) {}
+
+  findByUrl(profileUrl: string): Connection | undefined {
+    return this.db.prepare('SELECT * FROM connections WHERE profile_url = ?')
+      .get(profileUrl) as unknown as Connection | undefined;
+  }
+
+  /**
+   * Insert or merge one roster row. Merge rules (see the 2026-07-31 design doc):
+   *  - `first_seen_at` and `source` record the FIRST sighting and never change.
+   *  - `last_seen_at` always advances.
+   *  - `connected_on` fills a NULL and is then immutable — the CSV export is its only
+   *    real source, and a later sighting has nothing better to offer.
+   *  - Everything else fills a NULL, and additionally overwrites on a row that has not
+   *    been enriched yet. Once `enrich_status = 'enriched'`, Apify's values win: a stale
+   *    CSV must never clobber freshly scraped data.
+   */
+  upsert(input: ConnectionInput, source: ConnectionSource, nowIso: string): 'inserted' | 'updated' {
+    const existing = this.findByUrl(input.profile_url);
+    if (!existing) {
+      this.db.prepare(`
+        INSERT INTO connections
+          (profile_url, full_name, first_name, last_name, current_title, current_company,
+           connected_on, source, first_seen_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.profile_url,
+        input.full_name ?? null, input.first_name ?? null, input.last_name ?? null,
+        input.current_title ?? null, input.current_company ?? null,
+        input.connected_on ?? null,
+        source, nowIso, nowIso,
+      );
+      return 'inserted';
+    }
+
+    const sets: string[] = ['last_seen_at = ?'];
+    const vals: unknown[] = [nowIso];
+    const enriched = existing.enrich_status === 'enriched';
+    for (const col of CONNECTION_INPUT_COLUMNS) {
+      const incoming = input[col];
+      if (incoming === undefined || incoming === null || incoming === '') continue;
+      if (existing[col] !== null && enriched) continue; // Apify's value stands
+      sets.push(`${col} = ?`); vals.push(incoming);
+    }
+    if (input.connected_on && existing.connected_on === null) {
+      sets.push('connected_on = ?'); vals.push(input.connected_on);
+    }
+    vals.push(input.profile_url);
+    this.db.prepare(`UPDATE connections SET ${sets.join(', ')} WHERE profile_url = ?`).run(...(vals as any[]));
+    return 'updated';
+  }
+
+  count(): number {
+    return (this.db.prepare('SELECT COUNT(*) c FROM connections').get() as unknown as { c: number }).c;
+  }
+
+  countsByEnrichStatus(): Record<EnrichStatus, number> {
+    const out = Object.fromEntries(ENRICH_STATUSES.map((s) => [s, 0])) as Record<EnrichStatus, number>;
+    const rows = this.db.prepare('SELECT enrich_status s, COUNT(*) c FROM connections GROUP BY enrich_status')
+      .all() as unknown as { s: EnrichStatus; c: number }[];
+    for (const r of rows) if (r.s in out) out[r.s] = r.c;
+    return out;
+  }
+
+  list(limit: number, offset: number): Connection[] {
+    return this.db.prepare('SELECT * FROM connections ORDER BY id DESC LIMIT ? OFFSET ?')
+      .all(limit, offset) as unknown as Connection[];
+  }
 }
 
 export class Repos {
@@ -206,11 +297,13 @@ export class Repos {
   events: EventRepo;
   settings: SettingsRepo;
   appState: AppStateRepo;
+  connections: ConnectionRepo;
   constructor(public db: DB) {
     this.cohorts = new CohortRepo(db);
     this.profiles = new ProfileRepo(db);
     this.events = new EventRepo(db);
     this.settings = new SettingsRepo(db);
     this.appState = new AppStateRepo(db);
+    this.connections = new ConnectionRepo(db);
   }
 }
