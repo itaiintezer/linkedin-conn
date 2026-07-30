@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS settings (
   reply_checks_per_day INTEGER NOT NULL DEFAULT 2,
   -- Roster syncs per day, same slot mechanism as acceptance/reply checks.
   roster_sync_per_day INTEGER NOT NULL DEFAULT 2,
+  -- Apify credential. Write-only over HTTP: GET /api/settings never returns it.
+  apify_api_key TEXT,
+  -- Re-enrich a connection this many days after its last successful scrape.
+  enrich_ttl_days INTEGER NOT NULL DEFAULT 180,
+  -- Concurrent Apify runs. No LinkedIn risk — bounded only by your Apify plan.
+  enrich_concurrency INTEGER NOT NULL DEFAULT 8,
   note_quota_exhausted INTEGER NOT NULL DEFAULT 0,
   min_delay_ms INTEGER NOT NULL DEFAULT 20000,
   max_delay_ms INTEGER NOT NULL DEFAULT 90000,
@@ -117,6 +123,7 @@ CREATE TABLE IF NOT EXISTS connections (
   location_city TEXT,
   location_region TEXT,
   location_country TEXT,
+  location_country_code TEXT,         -- ISO-3166 alpha-2, straight from Apify's parsed location
   current_title TEXT,
   current_company TEXT,
   -- ISO date. ONLY from the CSV export or a known accepted_at. Never inferred from
@@ -140,3 +147,9 @@ CREATE TABLE IF NOT EXISTS connection_aliases (
   profile_url TEXT PRIMARY KEY,
   connection_id INTEGER NOT NULL REFERENCES connections(id)
 );
+
+-- Search index over the enriched corpus (phase 2 fills it; phase 3 queries it).
+-- A plain FTS5 table keyed by connection id, not contentless-external: external content
+-- would couple every connections write to fts rowid bookkeeping, and one text document per
+-- person is small enough that the duplication is not worth that coupling.
+CREATE VIRTUAL TABLE IF NOT EXISTS connections_fts USING fts5(doc);

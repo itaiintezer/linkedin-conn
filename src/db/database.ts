@@ -143,6 +143,22 @@ export function runMigrations(db: DB): void {
   if (appCols.length > 0 && !appCols.includes('connections_seeded_at')) {
     db.exec('ALTER TABLE app_state ADD COLUMN connections_seeded_at TEXT');
   }
+  // --- Enrichment (2026-07-31, phase 2) ---
+  // connections_fts needs no migration: schema.sql's CREATE VIRTUAL TABLE IF NOT EXISTS
+  // back-fills it on every openDatabase, same as any other new table.
+  const connCols = (db.prepare('PRAGMA table_info(connections)').all() as { name: string }[]).map((c) => c.name);
+  if (connCols.length > 0 && !connCols.includes('location_country_code')) {
+    db.exec('ALTER TABLE connections ADD COLUMN location_country_code TEXT');
+  }
+  if (cols.length > 0 && !cols.includes('apify_api_key')) {
+    db.exec('ALTER TABLE settings ADD COLUMN apify_api_key TEXT');
+  }
+  if (cols.length > 0 && !cols.includes('enrich_ttl_days')) {
+    db.exec('ALTER TABLE settings ADD COLUMN enrich_ttl_days INTEGER NOT NULL DEFAULT 180');
+  }
+  if (cols.length > 0 && !cols.includes('enrich_concurrency')) {
+    db.exec('ALTER TABLE settings ADD COLUMN enrich_concurrency INTEGER NOT NULL DEFAULT 8');
+  }
   // profiles: kind/full_name/thread_url/replied_at + UNIQUE(profile_url) -> UNIQUE(profile_url, kind).
   // SQLite cannot alter a column-level UNIQUE, so rebuild the table once. Detection: the
   // kind column is absent exactly on pre-messaging databases. IDs are preserved, so
