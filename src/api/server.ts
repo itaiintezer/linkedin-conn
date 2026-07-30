@@ -16,6 +16,8 @@ import { Mutex } from '../core/mutex.js';
 import { runSenderOnce, type SenderOptions } from '../worker/sender.js';
 import { runAcceptanceCheck } from '../worker/acceptance-checker.js';
 import { runReplyCheck } from '../worker/reply-checker.js';
+import { runRosterSync } from '../worker/roster-sync.js';
+import { parseRosterInput } from '../core/roster-input.js';
 import { planAndAssignToday } from '../worker/scheduler-service.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE } from '../core/message.js';
@@ -32,6 +34,7 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'note_quota_exhausted', 'min_delay_ms', 'max_delay_ms', 'paused', 'pause_reason',
   'onboarded', 'expiry_days',
   'msg_weekly_cap', 'msg_batch_size', 'msg_batches_per_day', 'reply_checks_per_day',
+  'roster_sync_per_day',
 ]);
 
 export function buildServer(
@@ -241,6 +244,51 @@ export function buildServer(
     repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
       .run(template ?? null, allowNoNote ? 1 : 0, c.id);
     return repos.cohorts.findById(c.id);
+  });
+
+  /**
+   * Ingest a roster. Accepts either a LinkedIn Connections.csv export (preamble and all)
+   * or a bare list of profile URLs — the body is the same either way and the format is
+   * sniffed. Idempotent: re-importing the same file updates rather than duplicates.
+   */
+  app.post('/api/connections/import', async (req, reply) => {
+    const { text } = (req.body ?? {}) as { text?: string };
+    if (typeof text !== 'string' || text.trim() === '') {
+      return reply.code(400).send({ error: 'No LinkedIn profile URLs found in the input' });
+    }
+    // parseRosterInput throws on a CSV whose header we cannot recognize; the global error
+    // handler turns that into a 400 carrying the message.
+    const { format, rows, skipped } = parseRosterInput(text);
+    if (rows.length === 0) {
+      return reply.code(400).send({ error: 'No LinkedIn profile URLs found in the input' });
+    }
+    const nowIso = new Date().toISOString();
+    let inserted = 0; let updated = 0;
+    for (const row of rows) {
+      if (repos.connections.upsert(row, format === 'csv' ? 'csv' : 'urls', nowIso) === 'inserted') inserted++;
+      else updated++;
+    }
+    logger.info('roster', 'import', { format, parsed: rows.length, inserted, updated, skipped });
+    return { format, parsed: rows.length, inserted, updated, skipped };
+  });
+
+  app.get('/api/connections/stats', async () => ({
+    total: repos.connections.count(),
+    by_enrich_status: repos.connections.countsByEnrichStatus(),
+    last_synced_at: repos.appState.get().roster_synced_at,
+  }));
+
+  /** Browse the roster (newest first). NOT the search API — that lands in phase 3. */
+  app.get('/api/connections', async (req) => {
+    const q = req.query as { limit?: string; offset?: string };
+    const limit = Math.min(200, Math.max(1, Number(q.limit ?? 50) || 50));
+    const offset = Math.max(0, Number(q.offset ?? 0) || 0);
+    return { total: repos.connections.count(), limit, offset, results: repos.connections.list(limit, offset) };
+  });
+
+  app.post('/api/roster/sync-now', async () => {
+    logger.info('api', 'roster sync now');
+    return browserLock.run(() => runRosterSync(repos, driver, new Date(), { force: true }));
   });
 
   app.get('/api/metrics', async () => {
