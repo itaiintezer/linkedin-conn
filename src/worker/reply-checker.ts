@@ -2,6 +2,7 @@ import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver, InboxRow, Profile } from '../types.js';
 import { isTripped, tripLoginLost, recordReadError, recordSuccess } from './guardrail.js';
 import { canonicalName, nameTokens, tokensContained } from '../core/name-match.js';
+import { selectNoteSource, applyFirstName, MAX_MESSAGE } from '../core/message.js';
 import { log } from '../core/log.js';
 
 /** Outcome of a reply pass — mirrors AcceptanceRunResult so the UI can reuse its wording. */
@@ -101,12 +102,18 @@ export interface RowResolution {
   via?: MatchVia;
 }
 
-export function resolveRow(row: InboxRow, index: PendingIndex): RowResolution {
+export function resolveRow(
+  row: InboxRow,
+  index: PendingIndex,
+  outreachFor?: (p: Profile) => string | null,
+): RowResolution {
   const rowThread = row.threadUrl ? threadKey(row.threadUrl) : null;
 
   // Tier 1 — thread id: exact, name-independent, unique per conversation.
   const threadHits = rowThread ? index.byThreadKey.get(rowThread) ?? [] : [];
-  if (threadHits.length > 0) return verdict(row, threadHits.map((p) => ({ profile: p, via: 'thread' as const })), []);
+  if (threadHits.length > 0) {
+    return verdict(row, threadHits.map((p) => ({ profile: p, via: 'thread' as const })), [], outreachFor);
+  }
   // No pending profile has this thread id — fall through to name matching rather than
   // giving up (thread_url may simply not have been recorded at send time).
 
@@ -135,16 +142,61 @@ export function resolveRow(row: InboxRow, index: PendingIndex): RowResolution {
     if (rowThread && own && own !== rowThread) vetoed.push(c.profile);
     else kept.push(c);
   }
-  return verdict(row, kept, vetoed);
+  return verdict(row, kept, vetoed, outreachFor);
+}
+
+const normalize = (s: string): string => s.replace(/\s+/g, ' ').trim().toLowerCase();
+/** Drop the "You:" marker and LinkedIn's truncation ellipsis to leave the message text. */
+const snippetBody = (s: string): string =>
+  s.replace(/^\s*you:\s*/i, '').replace(/(?:…|\.{3,})\s*$/, '').trim();
+
+/**
+ * Is this "You:"-prefixed snippet still OUR outreach, rather than something a human typed?
+ *
+ * `youSentLast` alone cannot answer "did they reply" — it says only that the newest message
+ * is ours, which stays true forever once the operator answers a reply. That is how a genuine
+ * reply stayed invisible on 2026-07-29: the contact replied, the operator answered, and every
+ * later pass read the operator's own words as "still waiting".
+ *
+ * The snippet shows the head of the last message, so comparing it against what we sent
+ * separates the two cases with no extra page load. Every uncertain case returns true ("still
+ * ours"), because the cost of guessing wrong in the other direction is crediting a reply that
+ * never happened.
+ */
+export function snippetIsOurOutreach(snippet: string, outreach?: string | null): boolean {
+  if (!outreach || !outreach.trim()) return true; // nothing to compare against
+  const s = normalize(snippetBody(snippet));
+  const o = normalize(outreach);
+  if (s.length < 12) return true;   // too short to carry a real signal
+  if (o.startsWith(s)) return true; // the snippet is the head of what we sent
+  // The first name is reconstructed and can differ from whatever the page showed at send
+  // time, so a greeting mismatch alone must not read as human activity: retry past it.
+  const afterComma = (t: string): string => {
+    const i = t.indexOf(',');
+    return i >= 0 ? t.slice(i + 1).trim() : t;
+  };
+  const st = afterComma(s);
+  return st.length >= 12 && afterComma(o).startsWith(st);
 }
 
 /** Shared tail of both tiers, so `youSentLast` is applied in exactly ONE place — and
  *  before the ambiguity verdict, since a row that cannot upgrade anyone should not be
  *  reported as an ambiguity risk either. */
-function verdict(row: InboxRow, candidates: Candidate[], vetoed: Profile[]): RowResolution {
+function verdict(
+  row: InboxRow,
+  candidates: Candidate[],
+  vetoed: Profile[],
+  outreachFor?: (p: Profile) => string | null,
+): RowResolution {
   const profiles = candidates.map((c) => c.profile);
   if (candidates.length === 0) return { outcome: 'none', candidates: [], vetoed };
-  if (row.youSentLast) return { outcome: 'not_a_reply', candidates: profiles, vetoed };
+  // Our outreach still being the last word means no reply. Anything else in that slot means
+  // the thread moved on, which takes a reply. With no outreach text to compare (no resolver
+  // supplied), this collapses to the old "You: means not a reply" behaviour.
+  if (row.youSentLast
+    && candidates.some((c) => snippetIsOurOutreach(row.snippet, outreachFor?.(c.profile)))) {
+    return { outcome: 'not_a_reply', candidates: profiles, vetoed };
+  }
   if (candidates.length > 1) return { outcome: 'ambiguous', candidates: profiles, vetoed };
   return { outcome: 'match', candidates: profiles, vetoed, profile: candidates[0].profile, via: candidates[0].via };
 }
@@ -217,6 +269,31 @@ export async function runReplyCheck(
     });
   }
 
+  // The roster of what the read actually returned. Names only, never snippets: this is enough
+  // to tell "the contact's conversation was never captured" apart from "it was captured but
+  // didn't resolve or looked like we spoke last", which are different bugs with different
+  // fixes, and the aggregate counts cannot distinguish them.
+  log.debug('replies', 'inbox roster', {
+    rows: rows.length,
+    names: rows.map((r) => `${r.name}${r.youSentLast ? ' [you]' : ''}`),
+  });
+
+  // What we actually sent each pending contact, rebuilt with the same helpers the sender
+  // used (selectNoteSource + applyFirstName), so a "You:" snippet can be told apart from
+  // the operator's own words. Cohorts are looked up once, not per row.
+  const templateByCohort = new Map<number, string | null>();
+  const outreachFor = (p: Profile): string | null => {
+    if (!templateByCohort.has(p.cohort_id)) {
+      templateByCohort.set(p.cohort_id, repos.cohorts.findById(p.cohort_id)?.message_template ?? null);
+    }
+    const source = selectNoteSource(p.custom_message, templateByCohort.get(p.cohort_id) ?? null);
+    if (!source) return null;
+    // First token of the stored display name — the sender substituted the name it read live,
+    // and snippetIsOurOutreach tolerates the two disagreeing.
+    const firstName = (p.full_name ?? '').trim().split(/\s+/)[0] || null;
+    return applyFirstName(source, firstName, MAX_MESSAGE);
+  };
+
   // --- Resolve each inbox row to at most one profile, or flag it ambiguous ------------
   const clean: RowMatch[] = [];
   // Profiles some row pointed at (even a You-prefixed or ambiguous one): the complement
@@ -226,7 +303,7 @@ export async function runReplyCheck(
   // by a clean exact row A. That is deliberate — better evidence should win.
   const ambiguousIds = new Set<number>();
   for (const row of rows) {
-    const res = resolveRow(row, index);
+    const res = resolveRow(row, index, outreachFor);
     for (const p of res.candidates) seenIds.add(p.id);
     if (res.vetoed.length > 0) {
       log.debug('replies', 'name match vetoed — row is a different conversation', {
@@ -287,5 +364,19 @@ export async function runReplyCheck(
   log.info('replies', 'checked', {
     replied, ambiguousProfiles, unmatchedPending, rows: rows.length, pending: pending.length,
   });
+  // A pending contact with no inbox row was not examined at all, so a reply from them cannot
+  // have been seen. Warn rather than leave it at info: this number climbed 20 -> 21 -> 22 on
+  // 2026-07-29 while the pass reported success each time, and a real reply was missed under it.
+  // The slot IS still stamped above — a contact can be legitimately absent from the inbox
+  // (no thread was ever created), and refusing to stamp would re-run the read every 30 minutes
+  // forever. Visibility is the fix here, not a retry.
+  if (unmatchedPending > 0) {
+    log.warn('replies', 'pending contacts had no inbox row — a reply from them cannot be seen', {
+      unmatchedPending, pending: pending.length, rows: rows.length,
+      // Identities, not just a count: a bare number can't tell you whether the read is short
+      // or a specific contact's name never resolves, and those need opposite fixes.
+      who: pending.filter((p) => !seenIds.has(p.id)).map((p) => `${p.id}:${p.full_name ?? '?'}`),
+    });
+  }
   return { ran: true, replied, ambiguous: ambiguousProfiles, unmatched: unmatchedPending, checkedAt: iso };
 }

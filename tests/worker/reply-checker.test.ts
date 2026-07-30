@@ -408,3 +408,59 @@ test('a clean, non-empty read resets the failure streak', async () => {
   await runReplyCheck(repos, driver, NOW);
   expect(repos.appState.get().failure_streak).toBe(0);
 });
+
+/* The 2026-07-29 miss, end to end: the contact replied, the operator answered, and every
+   later pass read the operator's own words as "we spoke last, still waiting". */
+
+const TEMPLATE = 'Hi {firstName}, I noticed your work building out the SOC and wanted to share something.';
+
+function seedSentWithTemplate(url: string, fullName: string) {
+  const c = repos.cohorts.getOrCreate('Tpl', TEMPLATE, false, 'message');
+  const p = repos.profiles.add(c.id, url, null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-29T08:12:00.000Z', full_name: fullName });
+  return p;
+}
+
+test('a You-prefixed row carrying the OPERATORS words counts as a reply', async () => {
+  const p = seedSentWithTemplate('https://www.linkedin.com/in/alex-tan-tty', 'Alex Tan');
+  driver.inboxRows = [{
+    name: 'Alex Tan',
+    snippet: 'You: Great — Tuesday at 3 works, sending an invite now.',
+    youSentLast: true,
+  }];
+
+  const res = await runReplyCheck(repos, driver, NOW);
+
+  expect(res.replied).toBe(1);
+  expect(repos.profiles.findById(p.id)!.status).toBe('replied');
+  expect(repos.profiles.findById(p.id)!.replied_at).toBe(NOW.toISOString());
+  expect(eventCount(p.id)).toBe(1);
+});
+
+test('a You-prefixed row still carrying OUR outreach is not a reply', async () => {
+  const p = seedSentWithTemplate('https://www.linkedin.com/in/alex-tan-tty', 'Alex Tan');
+  // The snippet is the head of the rendered template, truncated by LinkedIn.
+  driver.inboxRows = [{
+    name: 'Alex Tan',
+    snippet: 'You: Hi Alex, I noticed your work building out the SOC and…',
+    youSentLast: true,
+  }];
+
+  const res = await runReplyCheck(repos, driver, NOW);
+
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+  expect(res.unmatched).toBe(0); // matched, deliberately left pending — not "invisible"
+});
+
+test('with no template to compare against, a You-prefixed row never becomes a reply', async () => {
+  // Fail-safe: an unreconstructable outreach must not turn into a false upgrade.
+  const p = seedSentMsg('https://www.linkedin.com/in/no-tpl', 'Nora Templeton');
+  repos.db.prepare('UPDATE cohorts SET message_template = NULL').run();
+  driver.inboxRows = [{ name: 'Nora Templeton', snippet: 'You: anything at all', youSentLast: true }];
+
+  const res = await runReplyCheck(repos, driver, NOW);
+
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+});

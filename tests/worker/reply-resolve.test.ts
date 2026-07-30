@@ -135,3 +135,44 @@ test('two pending profiles behind one key are ambiguous, in either tier', () => 
       prof(2, 'B Two', 'https://www.linkedin.com/messaging/thread/2-dup/')],
   ).outcome).toBe('ambiguous');
 });
+
+/* ---------- snippetIsOurOutreach ----------
+   `youSentLast` only says the newest message is ours, which is ALSO true forever after the
+   operator answers a reply — so on its own it hides exactly the replies that mattered
+   (observed 2026-07-29: #675 replied, was answered, and stayed 'sent' through every pass).
+   Telling "our outreach is still the last word" apart from "a human wrote here" is what
+   makes the distinction, and it costs no extra page load. */
+
+import { snippetIsOurOutreach } from '../../src/worker/reply-checker.js';
+
+const OUTREACH = 'Hi Alex, I noticed your work building out the SOC at Acme and wanted to share something.';
+
+test('snippetIsOurOutreach: our own outreach as the last message is not a reply', () => {
+  expect(snippetIsOurOutreach('You: Hi Alex, I noticed your work building out the SOC…', OUTREACH)).toBe(true);
+});
+
+test('snippetIsOurOutreach: the operator answering a reply is NOT our outreach', () => {
+  // This is the missed case. The thread advanced past our message, so someone wrote back.
+  expect(snippetIsOurOutreach('You: Thanks Alex — Tuesday works, I will send an invite.', OUTREACH)).toBe(false);
+});
+
+test('snippetIsOurOutreach: tolerates a differing greeting when the body still matches', () => {
+  // The reconstructed first name can differ from what the page showed at send time; a
+  // greeting mismatch must not be read as human activity.
+  const snippet = 'You: Hi Alexander, I noticed your work building out the SOC at Acme and wanted';
+  expect(snippetIsOurOutreach(snippet, OUTREACH)).toBe(true);
+});
+
+test('snippetIsOurOutreach: normalizes case, whitespace and the truncation ellipsis', () => {
+  expect(snippetIsOurOutreach('You:   HI ALEX,  I NOTICED   your work building out the soc...', OUTREACH)).toBe(true);
+});
+
+test('snippetIsOurOutreach: with no known outreach text it never credits a reply', () => {
+  // Fail-safe direction: an unreconstructable message must not become a false "replied".
+  expect(snippetIsOurOutreach('You: anything at all here', null)).toBe(true);
+  expect(snippetIsOurOutreach('You: anything at all here', '')).toBe(true);
+});
+
+test('snippetIsOurOutreach: too little text to judge stays conservative', () => {
+  expect(snippetIsOurOutreach('You: ok', OUTREACH)).toBe(true);
+});

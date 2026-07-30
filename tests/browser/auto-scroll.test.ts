@@ -56,3 +56,109 @@ test('reports every round through onRound', async () => {
   // rounds[0] is the pre-scroll baseline, then one entry per scroll gesture.
   expect(list.rounds).toEqual([20, 40, 60, 60, 60]);
 });
+
+/* ---------- collectWhileScrolling ----------
+   The inbox reader needs rows, not a count, and must be correct whether the list appends
+   (rows persist) or virtualizes (rows are recycled out of the DOM as you scroll past).
+   Accumulating per round is the only strategy that survives both. */
+
+import { collectWhileScrolling } from '../../src/browser/auto-scroll.js';
+
+/** A list that grows by appending: every round returns everything loaded so far. */
+function appendingList(windows: string[][]) {
+  let i = 0;
+  return {
+    scrolls: () => i,
+    deps: {
+      collect: async () => windows[Math.min(i, windows.length - 1)],
+      key: (s: string) => s,
+      scrollOnce: async () => { i++; },
+    },
+  };
+}
+
+test('collectWhileScrolling accumulates past the first screen and dedupes repeats', async () => {
+  // This is the actual bug: only the first window was ever read.
+  const list = appendingList([
+    ['a', 'b'],
+    ['a', 'b', 'c', 'd'],
+    ['a', 'b', 'c', 'd', 'e'],
+  ]);
+  const res = await collectWhileScrolling(list.deps, 8);
+  expect(res.items).toEqual(['a', 'b', 'c', 'd', 'e']);
+  expect(res.exhausted).toBe(true); // stalled on its own, so we believe we saw everything
+});
+
+test('collectWhileScrolling captures every row of a VIRTUALIZED list', async () => {
+  // Each round returns a disjoint window — earlier rows are gone from the DOM. A single
+  // collect after scrolling (or dedupe-by-count) would lose the top of the list here.
+  let round = 0;
+  const windows = [['a', 'b'], ['c', 'd'], ['e', 'f'], ['e', 'f']];
+  const res = await collectWhileScrolling({
+    collect: async () => windows[Math.min(round, windows.length - 1)],
+    key: (s: string) => s,
+    scrollOnce: async () => { round++; },
+  }, 8);
+  expect(res.items).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+});
+
+test('collectWhileScrolling reports exhausted=false when it stops at the round cap', async () => {
+  // A list that never stops growing: the caller must be able to tell the snapshot is partial,
+  // because silently returning a truncated inbox is exactly what hid the missed reply.
+  let n = 0;
+  const res = await collectWhileScrolling({
+    collect: async () => [`row${n}`],
+    key: (s: string) => s,
+    scrollOnce: async () => { n++; },
+  }, 3);
+  expect(res.exhausted).toBe(false);
+  expect(res.rounds).toBe(3);
+  expect(res.items).toHaveLength(4); // the pre-scroll collect plus one per round
+});
+
+test('collectWhileScrolling keeps the FIRST sighting of a duplicate key', async () => {
+  // The inbox is ordered most-recent-first and we scroll downward, so the first sighting is
+  // the freshest row — which is the one whose "You:" prefix decides youSentLast.
+  let round = 0;
+  const res = await collectWhileScrolling({
+    collect: async () => (round === 0
+      ? [{ id: 'x', snippet: 'their reply' }]
+      : [{ id: 'x', snippet: 'You: stale' }]),
+    key: (r: { id: string }) => r.id,
+    scrollOnce: async () => { round++; },
+  }, 4);
+  expect(res.items).toEqual([{ id: 'x', snippet: 'their reply' }]);
+});
+
+/**
+ * A windowed list: only `window` rows are rendered at a time, and each scroll advances the
+ * window by `step` rows. This is the shape that broke on 2026-07-29 — accumulating per round
+ * is necessary but NOT sufficient, because a step wider than the window scrolls rows past
+ * before anything snapshots them. The driver satisfies step <= window by scrolling half a
+ * viewport; these two tests pin why that bound has to hold.
+ */
+function windowedList(total: number, window: number, step: number) {
+  let offset = 0;
+  return {
+    collect: async () => Array.from(
+      { length: Math.min(window, Math.max(0, total - offset)) },
+      (_, i) => `row${offset + i}`,
+    ),
+    key: (s: string) => s,
+    scrollOnce: async () => { offset = Math.min(offset + step, total); },
+  };
+}
+
+test('collectWhileScrolling covers a windowed list when the step overlaps the window', async () => {
+  const res = await collectWhileScrolling(windowedList(40, 10, 5), 30);
+  expect(res.items).toHaveLength(40); // every row seen — consecutive windows overlap
+  expect(res.exhausted).toBe(true);
+});
+
+test('a step WIDER than the window silently drops rows (the 1800px bug)', async () => {
+  // Regression witness, not desired behaviour: 25-row strides past a 10-row window lose the
+  // rows in between, and they go missing in contiguous runs exactly as observed in production.
+  const res = await collectWhileScrolling(windowedList(100, 10, 25), 30);
+  expect(res.items.length).toBeLessThan(100);
+  expect(res.items).not.toContain('row15'); // fell in the first gap
+});
