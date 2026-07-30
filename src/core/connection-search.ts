@@ -10,6 +10,8 @@ import type { Connection } from '../types.js';
  * many keywords in a single round trip.
  */
 export interface SearchQuery {
+  /** Matches the person's name. Substring, so "ada" finds "Ada Lovelace". */
+  name_any?: string[];
   /** Matches current_title OR headline. Widened to every past role by include_past_roles. */
   title_any?: string[];
   /** Matches any of location_raw / city / region / country / ISO code. */
@@ -91,6 +93,7 @@ function likeAny(columns: string[], terms: string[], params: unknown[]): string 
 }
 
 export function searchConnections(db: DB, query: SearchQuery): SearchResult {
+  const name = clean(query.name_any);
   const title = clean(query.title_any);
   const location = clean(query.location_any);
   const company = clean(query.company_any);
@@ -106,6 +109,10 @@ export function searchConnections(db: DB, query: SearchQuery): SearchResult {
   // coverage block below is what keeps that honest to the caller.
   const where: string[] = ["c.enrich_status = 'enriched'"];
   const params: unknown[] = [];
+
+  if (name.length) {
+    where.push(likeAny(['c.full_name', 'c.first_name', 'c.last_name'], name, params));
+  }
 
   if (title.length) {
     if (past) {
@@ -186,17 +193,19 @@ export function searchConnections(db: DB, query: SearchQuery): SearchResult {
     limit,
     offset,
     coverage: coverageOf(db),
-    results: rows.map((r) => toRow(r, { title, location, company })),
+    results: rows.map((r) => toRow(r, { name, title, location, company })),
   };
 }
 
 /** Which of the caller's terms actually hit, and where. */
-function toRow(c: Connection, terms: { title: string[]; location: string[]; company: string[] }): SearchRow {
+function toRow(c: Connection, terms: { name: string[]; title: string[]; location: string[]; company: string[] }): SearchRow {
   const hit = (fields: (string | null)[], candidates: string[]): string[] => {
     const hay = fields.filter((f): f is string => !!f).join('  ').toLowerCase();
     return candidates.filter((t) => hay.includes(t.toLowerCase()));
   };
   const matched: Record<string, string[]> = {};
+  const n = hit([c.full_name], terms.name);
+  if (n.length) matched.name_any = n;
   const t = hit([c.current_title, c.headline], terms.title);
   if (t.length) matched.title_any = t;
   const l = hit([c.location_raw, c.location_city, c.location_region, c.location_country, c.location_country_code], terms.location);

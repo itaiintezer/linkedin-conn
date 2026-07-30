@@ -306,6 +306,7 @@ export function buildServer(
       Array.isArray(v) ? v.filter((x) => typeof x === 'string') as string[]
         : typeof v === 'string' && v.trim() !== '' ? [v] : undefined;
     return searchConnections(repos.db, {
+      name_any: arr(b.name_any),
       title_any: arr(b.title_any),
       location_any: arr(b.location_any),
       company_any: arr(b.company_any),

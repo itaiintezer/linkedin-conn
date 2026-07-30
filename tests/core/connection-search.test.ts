@@ -197,3 +197,19 @@ test('ftsOrGroup quotes phrases and drops blanks', () => {
   expect(ftsOrGroup(['  ', ''])).toBeNull();
   expect(ftsOrGroup(['say "hi"'])).toBe('("say ""hi""")');
 });
+
+test('search by name, the plainest lookup of all', () => {
+  seedNetwork();
+  expect(searchConnections(repos.db, { name_any: ['Ada'] }).results.map((r) => r.full_name)).toEqual(['Ada Sec']);
+  // Substring and case-insensitive, so a half-remembered name still lands.
+  expect(searchConnections(repos.db, { name_any: ['soc'] }).results.map((r) => r.full_name)).toEqual(['Bob Soc']);
+  expect(searchConnections(repos.db, { name_any: ['Ada', 'Eve'] }).total).toBe(2);
+});
+
+test('name combines with the other fields like any group', () => {
+  seedNetwork();
+  expect(searchConnections(repos.db, { name_any: ['Ada'], location_any: ['London'] }).total).toBe(0);
+  const r = searchConnections(repos.db, { name_any: ['Ada'], location_any: ['Seattle'] });
+  expect(r.total).toBe(1);
+  expect(r.results[0].matched.name_any).toEqual(['Ada']);
+});

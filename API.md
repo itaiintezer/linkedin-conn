@@ -181,6 +181,7 @@ Structured search over the **enriched** roster. This is the endpoint an AI agent
 
 ```jsonc
 {
+  "name_any":     [],
   "title_any":    ["CISO", "Chief Information Security", "SOC", "appsec", "threat intel"],
   "location_any": ["Seattle", "Bellevue"],
   "company_any":  [],
@@ -195,6 +196,7 @@ Structured search over the **enriched** roster. This is the endpoint an AI agent
 the groups are combined with AND. That is what lets one concept ("security practitioner") be
 fanned out into many keywords in a single round trip.
 
+- `name_any` matches the person's name (substring, case-insensitive).
 - `title_any` matches `current_title` OR `headline` — the headline matters, because senior
   people often describe themselves there rather than in their job title. Matching is
   **substring**, so supply the spellings you want: `"CISO"` does not match

@@ -1221,6 +1221,7 @@ function csvTerms(sel) {
 
 function buildSearchQuery() {
   return {
+    name_any: csvTerms('#sqName'),
     title_any: csvTerms('#sqTitle'),
     location_any: csvTerms('#sqLocation'),
     company_any: csvTerms('#sqCompany'),
@@ -1352,7 +1353,7 @@ function initSearch() {
   });
 
   $('#sqClear')?.addEventListener('click', () => {
-    for (const id of ['#sqTitle', '#sqLocation', '#sqCompany', '#sqExclude', '#sqFree']) $(id).value = '';
+    for (const id of ['#sqName', '#sqTitle', '#sqLocation', '#sqCompany', '#sqExclude', '#sqFree']) $(id).value = '';
     $('#sqPast').checked = false;
     $('#searchResults').replaceChildren();
     $('#searchResultsWrap').hidden = true;
