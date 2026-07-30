@@ -170,6 +170,53 @@ equal slot of the day, retried on the next 30-minute tick if a pass bails out. T
 read-only against LinkedIn and does not consume any weekly cap. An empty read changes
 nothing and does not consume the slot.
 
+## Enrichment
+
+Every connection is scraped once via Apify (actor `harvestapi/linkedin-profile-scraper`,
+mode *Profile details no email*, ~**$0.004/profile**) and re-scraped after
+`enrich_ttl_days` (default 180). Enrichment runs on Apify's infrastructure and **never
+touches your LinkedIn session**, so unlike the sender it has no pacing, no weekly cap and no
+guardrail — the only limits are money and your Apify plan's concurrency
+(`enrich_concurrency`, default 8).
+
+Each connection carries an `enrich_status`:
+
+| Status | Meaning |
+|---|---|
+| `pending` | queued for scraping |
+| `enriching` | claimed by a worker right now |
+| `enriched` | scraped successfully |
+| `empty` | Apify returned a shell with no identifying signal — restricted or deleted. **Terminal**: a retry cannot make it real |
+| `failed` | 3 attempts failed. **Terminal** — only `retry-failed` re-arms it, because every attempt bills |
+
+### POST /api/enrichment/start
+Begin draining the pending queue. Returns immediately — a full backfill runs for over an
+hour. Response: `{ "started": true, "queued": 7147, "estimated_cost_usd": 28.59 }`.
+`400` if no Apify key is configured; `409` if a run is already in progress.
+
+### GET /api/enrichment/status
+`{ "running", "total", "enriched", "pending", "enriching", "empty", "failed", "startedAt" }`.
+Safe to poll while idle.
+
+### POST /api/enrichment/pause
+Stops claiming new work; in-flight requests finish. Every claimed-but-unprocessed row is
+returned to `pending`, so **nothing is ever stranded in `enriching`**. Response:
+`{ "paused": true|false }` — `false` means nothing was running. Restarting resumes exactly
+where it stopped.
+
+### POST /api/enrichment/retry-failed
+Re-arms every `failed`/`empty` row back to `pending` with attempts zeroed.
+Response: `{ "requeued": N }`. Never happens automatically.
+
+### POST /api/connections/:slug/refresh
+Re-scrape one person immediately. Response `{ "status": "enriched" | "empty" }`; `404` for an
+unknown slug, `502` when Apify fails.
+
+### The Apify key
+Set it with `POST /api/settings` `{ "apify_api_key": "…" }`. It is **write-only**:
+`GET /api/settings` returns `apify_key_set: true|false` and never the key itself — and
+neither does the `POST` response, which echoes the same sanitized shape.
+
 ## Queue
 
 ### GET /api/profiles?status=X&kind=Y

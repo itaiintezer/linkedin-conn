@@ -474,6 +474,40 @@
           </div>
         </dl>
 
+        <!-- Enrichment. Hidden until there is a roster to enrich — an empty panel with a
+             disabled Start button is noise on first run. -->
+        <div class="conn-enrich" id="connEnrich" hidden>
+          <div class="conn-enrich-head">
+            <div>
+              <h4>Profile enrichment</h4>
+              <p class="hint">Scrapes each connection's profile via Apify — location, current role,
+                full history and skills — so you can search your network. Runs on Apify's
+                infrastructure, never your LinkedIn session, so it isn't paced or capped.</p>
+            </div>
+            <div class="conn-enrich-actions">
+              <button class="btn btn-green" id="enrichStart" type="button">Start enrichment</button>
+              <button class="btn btn-amber" id="enrichPause" type="button" hidden>Pause</button>
+              <button class="btn btn-ghost" id="enrichRetry" type="button" hidden>Retry failed</button>
+            </div>
+          </div>
+
+          <div class="enrich-bar" id="enrichBar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+            <span class="enrich-fill" id="enrichFill"></span>
+            <span class="enrich-fill is-parked" id="enrichParked"></span>
+          </div>
+          <div class="enrich-legend" id="enrichLegend"></div>
+
+          <div class="field">
+            <label for="setApifyKey">Apify API key <span class="hint" id="apifyKeyState"></span></label>
+            <p class="hint">Stored locally and never returned by the API. Get one at
+              <code>console.apify.com</code> → Settings → Integrations.</p>
+            <div class="conn-key-row">
+              <input id="setApifyKey" type="password" autocomplete="off" placeholder="apify_api_…" />
+              <button class="btn" id="saveApifyKey" type="button">Save key</button>
+            </div>
+          </div>
+        </div>
+
         <form id="connImportForm" class="conn-import">
           <div class="field">
             <label for="connImportText">Import connections</label>

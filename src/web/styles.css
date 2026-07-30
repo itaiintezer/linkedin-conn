@@ -1001,3 +1001,34 @@ body > .drawer {
   .conn-stats { grid-template-columns: repeat(2, 1fr); row-gap: 22px; }
   .conn-stat:nth-child(3) { padding-left: 0; border-left: 0; }
 }
+
+/* ---------- Enrichment (Settings → Connections) ---------- */
+.conn-enrich {
+  display: flex; flex-direction: column; gap: 16px;
+  padding-bottom: 24px; border-bottom: 1px solid var(--line-soft);
+}
+.conn-enrich-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.conn-enrich-head h4 {
+  margin: 0 0 4px; font-family: var(--display); font-size: 17px; font-weight: 600;
+  letter-spacing: -0.2px; color: var(--ink);
+}
+.conn-enrich-head .hint { max-width: 46ch; }
+.conn-enrich-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Two stacked fills: enriched (brand) then parked (neutral). Parked work is DONE — it will
+   never complete — so it belongs in the bar, not hidden behind the remainder. */
+.enrich-bar {
+  position: relative; display: flex; height: 8px; border-radius: 999px;
+  background: var(--line-soft); overflow: hidden;
+}
+.enrich-fill {
+  height: 100%; width: 0;
+  background: linear-gradient(90deg, var(--brand) 0%, var(--brand-600) 100%);
+  transition: width .4s ease;
+}
+.enrich-fill.is-parked { background: var(--neutral-bg); border-left: 1px solid var(--line); }
+.enrich-legend { font-family: var(--mono); font-size: 12.5px; color: var(--ink-3); }
+
+.conn-key-row { display: flex; gap: 8px; align-items: stretch; }
+.conn-key-row input { flex: 1 1 auto; font-family: var(--mono); font-size: 13px; }
+.conn-key-row .btn { flex: 0 0 auto; }

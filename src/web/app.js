@@ -1172,6 +1172,8 @@ async function loadSettings() {
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
     $('#setRosterSync').value = s.roster_sync_per_day ?? '';
+    // The key itself is never returned — only whether one is set.
+    $('#apifyKeyState').textContent = s.apify_key_set ? '— configured' : '— not set';
     refreshConnections();
     loadLogs();
   } catch (_) { /* ignore */ }
@@ -1190,6 +1192,7 @@ async function refreshConnections() {
     $('#connPending').textContent = fmtInt(s.by_enrich_status.pending);
     $('#connSynced').textContent = s.last_synced_at ? fmtTime(s.last_synced_at) : 'never';
   } catch (_) { /* leave the last-known figures rather than blanking the panel */ }
+  await refreshEnrichment();
 }
 
 /** One import path for both the pasted textarea and the wizard — the endpoint only ever
@@ -1204,6 +1207,91 @@ async function importConnections(text, resultNode) {
   } catch (err) {
     toast(resultNode, err.message, true);
   }
+}
+
+/* ---------- enrichment ----------
+   Poll only while a run is live: an idle dashboard should not wake up every 3s forever. */
+let enrichPollTimer = null;
+
+function renderEnrichment(p) {
+  const panel = byIdOrNull('connEnrich');
+  if (!panel) return;
+  panel.hidden = p.total === 0;
+
+  const done = p.enriched;
+  const parked = p.empty + p.failed;
+  const pct = p.total ? (100 * done) / p.total : 0;
+  const parkedPct = p.total ? (100 * parked) / p.total : 0;
+  $('#enrichFill').style.width = `${pct}%`;
+  $('#enrichParked').style.width = `${parkedPct}%`;
+  $('#enrichBar').setAttribute('aria-valuenow', Math.round(pct));
+
+  const bits = [`${fmtInt(done)} of ${fmtInt(p.total)} enriched`];
+  if (p.pending) bits.push(`${fmtInt(p.pending)} pending`);
+  if (p.failed) bits.push(`${fmtInt(p.failed)} failed`);
+  if (p.empty) bits.push(`${fmtInt(p.empty)} unreachable`);
+  $('#enrichLegend').textContent = bits.join(' · ');
+
+  const start = $('#enrichStart');
+  start.disabled = p.running || p.pending === 0;
+  start.textContent = p.running
+    ? 'Running…'
+    : p.pending
+      ? `Start enrichment — ${fmtInt(p.pending)} · ~$${(p.pending * 0.004).toFixed(2)}`
+      : 'Everything enriched';
+  $('#enrichPause').hidden = !p.running;
+  $('#enrichRetry').hidden = parked === 0 || p.running;
+}
+
+async function refreshEnrichment() {
+  try {
+    const p = await api('/api/enrichment/status');
+    renderEnrichment(p);
+    // Self-terminating poll: start it when a run begins, stop as soon as it ends.
+    if (p.running && !enrichPollTimer) enrichPollTimer = setInterval(refreshEnrichment, 3000);
+    if (!p.running && enrichPollTimer) { clearInterval(enrichPollTimer); enrichPollTimer = null; }
+  } catch (_) { /* leave the last-known figures on screen */ }
+}
+
+function byIdOrNull(id) { return document.getElementById(id); }
+
+function initEnrichment() {
+  const result = () => $('#connImportResult');
+
+  $('#enrichStart')?.addEventListener('click', async () => {
+    try {
+      const r = await api('/api/enrichment/start', { method: 'POST', body: {} });
+      toast(result(), `Enriching ${fmtInt(r.queued)} connections — about $${r.estimated_cost_usd.toFixed(2)}. You can leave this page.`);
+      await refreshEnrichment();
+    } catch (err) {
+      toast(result(), err.message, true);
+    }
+  });
+
+  $('#enrichPause')?.addEventListener('click', async () => {
+    const r = await api('/api/enrichment/pause', { method: 'POST', body: {} });
+    toast(result(), r.paused ? 'Paused. Restart any time — it picks up where it left off.' : 'Nothing was running.', !r.paused);
+    await refreshEnrichment();
+  });
+
+  $('#enrichRetry')?.addEventListener('click', async () => {
+    const r = await api('/api/enrichment/retry-failed', { method: 'POST', body: {} });
+    toast(result(), `Re-queued ${fmtInt(r.requeued)} for another attempt.`);
+    await refreshEnrichment();
+  });
+
+  $('#saveApifyKey')?.addEventListener('click', async () => {
+    const key = $('#setApifyKey').value.trim();
+    if (!key) { toast(result(), 'Paste a key first.', true); return; }
+    try {
+      await api('/api/settings', { method: 'POST', body: { apify_api_key: key } });
+      $('#setApifyKey').value = '';   // never leave a credential sitting in the DOM
+      toast(result(), 'Apify key saved.');
+      await loadSettings();
+    } catch (err) {
+      toast(result(), err.message, true);
+    }
+  });
 }
 
 function initConnections() {
@@ -1412,6 +1500,7 @@ function init() {
   initCohorts();
   initSettings();
   initConnections();
+  initEnrichment();
   initAttention();
   initLogViewer();
   initWizard();

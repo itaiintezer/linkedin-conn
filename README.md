@@ -149,6 +149,27 @@ Re-importing the same file is safe and cheap: it updates existing rows rather th
 duplicating them. **Sync now** on the Settings panel forces a read immediately and tells you
 what it found — or why it declined to run.
 
+### Enrichment
+
+Once the roster exists, **Start enrichment** scrapes each person's profile through
+[Apify](https://apify.com) — location, current role, full work history, education and
+skills — which is what makes the list searchable. Paste an Apify API key under
+**Settings → Connections** first; it's stored locally and the app never hands it back out.
+
+- **Cost:** about **$0.004 per profile** — roughly **$29** for a 7,000-connection roster,
+  one time. The button shows the exact count and estimate before you click it.
+- **Speed:** ~7 seconds per profile, 8 at a time, so a 7,000-row backfill takes ~1½ hours.
+  You can close the page; it keeps going.
+- **Safety:** this runs on Apify's servers, not your LinkedIn session — so unlike sending,
+  it isn't paced, capped, or able to trip a captcha. Pause and resume freely; it always
+  picks up where it stopped.
+- **Staying current:** anyone new is enriched automatically, and everyone is re-scraped
+  after 180 days (`enrich_ttl_days`) so job changes don't rot the data.
+
+Some people can't be scraped — restricted or deleted profiles come back empty. Those are
+marked and never retried automatically (each attempt costs money); **Retry failed** re-arms
+them if you want to try again later.
+
 Two deliberate limits:
 
 - **Removals aren't tracked.** Nothing here ever deletes a connection, so someone who
