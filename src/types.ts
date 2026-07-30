@@ -169,6 +169,7 @@ export interface Connection {
   location_city: string | null;
   location_region: string | null;
   location_country: string | null;
+  location_country_code: string | null;   // ISO-3166 alpha-2, from Apify's parsed location
   current_title: string | null;
   current_company: string | null;
   /** ISO date. ONLY from the CSV export or a known accepted_at — never inferred. */

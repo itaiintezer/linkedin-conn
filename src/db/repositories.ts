@@ -1,7 +1,7 @@
 import type { DB } from './database.js';
 import type {
   Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind,
-  Connection, ConnectionInput, ConnectionSource, EnrichStatus,
+  Connection, ConnectionInput, ConnectionSource, EnrichStatus, EnrichedProfile,
 } from '../types.js';
 
 const PROFILE_COLUMNS = new Set([
@@ -317,6 +317,144 @@ export class ConnectionRepo {
   list(limit: number, offset: number): Connection[] {
     return this.db.prepare('SELECT * FROM connections ORDER BY id DESC LIMIT ? OFFSET ?')
       .all(limit, offset) as unknown as Connection[];
+  }
+
+  /* ---------- enrichment lifecycle ---------- */
+
+  /**
+   * Atomically take up to `limit` pending rows and mark them `enriching`.
+   *
+   * The claim is what keeps a concurrent worker pool from scraping (and paying for) the
+   * same person twice: selection and the status flip happen in one transaction, so two
+   * in-flight callers can never see the same row as pending.
+   */
+  claimForEnrichment(limit: number): Connection[] {
+    if (limit <= 0) return [];
+    this.db.exec('BEGIN');
+    try {
+      const rows = this.db.prepare(
+        "SELECT * FROM connections WHERE enrich_status = 'pending' ORDER BY id LIMIT ?",
+      ).all(limit) as unknown as Connection[];
+      const upd = this.db.prepare("UPDATE connections SET enrich_status = 'enriching' WHERE id = ?");
+      for (const r of rows) upd.run(r.id);
+      this.db.exec('COMMIT');
+      return rows.map((r) => ({ ...r, enrich_status: 'enriching' as EnrichStatus }));
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+      throw e;
+    }
+  }
+
+  /**
+   * Store a successful scrape: scalars, `raw_json`, the FTS document, and `enriched`.
+   *
+   * If the payload's `linkedin_id` already belongs to a DIFFERENT row, this is the same
+   * person under a changed public slug — merge into the older row, alias the newer URL, and
+   * delete the duplicate. A null id never merges: two un-identified people sharing a NULL
+   * are not the same person, and merging them would destroy one.
+   */
+  applyEnrichment(id: number, p: EnrichedProfile, nowIso: string): void {
+    this.db.exec('BEGIN');
+    try {
+      let targetId = id;
+      if (p.linkedin_id) {
+        const other = this.db.prepare(
+          'SELECT id FROM connections WHERE linkedin_id = ? AND id != ? ORDER BY id LIMIT 1',
+        ).get(p.linkedin_id, id) as unknown as { id: number } | undefined;
+        if (other) {
+          // Keep the older row (lower id) — it holds the earlier first_seen_at and any
+          // connected_on the CSV gave us.
+          const keep = Math.min(other.id, id);
+          const drop = Math.max(other.id, id);
+          const dropUrl = (this.db.prepare('SELECT profile_url FROM connections WHERE id = ?')
+            .get(drop) as unknown as { profile_url: string }).profile_url;
+          this.db.prepare('INSERT OR REPLACE INTO connection_aliases (profile_url, connection_id) VALUES (?, ?)')
+            .run(dropUrl, keep);
+          this.db.prepare('DELETE FROM connections_fts WHERE rowid = ?').run(drop);
+          this.db.prepare('DELETE FROM connections WHERE id = ?').run(drop);
+          targetId = keep;
+        }
+      }
+
+      this.db.prepare(`
+        UPDATE connections SET
+          linkedin_id = ?, public_identifier = ?, full_name = ?, first_name = ?, last_name = ?,
+          headline = ?, location_raw = ?, location_city = ?, location_region = ?,
+          location_country = ?, location_country_code = ?, current_title = ?, current_company = ?,
+          raw_json = ?, enrich_status = 'enriched', enrich_error = NULL, enriched_at = ?
+        WHERE id = ?
+      `).run(
+        p.linkedin_id, p.public_identifier, p.full_name, p.first_name, p.last_name,
+        p.headline, p.location_raw, p.location_city, p.location_region,
+        p.location_country, p.location_country_code, p.current_title, p.current_company,
+        JSON.stringify(p.compact), nowIso, targetId,
+      );
+
+      // Delete-then-insert: FTS5 has no UPSERT, and leaving the old document behind would
+      // keep a superseded job title matching forever.
+      this.db.prepare('DELETE FROM connections_fts WHERE rowid = ?').run(targetId);
+      this.db.prepare('INSERT INTO connections_fts (rowid, doc) VALUES (?, ?)').run(targetId, p.doc);
+
+      this.db.exec('COMMIT');
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+      throw e;
+    }
+  }
+
+  /**
+   * Record a failed attempt. Returns to `pending` for another try until `maxAttempts`, then
+   * parks as `failed` — never auto-retried again, because every attempt bills.
+   */
+  markEnrichFailure(id: number, error: string, maxAttempts: number): void {
+    this.db.prepare(`
+      UPDATE connections
+      SET enrich_attempts = enrich_attempts + 1,
+          enrich_error = ?,
+          enrich_status = CASE WHEN enrich_attempts + 1 >= ? THEN 'failed' ELSE 'pending' END
+      WHERE id = ?
+    `).run(error, maxAttempts, id);
+  }
+
+  /**
+   * Park a silent-empty shell. Terminal on the first sighting: a restricted or deleted
+   * profile does not become scrapeable on retry, so paying to find out again is waste.
+   */
+  markEnrichEmpty(id: number): void {
+    this.db.prepare(
+      "UPDATE connections SET enrich_attempts = enrich_attempts + 1, enrich_status = 'empty' WHERE id = ?",
+    ).run(id);
+  }
+
+  /** Return rows stranded mid-flight (pause, crash) to pending. Returns how many. */
+  requeueEnriching(): number {
+    const info = this.db.prepare("UPDATE connections SET enrich_status = 'pending' WHERE enrich_status = 'enriching'").run();
+    return Number(info.changes);
+  }
+
+  /** Enriched rows whose data is older than the TTL. Parked rows are deliberately excluded. */
+  dueForRefresh(ttlDays: number, now: Date): Connection[] {
+    const cutoff = new Date(now.getTime() - ttlDays * 86_400_000).toISOString();
+    return this.db.prepare(
+      "SELECT * FROM connections WHERE enrich_status = 'enriched' AND enriched_at IS NOT NULL AND enriched_at < ? ORDER BY enriched_at",
+    ).all(cutoff) as unknown as Connection[];
+  }
+
+  /** Move TTL-stale rows back into the queue. Returns how many. */
+  requeueForRefresh(ttlDays: number, now: Date): number {
+    const cutoff = new Date(now.getTime() - ttlDays * 86_400_000).toISOString();
+    const info = this.db.prepare(
+      "UPDATE connections SET enrich_status = 'pending', enrich_attempts = 0 WHERE enrich_status = 'enriched' AND enriched_at IS NOT NULL AND enriched_at < ?",
+    ).run(cutoff);
+    return Number(info.changes);
+  }
+
+  /** Operator-driven re-arm of parked rows. Never automatic. Returns how many. */
+  resetFailed(): number {
+    const info = this.db.prepare(
+      "UPDATE connections SET enrich_status = 'pending', enrich_attempts = 0, enrich_error = NULL WHERE enrich_status IN ('failed', 'empty')",
+    ).run();
+    return Number(info.changes);
   }
 }
 
