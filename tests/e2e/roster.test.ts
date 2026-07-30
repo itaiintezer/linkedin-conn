@@ -6,6 +6,7 @@ import { buildServer } from '../../src/api/server.js';
 import { seedConnectionsFromProfiles } from '../../src/db/seed-connections.js';
 import { Orchestrator } from '../../src/worker/orchestrator.js';
 import { runAcceptanceCheck } from '../../src/worker/acceptance-checker.js';
+import { runRosterSync } from '../../src/worker/roster-sync.js';
 
 test('seed -> import -> sync builds one coherent roster, and acceptance is unaffected', async () => {
   const repos = new Repos(openDatabase(':memory:'));
@@ -59,7 +60,7 @@ test('seed -> import -> sync builds one coherent roster, and acceptance is unaff
   await app.close();
 });
 
-test('acceptance still runs off its own scrape in phase 1, not off the roster', async () => {
+test('acceptance now resolves off the roster, with no browser involved', async () => {
   const repos = new Repos(openDatabase(':memory:'));
   const driver = new FakeDriver();
   repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-07-31T00:00:00.000Z');
@@ -68,14 +69,14 @@ test('acceptance still runs off its own scrape in phase 1, not off the roster', 
   const p = repos.profiles.add(inv.id, 'https://www.linkedin.com/in/ada', null, 'invite');
   repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-01T00:00:00.000Z' });
 
-  // The roster knows about Ada...
-  repos.connections.upsert({ profile_url: 'https://www.linkedin.com/in/ada' }, 'csv', '2026-07-31T00:00:00.000Z');
-  // ...but acceptance's own read does not, so the invite stays pending. This is the
-  // phase-1 contract: the roster is being proven, not yet trusted.
-  driver.connections = ['https://www.linkedin.com/in/someone-else'];
+  // Roster sync is what learns about the connection...
+  driver.connectionCards = [{ url: 'https://www.linkedin.com/in/ada', name: 'Ada Lovelace' }];
+  await runRosterSync(repos, driver, new Date('2026-07-31T09:00:00.000Z'));
 
-  await runAcceptanceCheck(repos, driver, new Date('2026-07-31T12:00:00.000Z'));
+  // ...and acceptance reads it from the database, opening nothing.
+  driver.open = false;
+  await runAcceptanceCheck(repos, new Date('2026-07-31T12:00:00.000Z'));
 
-  expect(repos.profiles.byStatus('sent').map((x) => x.id)).toEqual([p.id]);
-  expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
+  expect(repos.profiles.byStatus('accepted').map((x) => x.id)).toEqual([p.id]);
+  expect(driver.open).toBe(false);
 });

@@ -510,7 +510,8 @@ export function buildServer(
   // behind any in-flight sender/acceptance batch rather than being silently dropped.
   app.post('/api/recheck-acceptance', async () => {
     defaultLog.info('api', 'recheck-acceptance');
-    return browserLock.run(() => runAcceptanceCheck(repos, driver, new Date(), { force: true }));
+    // No browser lock: this is a pure DB read since the phase-3 cutover.
+    return runAcceptanceCheck(repos, new Date(), { force: true });
   });
 
   // Manual, on-demand reply reconciliation. Same contract as recheck-acceptance: read-only

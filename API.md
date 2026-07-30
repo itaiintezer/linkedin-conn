@@ -165,10 +165,16 @@ that declines to run is reported, never silently treated as a successful no-op.
 
 ### Roster sync (scheduled)
 `roster_sync_per_day` (default 2) governs automatic discovery of newly-added connections,
-using the same day-slicing as acceptance and reply checks: at most one successful pass per
-equal slot of the day, retried on the next 30-minute tick if a pass bails out. The pass is
-read-only against LinkedIn and does not consume any weekly cap. An empty read changes
-nothing and does not consume the slot.
+using the same day-slicing as reply checks: at most one successful pass per equal slot of the
+day, retried on the next 30-minute tick if a pass bails out. The pass is read-only against
+LinkedIn and does not consume any weekly cap. An empty read changes nothing and does not
+consume the slot.
+
+**This is the only place connections are discovered.** Acceptance tracking resolves pending
+invites against the roster rather than scraping separately, so `roster_sync_per_day` alone
+determines how quickly an accepted invite is noticed. `acceptance_checks_per_day` is retained
+in settings for backwards compatibility but nothing reads it: the acceptance pass is now a
+pure database read and runs every minute.
 
 ## Enrichment
 

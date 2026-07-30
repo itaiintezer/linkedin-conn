@@ -111,9 +111,9 @@ export interface BrowserDriver {
   /** One-page scan of the messaging inbox conversation list. */
   readInboxSnapshot(): Promise<InboxRow[]>;
   readPendingInvites(): Promise<string[]>;     // normalized profile URLs
-  readRecentConnections(): Promise<string[]>;  // normalized profile URLs
   /** One scroll-loaded read of the connections page, returning URL + display name per card.
-   *  Roster sync uses this; `readRecentConnections` above stays until the phase-3 cutover. */
+   *  The single source of connection discovery: roster-sync calls this, and acceptance
+   *  resolves against the roster it fills rather than scraping again. */
   readConnectionCards(): Promise<ConnectionCard[]>;
   /** Scan the currently-loaded page for a checkpoint/captcha (url + what matched). */
   checkpointScan(): Promise<CheckpointScan>;

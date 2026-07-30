@@ -98,27 +98,19 @@ export class Orchestrator {
   }
 
   /**
-   * Acceptance pass, at most once per slot (see acceptanceSlot). Queues behind any
-   * in-flight browser work (must not be skipped).
+   * Acceptance pass. Since the phase-3 cutover this is a pure DB read against the roster —
+   * no browser, no network, no cost — so the old once-per-slot gate is gone and it runs on
+   * every tick. Detection latency is now bounded solely by `roster_sync_per_day`, which is
+   * what actually determines when a new connection becomes visible.
    *
-   * The "have we already checked?" gate reads the PERSISTED `acceptance_checked_at`,
-   * which runAcceptanceCheck stamps only on a clean, non-empty read. That is the whole
-   * fix for the old bug: the tick used to mark the day done *before* attempting, so a
-   * pass that bailed out (logged out, read error, empty read) burned a full day of
-   * detection with no retry. Now a bail-out leaves the stamp untouched and the next
-   * 30-minute tick tries again.
+   * `acceptance_checks_per_day` is retained in settings only for backwards compatibility;
+   * nothing reads it any more.
    */
   async runAcceptanceTick(now: Date = new Date()): Promise<void> {
-    const s = this.repos.settings.get();
     const app = this.repos.appState.get();
-    if (s.paused || app.guardrail_tripped === 1) return;
-    const slot = acceptanceSlot(now, s.acceptance_checks_per_day);
-    if (app.acceptance_checked_at
-      && acceptanceSlot(new Date(app.acceptance_checked_at), s.acceptance_checks_per_day) === slot) return;
+    if (this.repos.settings.get().paused || app.guardrail_tripped === 1) return;
     try {
-      // `now` is the tick's clock, not a batch-start snapshot: a pass applies one
-      // timestamp to every verdict anyway, so there is no per-profile drift to avoid.
-      await this.browserLock.run(() => runAcceptanceCheck(this.repos, this.driver, now));
+      await runAcceptanceCheck(this.repos, now);
     } catch (err) {
       this.handleTickError('acceptance', err);
     }
@@ -206,9 +198,9 @@ export class Orchestrator {
       void refreshLoginCache(this.repos, this.driver, new Date()).catch((err) => this.handleTickError('login-refresh', err));
     }, 10 * 1000));
 
-    // Every 30 min: the slot gate decides whether a pass is actually due, so a tick that
-    // finds the current slot already checked is a cheap no-op (and a failed pass retries here).
-    this.timers.push(setInterval(() => { void this.runAcceptanceTick(); }, 30 * 60 * 1000));
+    // Every minute: a pure DB read costs nothing, so an accepted invite is reflected within
+    // a minute of the roster learning about it.
+    this.timers.push(setInterval(() => { void this.runAcceptanceTick(); }, 60 * 1000));
     // Same cadence and the same slot-gate reasoning for the messaging inbox scan.
     this.timers.push(setInterval(() => { void this.runReplyTick(); }, 30 * 60 * 1000));
     // Roster discovery of newly-added connections — same cadence, same slot-gate reasoning.

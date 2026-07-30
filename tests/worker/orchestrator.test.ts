@@ -167,70 +167,57 @@ function seedPending(slug: string): number {
   return p.id;
 }
 
-// THE BUG: the old tick marked the day done BEFORE attempting, so a pass that bailed out
-// (logged out, read error, empty read) cost a full day of detection with no retry.
-test('a pass that bailed out is retried on the next tick, not tomorrow', async () => {
-  const id = seedPending('a');
+// Post-cutover (2026-07-31) the acceptance tick is a pure DB read against the roster, so
+// the old once-per-slot gate is gone entirely. These tests pin the replacement contract:
+// it runs every tick, costs nothing, and stays subject to pause/halt.
+function rosterHas(...slugs: string[]): void {
+  for (const sl of slugs) {
+    repos.connections.upsert({ profile_url: `https://www.linkedin.com/in/${sl}` }, 'scrape', '2026-07-28T00:00:00.000Z');
+  }
+}
+
+test('acceptance runs on EVERY tick — no slot gate, because it costs nothing', async () => {
+  const a = seedPending('a');
   const orch = new Orchestrator(repos, driver);
 
-  driver.connections = []; // empty read -> fail-safe, changes nothing, stamps nothing
+  rosterHas('a');
   await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
-  expect(repos.profiles.findById(id)!.status).toBe('sent');
+  expect(repos.profiles.findById(a)!.status).toBe('accepted');
 
-  driver.connections = ['https://www.linkedin.com/in/a']; // next tick, 30 min later: page renders
-  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 30));
-  expect(repos.profiles.findById(id)!.status).toBe('accepted');
+  // Someone else is discovered moments later, still inside what used to be one slot.
+  // The old gate would have made this wait until the afternoon.
+  const b = seedPending('b');
+  rosterHas('b');
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 1));
+  expect(repos.profiles.findById(b)!.status).toBe('accepted');
 });
 
-test('a successful pass is not repeated within the same slot', async () => {
+test('acceptance tick never opens the browser', async () => {
   seedPending('a');
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  const orch = new Orchestrator(repos, driver);
-  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
-
-  // Someone else accepts moments later; the next tick in the same slot must stay dark.
-  const late = seedPending('b');
-  driver.connections = ['https://www.linkedin.com/in/a', 'https://www.linkedin.com/in/b'];
-  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 30));
-  expect(repos.profiles.findById(late)!.status).toBe('sent');
+  rosterHas('a');
+  await new Orchestrator(repos, driver).runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
+  expect(driver.open).toBe(false);
 });
 
-test('acceptance_checks_per_day=2 runs a second pass after noon', async () => {
-  repos.settings.update({ acceptance_checks_per_day: 2 });
-  seedPending('a');
-  driver.connections = ['https://www.linkedin.com/in/a'];
+test('acceptance tick stays dark while paused or halted', async () => {
+  const a = seedPending('a');
+  rosterHas('a');
   const orch = new Orchestrator(repos, driver);
-  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
 
-  const afternoon = seedPending('b');
-  driver.connections = ['https://www.linkedin.com/in/a', 'https://www.linkedin.com/in/b'];
-  await orch.runAcceptanceTick(new Date(2026, 6, 28, 14, 0));
-  expect(repos.profiles.findById(afternoon)!.status).toBe('accepted');
+  repos.settings.update({ paused: 1 });
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
+  expect(repos.profiles.findById(a)!.status).toBe('sent');
+
+  repos.settings.update({ paused: 0 });
+  repos.appState.trip('checkpoint', 'captcha', '2026-07-28T08:00:00.000Z');
+  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
+  expect(repos.profiles.findById(a)!.status).toBe('sent');
 });
 
-test('acceptance_checks_per_day=1 does not run a second pass later the same day', async () => {
-  repos.settings.update({ acceptance_checks_per_day: 1 });
-  seedPending('a');
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  const orch = new Orchestrator(repos, driver);
-  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
-
-  const later = seedPending('b');
-  driver.connections = ['https://www.linkedin.com/in/a', 'https://www.linkedin.com/in/b'];
-  await orch.runAcceptanceTick(new Date(2026, 6, 28, 22, 0));
-  expect(repos.profiles.findById(later)!.status).toBe('sent');
-});
-
-test('a new day re-opens the first slot', async () => {
-  seedPending('a');
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  const orch = new Orchestrator(repos, driver);
-  await orch.runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
-
-  const tomorrow = seedPending('b');
-  driver.connections = ['https://www.linkedin.com/in/a', 'https://www.linkedin.com/in/b'];
-  await orch.runAcceptanceTick(new Date(2026, 6, 29, 9, 0));
-  expect(repos.profiles.findById(tomorrow)!.status).toBe('accepted');
+test('an empty roster still changes nothing', async () => {
+  const a = seedPending('a');
+  await new Orchestrator(repos, driver).runAcceptanceTick(new Date(2026, 6, 28, 9, 0));
+  expect(repos.profiles.findById(a)!.status).toBe('sent');
 });
 
 test('an acceptance-tick browser error is caught and never rejects the tick', async () => {

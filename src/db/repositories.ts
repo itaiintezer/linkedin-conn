@@ -307,6 +307,18 @@ export class ConnectionRepo {
     return (this.db.prepare('SELECT COUNT(*) c FROM connections').get() as unknown as { c: number }).c;
   }
 
+  /**
+   * Every roster URL, including aliased old slugs. Used by the acceptance check, which asks
+   * "is this sent invite's URL a connection yet?" — an invite sent to a slug the person has
+   * since changed must still resolve, or it would sit pending forever.
+   */
+  allUrls(): Set<string> {
+    const rows = this.db.prepare(
+      'SELECT profile_url FROM connections UNION SELECT profile_url FROM connection_aliases',
+    ).all() as unknown as { profile_url: string }[];
+    return new Set(rows.map((r) => r.profile_url));
+  }
+
   countsByEnrichStatus(): Record<EnrichStatus, number> {
     const out = Object.fromEntries(ENRICH_STATUSES.map((s) => [s, 0])) as Record<EnrichStatus, number>;
     const rows = this.db.prepare('SELECT enrich_status s, COUNT(*) c FROM connections GROUP BY enrich_status')

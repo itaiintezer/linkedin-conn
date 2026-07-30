@@ -593,21 +593,21 @@ test('POST /api/recheck-acceptance reports "no_pending" when nothing is sent', a
   expect(JSON.parse(res.body)).toEqual({ ran: false, reason: 'no_pending', accepted: 0, expired: 0 });
 });
 
-test('POST /api/recheck-acceptance returns "empty_read" while paused when connections read is empty', async () => {
+test('POST /api/recheck-acceptance returns "empty_roster" while paused when the roster is empty', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/pending', null);
   repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-06-20T00:00:00Z' });
   repos.settings.update({ paused: 1 });
   const res = await app.inject({ method: 'POST', url: '/api/recheck-acceptance' });
   expect(res.statusCode).toBe(200);
-  expect(JSON.parse(res.body)).toEqual({ ran: false, reason: 'empty_read', accepted: 0, expired: 0 });
+  expect(JSON.parse(res.body)).toEqual({ ran: false, reason: 'empty_roster', accepted: 0, expired: 0 });
 });
 
-test('POST /api/recheck-acceptance promotes a profile that now appears in connections, even paused', async () => {
-  const driver = new FakeDriver();
-  driver.connections = ['https://www.linkedin.com/in/accepted-now'];
-  const localApp = buildServer(repos, driver);
+test('POST /api/recheck-acceptance promotes a profile that is now in the roster, even paused', async () => {
+  const localApp = buildServer(repos, new FakeDriver());
   repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
+  // Post-cutover the roster is the source of truth, not a live scrape.
+  repos.connections.upsert({ profile_url: 'https://www.linkedin.com/in/accepted-now' }, 'scrape', '2026-06-29T00:00:00.000Z');
   const c = repos.cohorts.create('A', 'hi', true);
   const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/accepted-now', null);
   repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-06-20T00:00:00Z' });

@@ -1,7 +1,6 @@
 import type { Repos } from '../db/repositories.js';
-import type { BrowserDriver } from '../types.js';
 import { computeAccepted, computeExpiredByAge } from '../core/acceptance.js';
-import { isTripped, tripLoginLost, recordReadError, recordSuccess } from './guardrail.js';
+import { isTripped } from './guardrail.js';
 import { log } from '../core/log.js';
 
 /**
@@ -11,20 +10,25 @@ import { log } from '../core/log.js';
  */
 export interface AcceptanceRunResult {
   ran: boolean;
-  reason?: 'paused' | 'guardrail' | 'no_pending' | 'logged_out' | 'login_lost' | 'read_error' | 'empty_read';
+  reason?: 'paused' | 'guardrail' | 'no_pending' | 'empty_roster';
   accepted: number;
   expired: number;
   checkedAt?: string;
 }
 
+/**
+ * Resolve pending invites against the connection roster.
+ *
+ * Since the phase-3 cutover (2026-07-31) this touches NO browser and no network: roster-sync
+ * owns the connections-page read, and this pass just asks "is this sent invite's URL in the
+ * roster yet?". That is why it takes no driver and is synchronous in spirit.
+ */
 export async function runAcceptanceCheck(
   repos: Repos,
-  driver: BrowserDriver,
   now: Date,
   opts: { force?: boolean } = {},
 ): Promise<AcceptanceRunResult> {
-  // `force` (manual on-demand recheck) bypasses ONLY the paused gate — acceptance is
-  // read-only against LinkedIn. Every other safety gate below is unconditional.
+  // `force` (manual on-demand recheck) bypasses ONLY the paused gate.
   if (!opts.force && repos.settings.get().paused) return { ran: false, reason: 'paused', accepted: 0, expired: 0 };
   if (isTripped(repos)) return { ran: false, reason: 'guardrail', accepted: 0, expired: 0 };
 
@@ -34,32 +38,24 @@ export async function runAcceptanceCheck(
   const sent = repos.profiles.byStatusKind('sent', 'invite').map((p) => ({ id: p.id, profile_url: p.profile_url, sent_at: p.sent_at }));
   if (sent.length === 0) return { ran: false, reason: 'no_pending', accepted: 0, expired: 0 };
 
-  if (repos.appState.get().login_logged_in !== 1) return { ran: false, reason: 'logged_out', accepted: 0, expired: 0 };
+  // The roster IS the connections list now (phase-3 cutover, 2026-07-31). This pass no
+  // longer opens a browser or scrapes anything: roster-sync owns that read, and acceptance
+  // just asks "is this sent invite's URL in the roster yet?".
+  //
+  // The safety properties are unchanged, because the roster is append-only and only ever
+  // written from a clean, non-empty scrape:
+  //   - A failed or empty roster read writes nothing, so acceptance simply sees no new
+  //     rows — an undercount, never a false accept.
+  //   - Absence still means nothing. Expiry comes only from the deterministic age backstop.
+  // What changes is cost: this is now a pure DB read, so it can run on every tick instead
+  // of twice a day, and detection latency is bounded by roster_sync_per_day alone.
+  const connections = repos.connections.allUrls();
 
-  // Committing to act: confirm login live (opens the browser) and refresh the cache.
-  const snap = await driver.readLoginState();
-  repos.appState.setLogin(snap, now.toISOString());
-  if (!snap.loggedIn) { tripLoginLost(repos, now); return { ran: false, reason: 'login_lost', accepted: 0, expired: 0 }; }
-
-  // We only READ the connections list — a new acceptance surfaces at the top of
-  // "recently added", so the top slice is the right place to look. We intentionally
-  // do NOT read the sent-invitations list to infer expiry: it is huge and only its
-  // newest page loads, so absence there is not evidence an invite is gone
-  // (see core/acceptance.ts).
-  let connections: Set<string>;
-  try {
-    connections = new Set(await driver.readRecentConnections());
-  } catch (e) {
-    // Checkpoint text trips immediately; other read failures count toward the streak.
-    recordReadError(repos, (e as Error).message ?? 'acceptance read failed', now);
-    return { ran: false, reason: 'read_error', accepted: 0, expired: 0 };
-  }
-
-  // Fail-safe: a suspiciously empty read (page didn't render, UI changed, rate-limited)
-  // must never drive state changes. Skip the run rather than mark anything.
+  // Fail-safe retained in spirit: an empty roster means the roster has never been populated
+  // (fresh install, import not yet run), not that nobody accepted. Change nothing.
   if (connections.size === 0) {
-    log.warn('acceptance', 'connections read returned nothing — skipping (no state change)');
-    return { ran: false, reason: 'empty_read', accepted: 0, expired: 0 };
+    log.warn('acceptance', 'roster is empty — skipping (no state change)');
+    return { ran: false, reason: 'empty_roster', accepted: 0, expired: 0 };
   }
 
   const iso = now.toISOString();
@@ -83,7 +79,8 @@ export async function runAcceptanceCheck(
   }
 
   repos.appState.setAcceptanceChecked(iso);
-  recordSuccess(repos); // a clean read clears any accumulated streak
+  // No recordSuccess here any more: this pass performs no network I/O, so it is not evidence
+  // that LinkedIn is healthy and must not clear a failure streak the sender accumulated.
   log.info('acceptance', 'checked', { accepted: accepted.length, expired: expired.length, connections: connections.size });
   return { ran: true, accepted: accepted.length, expired: expired.length, checkedAt: iso };
 }

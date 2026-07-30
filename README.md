@@ -110,7 +110,7 @@ cohort without saying which kind it means.
 | Weekly cap | `weekly_cap` = 100 | `msg_weekly_cap` = 250 |
 | Batches | `batch_size` 5 × `batches_per_day` 4 | `msg_batch_size` 5 × `msg_batches_per_day` 6 |
 | Funnel | queued → scheduled → sending → sent → accepted | queued → scheduled → sending → sent → replied |
-| Tracked by | Recent connections read (`acceptance_checks_per_day`) | messaging inbox read (`reply_checks_per_day`) |
+| Tracked by | connection roster (`roster_sync_per_day`) | messaging inbox read (`reply_checks_per_day`) |
 
 `{firstName}` works in both. Working hours, the weekdays-only rule, `min_delay_ms` /
 `max_delay_ms`, the pause state and the guardrail are **shared** — pausing pauses both, and a
@@ -188,9 +188,9 @@ Two deliberate limits:
   and requeues the profile it was about to send. The message pass doesn't get to run
   standalone after that either: the account was just rate-limited, so both wait for your
   **Resume**.
-- Acceptance tracking reads the Recent connections page twice a day by default
-  (`acceptance_checks_per_day`, one successful pass per equal slot of the day) and marks
-  anyone found there accepted. Absence never marks anything — "expired" comes only from the
+- Acceptance tracking works off the connection roster: the connections page is read twice a
+  day (`roster_sync_per_day`) and anyone found there is added to your roster, then any
+  pending invite to that person is marked accepted within a minute. Absence never marks anything — "expired" comes only from the
   optional `expiry_days` age backstop. This read does not consume your weekly cap.
 - Reply tracking works the same way for messages (`reply_checks_per_day`, default 2, also
   free of the weekly cap): one read of the messaging inbox, and a messaged contact whose
