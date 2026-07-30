@@ -31,7 +31,7 @@ Three capabilities:
 | Enrichment provider | Apify, ported to TypeScript. Actor `LpVuK3Zozwuipa5bp` (harvestapi/linkedin-profile-scraper), mode `Profile details no email ($4 per 1k)` |
 | Posts | **Not scraped at all.** ~4× the profile cost, stale in days, adds nothing to the search use case |
 | Enrichment trigger | Backfill everyone, then re-enrich past a 180-day TTL. Auto-starts on import |
-| Enrichment pacing | None. Apify runs on third-party infrastructure and poses **zero risk to the LinkedIn account** — no guardrail, no browser mutex, no drip. **One URL per run** (matching the reference implementation), N concurrent — measured 5.2 s/profile, so 7,147 at concurrency 8 ≈ 77 min. Batching is unnecessary |
+| Enrichment pacing | None. Apify runs on third-party infrastructure and poses **zero risk to the LinkedIn account** — no guardrail, no browser mutex, no drip. **One URL per run** (matching the reference implementation), N concurrent. Batching is unnecessary and would reintroduce an index-misalignment hazard |
 | Failures | `enrich_status` per row; 3 bounded attempts (silent-empty counts as an attempt), then parked as `failed`. Manual re-arm only |
 | API key | `settings.apify_api_key`, write-only over HTTP (`GET /api/settings` returns `apify_key_set` only). `APIFY_API_KEY` env overrides |
 | Storage shape | Scalar columns (filtered on) + `raw_json` blob (cherry-picked payload) + FTS5 virtual table over a flattened document |
@@ -40,9 +40,9 @@ Three capabilities:
 | `title_any` scope | `current_title` OR `headline` by default; `include_past_roles: true` widens to full experience history |
 | Exclusions | `exclude_any` drops on whole-document match |
 | Search corpus | **Enriched rows only.** Un-enriched rows exist in the roster and are visible in the UI's roster view, but are not searchable |
-| Response | Compact rows + `matched` evidence + bm25 score + `campaign_state`; envelope carries `total` and an enrichment coverage block. Detail via `GET /api/connections/:slug` |
+| Response | Compact rows + `matched` evidence; envelope carries `total` and an enrichment coverage block. Detail via `GET /api/connections/:slug`. **Built without bm25**: term frequency across a profile document rewards headline-stuffers, so ordering is current-role-first then most-recently-connected. `campaign_state` was dropped as YAGNI until phase 4 needs it |
 | UI | New **Connections** tab: filter chips mapping 1:1 to the API, results table, detail drawer |
-| Campaign integration | Deferred to phase 4. Schema and search response carry `campaign_state` so it stays cheap to add |
+| Campaign integration | Deferred to phase 4. `profiles` still joins to `connections` by URL, so it stays cheap to add |
 | API exposure | Unchanged — Fastify binds `127.0.0.1` only |
 
 ## Scale and cost
@@ -51,7 +51,7 @@ Three capabilities:
 
 | | |
 |---|---|
-| Initial backfill | ~8,000 × $4/1k ≈ **$32**, a few hours at 10×4 concurrency |
+| Initial backfill | **Actual: 7,147 profiles ≈ $29.** Measured throughput ~34/min at concurrency 8 (Apify queues beyond a plan's parallelism, so wall-clock ran ~3.5 h rather than the 77 min a flat 5.2 s/profile would predict) |
 | Steady state (180d TTL) | ~44 profiles/day ≈ **$5/month** |
 | Re-import of the CSV | Near-free — only rows not already enriched enqueue |
 
@@ -91,9 +91,14 @@ CREATE TABLE connection_aliases (    -- old URLs after a slug-change merge
 );
 ```
 
-Phase 2 adds `connections_fts` (FTS5, external-content over `connections`), rebuilt per
+Phase 2 adds `connections_fts` — a **plain** FTS5 table keyed by connection id, not
+external-content: external content would couple every `connections` write to fts rowid
+bookkeeping, and one text document per person is small enough that the duplication is
+cheaper than that coupling. Rebuilt (delete-then-insert; FTS5 has no UPSERT) on each
 enrichment from: full name, headline, about, every experience title/company/description,
-education, skills, certifications, and `location_raw`.
+education, skills, certifications, and location.
+
+Phase 2 also adds `location_country_code` — see the payload findings below.
 
 ### Provenance rules
 
