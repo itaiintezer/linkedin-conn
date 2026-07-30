@@ -272,3 +272,47 @@ test('start() recovers a profile stranded in sending by a mid-send crash', () =>
   // Startup recovery returned it to the queue (then possibly re-scheduled): never left stuck.
   expect(repos.profiles.findById(p.id)!.status).not.toBe('sending');
 });
+
+// Local-component Date constructors: acceptanceSlot slices the LOCAL day, so building
+// these from a UTC ISO string would make the slot boundary timezone-dependent.
+const localAt = (h: number, m = 0) => new Date(2026, 6, 31, h, m, 0, 0);
+
+test('roster tick runs once per slot and retries after a failed pass', async () => {
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-07-31T00:00:00.000Z');
+  repos.settings.update({ roster_sync_per_day: 2 });
+  const orch = new Orchestrator(repos, driver);
+
+  // First pass fails (empty read) -> nothing stamped, so the slot is NOT burned.
+  driver.connectionCards = [];
+  await orch.runRosterSyncTick(localAt(9));
+  expect(repos.appState.get().roster_synced_at).toBeNull();
+
+  // Retry in the same slot succeeds.
+  driver.connectionCards = [{ url: 'https://www.linkedin.com/in/ada', name: 'Ada' }];
+  await orch.runRosterSyncTick(localAt(9, 30));
+  expect(repos.appState.get().roster_synced_at).toBe(localAt(9, 30).toISOString());
+
+  // Same slot again -> no-op, the new card is not picked up yet.
+  driver.connectionCards = [{ url: 'https://www.linkedin.com/in/grace', name: 'Grace' }];
+  await orch.runRosterSyncTick(localAt(10));
+  expect(repos.connections.count()).toBe(1);
+
+  // Next slot (2/day => boundary at local noon) -> runs again.
+  await orch.runRosterSyncTick(localAt(15));
+  expect(repos.connections.count()).toBe(2);
+});
+
+test('roster tick is a no-op while paused or halted', async () => {
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-07-31T00:00:00.000Z');
+  driver.connectionCards = [{ url: 'https://www.linkedin.com/in/ada', name: 'Ada' }];
+  const orch = new Orchestrator(repos, driver);
+
+  repos.settings.update({ paused: 1 });
+  await orch.runRosterSyncTick(localAt(9));
+  expect(repos.connections.count()).toBe(0);
+
+  repos.settings.update({ paused: 0 });
+  repos.appState.trip('checkpoint', 'captcha', '2026-07-31T08:00:00.000Z');
+  await orch.runRosterSyncTick(localAt(9));
+  expect(repos.connections.count()).toBe(0);
+});

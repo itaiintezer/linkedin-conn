@@ -5,6 +5,7 @@ import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSend
 import { runSenderOnce, type SenderOptions } from './sender.js';
 import { runAcceptanceCheck } from './acceptance-checker.js';
 import { runReplyCheck } from './reply-checker.js';
+import { runRosterSync } from './roster-sync.js';
 import { log } from '../core/log.js';
 
 /**
@@ -145,6 +146,28 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Roster pass, at most once per slot (slot math shared with acceptance/reply checks via
+   * acceptanceSlot — it is a generic day-slicer). The gate reads the PERSISTED
+   * `roster_synced_at`, which runRosterSync stamps only on a clean, non-empty read, so a
+   * bailed-out pass leaves the stamp untouched and the next 30-minute tick retries.
+   * Queues behind in-flight browser work rather than being dropped, for the same reason
+   * the acceptance tick does.
+   */
+  async runRosterSyncTick(now: Date = new Date()): Promise<void> {
+    const s = this.repos.settings.get();
+    const app = this.repos.appState.get();
+    if (s.paused || app.guardrail_tripped === 1) return;
+    const slot = acceptanceSlot(now, s.roster_sync_per_day);
+    if (app.roster_synced_at
+      && acceptanceSlot(new Date(app.roster_synced_at), s.roster_sync_per_day) === slot) return;
+    try {
+      await this.browserLock.run(() => runRosterSync(this.repos, this.driver, now));
+    } catch (err) {
+      this.handleTickError('roster', err);
+    }
+  }
+
   start(): void {
     // Recover rows stranded in 'sending' by a mid-send crash BEFORE re-sorting: a fresh
     // process has nothing genuinely in flight (the browser is in-process), so any 'sending'
@@ -166,6 +189,8 @@ export class Orchestrator {
     this.timers.push(setInterval(() => { void this.runAcceptanceTick(); }, 30 * 60 * 1000));
     // Same cadence and the same slot-gate reasoning for the messaging inbox scan.
     this.timers.push(setInterval(() => { void this.runReplyTick(); }, 30 * 60 * 1000));
+    // Roster discovery of newly-added connections — same cadence, same slot-gate reasoning.
+    this.timers.push(setInterval(() => { void this.runRosterSyncTick(); }, 30 * 60 * 1000));
   }
 
   stop(): void { this.timers.forEach(clearInterval); this.timers = []; }

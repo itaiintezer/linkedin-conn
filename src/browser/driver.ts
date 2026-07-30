@@ -29,6 +29,10 @@ export class FakeDriver implements BrowserDriver {
   inboxRows: InboxRow[] = [];
   /** When set, readInboxSnapshot throws (read-failure paths). */
   inboxError: string | null = null;
+  /** Cards returned by readConnectionCards (roster sync). */
+  connectionCards: ConnectionCard[] = [];
+  /** When set, readConnectionCards throws (read-failure paths). */
+  connectionCardsError: string | null = null;
 
   browserOpen() { return this.open; }
   async readLoginState(): Promise<LoginSnapshot> {
@@ -69,7 +73,11 @@ export class FakeDriver implements BrowserDriver {
   }
   async readPendingInvites() { return this.pending; }
   async readRecentConnections() { return this.connections; }
-  async readConnectionCards(): Promise<ConnectionCard[]> { return []; }
+  async readConnectionCards(): Promise<ConnectionCard[]> {
+    this.open = true;
+    if (this.connectionCardsError) throw new Error(this.connectionCardsError);
+    return this.connectionCards;
+  }
   async checkpointScan(): Promise<CheckpointScan> {
     return this.checkpoint
       ? { hit: true, via: 'url', matched: 'linkedin.com/checkpoint/', url: 'https://www.linkedin.com/checkpoint/challenge/fake', title: '' }
