@@ -1032,3 +1032,54 @@ body > .drawer {
 .conn-key-row { display: flex; gap: 8px; align-items: stretch; }
 .conn-key-row input { flex: 1 1 auto; font-family: var(--mono); font-size: 13px; }
 .conn-key-row .btn { flex: 0 0 auto; }
+
+/* ---------- Connection search (Connections tab) ---------- */
+.search-form { margin-bottom: 20px; }
+.search-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px 20px;
+}
+.search-opts { justify-content: flex-end; flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap; }
+.checkline {
+  display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600;
+  color: var(--ink-2); cursor: pointer; white-space: nowrap;
+}
+.checkline input { width: auto; margin: 0; }
+
+.search-meta { margin: 0 0 12px; font-family: var(--mono); font-size: 12.5px; color: var(--ink-3); }
+
+.search-table .search-row { cursor: pointer; }
+.search-name { display: block; font-weight: 600; color: var(--ink); }
+/* The headline is the strongest signal of what someone actually does, so it rides under the
+   name rather than being hidden behind a click. Clamped: some are three lines of emoji. */
+.search-headline {
+  display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: 12.5px; color: var(--ink-3); margin-top: 2px; max-width: 42ch;
+}
+.mono-cell { font-family: var(--mono); font-size: 12.5px; color: var(--ink-3); }
+.search-more { display: flex; justify-content: center; margin-top: 18px; }
+
+/* ---------- Connection detail drawer ---------- */
+.drawer.drawer-wide { width: min(560px, 94vw); }
+.conn-detail { padding: 0 22px; display: flex; flex-direction: column; gap: 22px; }
+.cd-meta { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 14px; }
+.cd-facts {
+  display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; margin: 0;
+  font-size: 13.5px; align-items: baseline;
+}
+.cd-facts dt { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; color: var(--ink-3); }
+.cd-facts dd { margin: 0; color: var(--ink); }
+.cd-section h4 {
+  margin: 0 0 10px; font-family: var(--display); font-size: 15px; font-weight: 600;
+  color: var(--ink); padding-bottom: 7px; border-bottom: 1px solid var(--line-soft);
+}
+.cd-about { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--ink-2); white-space: pre-wrap; }
+.cd-item { padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.cd-item:last-child { border-bottom: 0; }
+.cd-item-title { display: block; font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.cd-item-sub { display: block; font-size: 12.5px; color: var(--ink-3); margin-top: 2px; }
+.cd-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cd-chip {
+  font-size: 12px; font-weight: 500; color: var(--ink-2);
+  background: var(--bg-wash); border: 1px solid var(--line);
+  border-radius: 999px; padding: 4px 10px;
+}

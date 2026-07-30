@@ -188,6 +188,13 @@ export class Orchestrator {
     // process has nothing genuinely in flight (the browser is in-process), so any 'sending'
     // row is orphaned. Returning it to 'queued' first lets the re-sort re-flow it into a slot.
     recoverOrphanedSending(this.repos);
+    // Same reasoning for enrichment: the worker is in-process, so a fresh process has
+    // nothing genuinely in flight. Any row still marked `enriching` was stranded by a hard
+    // kill, and without this it would never be claimed again — silently missing from search
+    // forever. runEnrichment's own finally-block covers the graceful paths; this covers the
+    // ones that never reach a finally.
+    const stranded = this.repos.connections.requeueEnriching();
+    if (stranded > 0) log.info('enrich', 'recovered stranded rows from a previous run', { count: stranded });
     // Startup re-sort: rebuild the whole backlog to policy so a pile of past-due slots
     // (after downtime) is re-flowed into correctly-sized batches, not fired as a burst.
     resortSchedule(this.repos, new Date());

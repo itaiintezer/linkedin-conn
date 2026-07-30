@@ -93,6 +93,21 @@ test('location matches city, region, country or ISO code', () => {
   expect(searchConnections(repos.db, { location_any: ['United Kingdom'] }).total).toBe(1);
 });
 
+test('an ISO country code matches exactly, never as a substring', () => {
+  seedNetwork();
+  // Live data caught this: LIKE '%US%' pulled in Houston, Austin, Australia, Brussels and
+  // Dusseldorf on a "US" filter. A two-letter code is a token, not a fragment.
+  person({ slug: 'z', name: 'Zoe Down', title: 'Engineer', company: 'Atlassian', city: 'Sydney', region: 'NSW', country: 'Australia', code: 'AU' });
+
+  const us = searchConnections(repos.db, { location_any: ['US'] });
+  expect(us.results.map((r) => r.full_name)).not.toContain('Zoe Down');
+  expect(us.total).toBe(5);   // the five US people, and nobody from Australia
+
+  // The text fields still match as substrings, which is what makes metro names work.
+  // Ada, Cara, Dan and Fay are all in Seattle; Bob is in Bellevue.
+  expect(searchConnections(repos.db, { location_any: ['Seattle'] }).total).toBe(4);
+});
+
 test('past roles are excluded by default and included on request', () => {
   seedNetwork();
   // Fay is now a VP of Engineering; she ran security at Microsoft years ago.

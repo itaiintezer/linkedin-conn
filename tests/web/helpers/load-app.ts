@@ -28,6 +28,7 @@ export interface AppInternals {
   initConnections: () => void;
   refreshEnrichment: () => Promise<void>;
   initEnrichment: () => void;
+  initSearch: () => void;
   /** The bootstrap. Never called by loadApp — see the readyState note below. */
   init: () => void;
 }
@@ -59,7 +60,7 @@ export function loadApp(): AppInternals {
   const src = readFileSync(join(WEB_DIR, 'app.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, init };`,
+    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, initSearch, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }

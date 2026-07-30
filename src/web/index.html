@@ -65,6 +65,7 @@
       <button class="tab is-active" data-tab="dashboard">Dashboard</button>
       <button class="tab" data-tab="add">Add List</button>
       <button class="tab" data-tab="cohorts">Cohorts</button>
+      <button class="tab" data-tab="connections">Connections</button>
       <button class="tab" data-tab="docs">Docs</button>
       <button class="tab" data-tab="settings">Settings</button>
     </nav>
@@ -401,6 +402,59 @@
     </section>
 
     <!-- SETTINGS -->
+    <section class="panel" id="tab-connections" hidden>
+      <div class="panel-head">
+        <div class="panel-title">
+          <h2>Connections</h2>
+          <p class="panel-sub">Search your enriched network by role, place and company</p>
+        </div>
+        <div class="panel-actions"><span class="muted" id="searchCoverage"></span></div>
+      </div>
+
+      <form class="search-form card-surface" id="searchForm">
+        <div class="search-grid">
+          <div class="field">
+            <label for="sqTitle">Title or headline <span class="hint">comma-separated, any match</span></label>
+            <input id="sqTitle" type="text" placeholder="CISO, security engineer, SOC, appsec" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="sqLocation">Location <span class="hint">city, region, country or code</span></label>
+            <input id="sqLocation" type="text" placeholder="Seattle, Bellevue" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="sqCompany">Company</label>
+            <input id="sqCompany" type="text" placeholder="Amazon, Microsoft" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="sqExclude">Exclude <span class="hint">drops the whole profile</span></label>
+            <input id="sqExclude" type="text" placeholder="physical security, asset protection" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="sqFree">Anything else <span class="hint">full-text</span></label>
+            <input id="sqFree" type="text" placeholder="CISSP, kubernetes, Stanford" autocomplete="off" />
+          </div>
+          <div class="field search-opts">
+            <label class="checkline"><input type="checkbox" id="sqPast" /> Include past roles</label>
+            <button class="btn btn-green" type="submit">Search</button>
+            <button class="btn btn-ghost" type="button" id="sqClear">Clear</button>
+          </div>
+        </div>
+      </form>
+
+      <div class="search-meta" id="searchMeta" hidden></div>
+
+      <div class="table-wrap" id="searchResultsWrap" hidden>
+        <table class="data-table search-table">
+          <thead>
+            <tr><th>Name</th><th>Role</th><th>Company</th><th>Location</th><th>Connected</th></tr>
+          </thead>
+          <tbody id="searchResults"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="searchEmpty">Search your connections above.</div>
+      <div class="search-more"><button class="btn" id="searchMore" type="button" hidden>Load more</button></div>
+    </section>
+
     <section class="panel" id="tab-settings" hidden>
       <div class="panel-head">
         <div class="panel-title">
@@ -625,6 +679,20 @@
       </button>
     </div>
     <div class="drawer-body" id="drawerBody"></div>
+  </aside>
+
+  <!-- Connection detail: everything enrichment collected about one person -->
+  <aside class="drawer drawer-wide" id="connDrawer" hidden aria-label="Connection detail">
+    <div class="drawer-head">
+      <div>
+        <h3 id="connDrawerName">Connection</h3>
+        <p class="drawer-sub" id="connDrawerSub"></p>
+      </div>
+      <button class="drawer-close" id="connDrawerClose" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="drawer-body" id="connDrawerBody"></div>
   </aside>
 
   <script src="/markdown.js"></script>

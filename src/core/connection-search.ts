@@ -118,10 +118,28 @@ export function searchConnections(db: DB, query: SearchQuery): SearchResult {
   }
 
   if (location.length) {
-    where.push(likeAny(
-      ['c.location_raw', 'c.location_city', 'c.location_region', 'c.location_country', 'c.location_country_code'],
-      location, params,
-    ));
+    // A two-letter term is read as an ISO country code and matched EXACTLY; anything longer
+    // is a substring match across the text fields (which is what lets "Seattle" find
+    // "Seattle Metropolitan Area").
+    //
+    // Live data forced this split: `LIKE '%US%'` matched Ho-us-ton, A-us-tralia, Br-us-sels
+    // and D-us-seldorf, so a "US" filter silently returned Australian, Belgian and German
+    // profiles. Two characters carry too little signal to be a substring of free text — so
+    // for short terms we only trust the one field that is genuinely a two-letter token.
+    const codeTerms = location.filter((t) => t.length <= 2);
+    const textTerms = location.filter((t) => t.length > 2);
+    const ors: string[] = [];
+    if (textTerms.length) {
+      ors.push(likeAny(
+        ['c.location_raw', 'c.location_city', 'c.location_region', 'c.location_country'],
+        textTerms, params,
+      ));
+    }
+    for (const t of codeTerms) {
+      ors.push('c.location_country_code = ? COLLATE NOCASE');
+      params.push(t);
+    }
+    where.push(`(${ors.join(' OR ')})`);
   }
 
   if (company.length) {

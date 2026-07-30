@@ -316,3 +316,16 @@ test('roster tick is a no-op while paused or halted', async () => {
   await orch.runRosterSyncTick(localAt(9));
   expect(repos.connections.count()).toBe(0);
 });
+
+test('startup recovers rows stranded in enriching by a hard kill', () => {
+  repos.connections.upsert({ profile_url: 'https://www.linkedin.com/in/a' }, 'csv', '2026-07-01T00:00:00.000Z');
+  repos.connections.upsert({ profile_url: 'https://www.linkedin.com/in/b' }, 'csv', '2026-07-01T00:00:00.000Z');
+  repos.connections.claimForEnrichment(2); // simulate a run that never reached its finally
+
+  const orch = new Orchestrator(repos, driver);
+  orch.start();
+  orch.stop();
+
+  // Without this, both rows sit in `enriching` forever and never appear in search.
+  expect(repos.connections.countsByEnrichStatus()).toMatchObject({ pending: 2, enriching: 0 });
+});
