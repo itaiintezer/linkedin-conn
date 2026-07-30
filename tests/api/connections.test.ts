@@ -119,3 +119,87 @@ test('roster_sync_per_day is settable through /api/settings', async () => {
   expect(res.statusCode).toBe(200);
   expect(repos.settings.get().roster_sync_per_day).toBe(4);
 });
+
+/* ---------- search + detail (phase 3) ---------- */
+
+function enrich(slug: string, over: Record<string, unknown> = {}): void {
+  const url = `https://www.linkedin.com/in/${slug}`;
+  repos.connections.upsert({ profile_url: url }, 'csv', '2026-07-01T00:00:00.000Z');
+  const [row] = repos.connections.claimForEnrichment(1);
+  repos.connections.applyEnrichment(row.id, {
+    linkedin_id: `ACoAA-${slug}`, public_identifier: slug, full_name: `Person ${slug}`,
+    first_name: 'Person', last_name: slug, headline: 'Chief Information Security Officer',
+    location_raw: 'Seattle, Washington, United States', location_city: 'Seattle',
+    location_region: 'Washington', location_country: 'United States', location_country_code: 'US',
+    current_title: 'Chief Information Security Officer', current_company: 'Acme',
+    compact: { name: `Person ${slug}`, skills: ['CISSP'] },
+    doc: `Person ${slug}
+Chief Information Security Officer
+Seattle
+Acme
+CISSP`,
+    ...over,
+  } as never, '2026-07-30T00:00:00.000Z');
+}
+
+test('search returns compact rows, match evidence and coverage', async () => {
+  enrich('a');
+  repos.connections.upsert({ profile_url: 'https://www.linkedin.com/in/notyet' }, 'csv', '2026-07-01T00:00:00.000Z');
+
+  const res = await app.inject({
+    method: 'POST', url: '/api/connections/search',
+    payload: { title_any: ['Chief Information Security'], location_any: ['Seattle'] },
+  });
+
+  expect(res.statusCode).toBe(200);
+  const body = res.json();
+  expect(body.total).toBe(1);
+  expect(body.results[0].full_name).toBe('Person a');
+  expect(body.results[0].matched.location_any).toEqual(['Seattle']);
+  expect(body.coverage).toEqual({ total: 2, enriched: 1, pending: 1, unresolvable: 0 });
+});
+
+test('search accepts a bare string where an array is expected', async () => {
+  enrich('a');
+  const res = await app.inject({
+    method: 'POST', url: '/api/connections/search', payload: { location_any: 'Seattle' },
+  });
+  expect(res.json().total).toBe(1);
+});
+
+test('an empty search body is valid and returns the enriched corpus', async () => {
+  enrich('a'); enrich('b');
+  expect((await app.inject({ method: 'POST', url: '/api/connections/search', payload: {} })).json().total).toBe(2);
+});
+
+test('GET /api/connections/:slug returns the full stored payload', async () => {
+  enrich('a');
+  const res = await app.inject({ method: 'GET', url: '/api/connections/a' });
+  expect(res.statusCode).toBe(200);
+  expect(res.json().full_name).toBe('Person a');
+  expect(res.json().profile.skills).toEqual(['CISSP']);
+  // raw_json is unwrapped into `profile`, never echoed as a JSON string.
+  expect(res.json().raw_json).toBeUndefined();
+});
+
+test('the detail route does not shadow /api/connections/stats', async () => {
+  enrich('a');
+  const res = await app.inject({ method: 'GET', url: '/api/connections/stats' });
+  expect(res.json().total).toBe(1);
+  expect(res.json().by_enrich_status).toBeDefined();
+});
+
+test('detail 404s for an unknown slug', async () => {
+  expect((await app.inject({ method: 'GET', url: '/api/connections/nobody' })).statusCode).toBe(404);
+});
+
+test('an old slug still resolves through its alias after a merge', async () => {
+  // The SAME person under two public slugs — that is what a slug change looks like, and it
+  // is the linkedin_id (not the URL) that identifies them.
+  enrich('old-slug', { linkedin_id: 'ACoAA-same-human' });
+  enrich('new-slug', { linkedin_id: 'ACoAA-same-human' });
+
+  const res = await app.inject({ method: 'GET', url: '/api/connections/new-slug' });
+  expect(res.statusCode).toBe(200);
+  expect(res.json().profile_url).toBe('https://www.linkedin.com/in/old-slug');
+});

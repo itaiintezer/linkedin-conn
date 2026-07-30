@@ -21,6 +21,7 @@ import { parseRosterInput } from '../core/roster-input.js';
 import { HttpApifyClient, COST_PER_PROFILE_USD, type ApifyClient } from '../core/apify-client.js';
 import { runEnrichment, enrichmentProgress, isEnrichmentRunning, pauseEnrichment } from '../worker/enrichment.js';
 import { extractProfile, isEmptyProfile } from '../core/apify-extract.js';
+import { searchConnections } from '../core/connection-search.js';
 import { planAndAssignToday } from '../worker/scheduler-service.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE } from '../core/message.js';
@@ -291,6 +292,48 @@ export function buildServer(
     const { inserted, updated } = repos.connections.upsertMany(rows, format === 'csv' ? 'csv' : 'urls', nowIso);
     logger.info('roster', 'import', { format, parsed: rows.length, inserted, updated, skipped });
     return { format, parsed: rows.length, inserted, updated, skipped };
+  });
+
+  /**
+   * Structured search over the enriched roster. OR within a field, AND across fields — the
+   * shape an AI agent needs to fan one concept ("security practitioner") into many keywords
+   * in a single round trip. Every response carries a coverage block so a thin result set can
+   * be told apart from an incomplete corpus.
+   */
+  app.post('/api/connections/search', async (req) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const arr = (v: unknown): string[] | undefined =>
+      Array.isArray(v) ? v.filter((x) => typeof x === 'string') as string[]
+        : typeof v === 'string' && v.trim() !== '' ? [v] : undefined;
+    return searchConnections(repos.db, {
+      title_any: arr(b.title_any),
+      location_any: arr(b.location_any),
+      company_any: arr(b.company_any),
+      exclude_any: arr(b.exclude_any),
+      q: typeof b.q === 'string' ? b.q : undefined,
+      include_past_roles: b.include_past_roles === true,
+      limit: typeof b.limit === 'number' ? b.limit : undefined,
+      offset: typeof b.offset === 'number' ? b.offset : undefined,
+    });
+  });
+
+  /** Everything known about one person, including the full stored Apify payload. */
+  app.get('/api/connections/:slug', async (req, reply) => {
+    const { slug } = req.params as { slug: string };
+    const url = normalizeProfileUrl(`https://www.linkedin.com/in/${slug}`);
+    let row = url ? repos.connections.findByUrl(url) : undefined;
+    if (!row && url) {
+      // Follow a slug-change alias so an old link still resolves to the merged person.
+      const alias = repos.db.prepare('SELECT connection_id FROM connection_aliases WHERE profile_url = ?')
+        .get(url) as unknown as { connection_id: number } | undefined;
+      if (alias) {
+        row = repos.db.prepare('SELECT * FROM connections WHERE id = ?')
+          .get(alias.connection_id) as unknown as typeof row;
+      }
+    }
+    if (!row) return reply.code(404).send({ error: 'No such connection' });
+    const { raw_json, ...rest } = row;
+    return { ...rest, profile: raw_json ? JSON.parse(raw_json) : null };
   });
 
   app.get('/api/connections/stats', async () => ({
