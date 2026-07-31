@@ -182,65 +182,142 @@ pure database read and runs every minute.
 
 ### POST /api/connections/search
 
-Structured search over the **enriched** roster. This is the endpoint an AI agent should use.
+Structured search over the **enriched** roster. This is the endpoint an AI agent should use
+to answer "who do I know who…".
+
+#### Request
+
+All fields are optional. An empty body `{}` returns the whole enriched roster.
+
+| Field | Type | Default | Searches |
+|---|---|---|---|
+| `name_any` | `string[]` | – | `full_name`, `first_name`, `last_name` |
+| `title_any` | `string[]` | – | `current_title`, `headline` (+ every past role with `include_past_roles`) |
+| `location_any` | `string[]` | – | `location_raw`, city, region, country (+ ISO code — see below) |
+| `company_any` | `string[]` | – | `current_company` (+ every past employer with `include_past_roles`) |
+| `exclude_any` | `string[]` | – | drops the person if a term appears **anywhere** in their document |
+| `q` | `string` | `""` | raw FTS5 `MATCH` over the whole document |
+| `include_past_roles` | `boolean` | `false` | widens `title_any` and `company_any` to full history |
+| `limit` | `number` | `25` | clamped to 200 |
+| `offset` | `number` | `0` | pagination |
+
+A bare string is accepted wherever an array is expected (`"location_any": "Seattle"`).
+Values of the wrong type are ignored rather than rejected.
+
+#### Semantics: OR within a field, AND across fields
+
+Each array is a group of alternatives; the groups are combined with AND.
 
 ```jsonc
 {
-  "name_any":     [],
-  "title_any":    ["CISO", "Chief Information Security", "SOC", "appsec", "threat intel"],
+  "title_any":    ["CISO", "Chief Information Security", "SOC", "appsec"],
   "location_any": ["Seattle", "Bellevue"],
-  "company_any":  [],
-  "exclude_any":  ["physical security", "asset protection"],
-  "q":            "",              // free text over the whole profile document
-  "include_past_roles": false,
-  "limit": 25, "offset": 0
+  "exclude_any":  ["physical security", "asset protection"]
 }
+// (CISO OR Chief Information Security OR SOC OR appsec)
+//   AND (Seattle OR Bellevue)
+//   AND NOT (physical security OR asset protection)
 ```
 
-**Semantics: OR within a field, AND across fields.** Every array is a group of alternatives;
-the groups are combined with AND. That is what lets one concept ("security practitioner") be
-fanned out into many keywords in a single round trip.
+That shape is the point: fan one concept out into many keywords in a single round trip.
 
-- `name_any` matches the person's name (substring, case-insensitive).
-- `title_any` matches `current_title` OR `headline` — the headline matters, because senior
-  people often describe themselves there rather than in their job title. Matching is
-  **substring**, so supply the spellings you want: `"CISO"` does not match
-  `"Chief Information Security Officer"`.
-- `location_any` matches `location_raw` / city / region / country as substrings, so
-  `"Seattle"` finds `"Seattle Metropolitan Area"`. A **two-letter** term is treated as an
-  ISO-3166 country code and matched exactly — otherwise `"US"` would match Ho*us*ton,
-  A*us*tralia and Br*us*sels.
-- `company_any` matches the current employer; with `include_past_roles` it also matches
-  anyone who ever worked there.
-- `include_past_roles` widens `title_any`/`company_any` to the full experience history.
-  Default `false`, because "is a security practitioner" is a present-tense claim.
-- `exclude_any` drops a person if any term appears **anywhere** in their profile document.
-- `q` is free text over the whole document — certifications, technologies, schools.
-- `limit` defaults to 25, max 200. A bare string is accepted anywhere an array is expected.
+#### Matching rules — read these before writing a query
 
-Response:
+- **Matching is substring, not semantic.** `"CISO"` does **not** match a title spelled out as
+  "Chief Information Security Officer". Supply both spellings and the adjacent titles.
+- **`title_any` searches the headline too**, because senior people describe themselves there
+  rather than in their job title. A hit may therefore be on the headline, not the role.
+- **A two-letter `location_any` term is treated as an ISO-3166 country code and matched
+  exactly.** Longer terms are substrings, so `"Seattle"` also finds "Seattle Metropolitan
+  Area". Without this rule `"US"` would match Ho*us*ton, A*us*tralia, Br*us*sels and
+  D*us*seldorf — all observed on real data.
+- **`exclude_any` matches the whole document**, not just the title. That is what makes a
+  "security" query usable in a network full of physical-security and asset-protection roles —
+  but keep terms specific (`"physical security"`, not `"physical"`).
+- **Only enriched connections are searchable.** A roster row that has not been scraped has no
+  location and no history, so including it would make filters behave inconsistently. See
+  `coverage`.
+- Search terms are quoted as FTS phrases, so operator-looking input (`AND`, `*`, brackets) in
+  the structured fields is matched literally rather than executed.
+
+#### Response
 
 ```jsonc
 {
-  "total": 34, "limit": 25, "offset": 0,
-  "coverage": { "total": 7147, "enriched": 6140, "pending": 986, "unresolvable": 21 },
+  "total": 34,          // matches BEFORE pagination
+  "limit": 25,
+  "offset": 0,
+  "coverage": { "total": 7153, "enriched": 7151, "pending": 0, "unresolvable": 2 },
   "results": [{
-    "profile_url": "…", "full_name": "…", "headline": "…",
-    "current_title": "…", "current_company": "…",
-    "location_raw": "…", "location_city": "…", "location_country": "…",
-    "connected_on": "2023-04-11", "enriched_at": "…",
-    "matched": { "title_any": ["CISO"], "location_any": ["Seattle"] }
+    "profile_url":     "https://www.linkedin.com/in/ada",
+    "full_name":       "Ada Lovelace",
+    "headline":        "CISO | Cloud security",
+    "current_title":   "Chief Information Security Officer",
+    "current_company": "Amazon",
+    "location_raw":    "Greater Seattle Area",
+    "location_city":   "Seattle",
+    "location_country":"United States",
+    "connected_on":    "2024-03-04",   // null unless the CSV supplied it
+    "enriched_at":     "2026-07-31T00:12:03.114Z",
+    "matched": { "title_any": ["Chief Information Security"], "location_any": ["Seattle"] }
   }]
 }
 ```
 
-`matched` reports which supplied terms hit which field, so a strong hit is distinguishable
-from a weak one. **Always read `coverage`**: search covers enriched rows only, so a thin
-result set may mean the corpus is still filling rather than that nobody matches.
+**`matched`** reports which of *your* supplied terms hit which field, so a strong hit is
+distinguishable from a weak one. Two caveats:
 
-Results are ordered current-role-first, then most-recently-connected. Deliberately not bm25:
-term frequency across a profile rewards headline-stuffers, which is the wrong bias for
-"who does this job".
+- It only inspects **current** fields. With `include_past_roles: true`, a row matched purely
+  on history comes back with `"matched": {}` — that is a history match, not a bug.
+- A field absent from `matched` was not the reason that row matched.
+
+**`coverage`** describes the corpus the answer was drawn from, and is returned on every
+search. Always read it:
+
+| Key | Meaning |
+|---|---|
+| `total` | every connection in the roster |
+| `enriched` | scraped, and therefore searchable |
+| `pending` | queued or in-flight for enrichment — **not yet searchable** |
+| `unresolvable` | permanently unscrapeable (deleted or locked-down profiles) |
+
+A small or empty result set with a large `pending` means the corpus is still filling, **not**
+that nobody matches. Say so rather than reporting a confident negative.
+
+#### Ordering
+
+Rows with a current title first, then most-recently-connected, then name. Deliberately **not**
+bm25: term frequency across a profile document rewards headline-stuffers, which is the wrong
+bias for "who actually does this job".
+
+#### Errors
+
+The endpoint is permissive — unknown fields and wrong types are ignored, and no combination of
+structured filters produces an error. The one exception:
+
+- **`400`** when `q` is not valid FTS5, e.g. `{"error": "fts5: syntax error near \"AND\""}`.
+  `q` is passed through raw. If you are not deliberately using FTS5 operators, prefer the
+  structured fields, which quote your input for you.
+
+#### Turning a request into a query
+
+The caller supplies the vocabulary; the endpoint does not expand concepts. For
+"Seattle security practitioners":
+
+```bash
+curl -sS -X POST http://localhost:4400/api/connections/search   -H 'Content-Type: application/json'   -d '{
+    "title_any": ["CISO","Chief Information Security","security engineer",
+                  "security architect","SOC","appsec","application security",
+                  "threat","incident response","infosec"],
+    "location_any": ["Seattle","Bellevue","Redmond","Kirkland"],
+    "exclude_any": ["physical security","asset protection","loss prevention"],
+    "limit": 25
+  }'
+```
+
+More keywords cost nothing — recall is cheap and `exclude_any` cleans up the noise. For a
+metro, list the nearby cities too. For "who *used to* work at X", add
+`"include_past_roles": true`.
 
 ### Queueing search results
 
@@ -254,9 +331,52 @@ existing `POST /api/lists` with `kind: "message"` and a newline-joined `text`. T
 
 ### GET /api/connections/:slug
 
-Everything known about one person: every roster column plus `profile`, the full stored Apify
-payload (about, experience, education, skills, certifications). An old slug still resolves
-via its alias after a merge. `404` if unknown.
+Everything known about one person. `:slug` is the part after `/in/` in their profile URL.
+Use this after a search when you need depth on a specific individual.
+
+```jsonc
+{
+  // every roster column…
+  "profile_url": "https://www.linkedin.com/in/ada",
+  "full_name": "Ada Lovelace",
+  "headline": "CISO | Cloud security",
+  "current_title": "Chief Information Security Officer",
+  "current_company": "Amazon",
+  "location_raw": "Greater Seattle Area",
+  "location_city": "Seattle", "location_region": "Washington",
+  "location_country": "United States", "location_country_code": "US",
+  "linkedin_id": "ACoAA…",          // stable across a public-slug change
+  "connected_on": "2024-03-04",     // null unless the CSV supplied it
+  "source": "csv",                  // csv | urls | scrape | migration
+  "first_seen_at": "…", "last_seen_at": "…",
+  "enrich_status": "enriched",      // pending|enriching|enriched|empty|failed
+  "enriched_at": "…",
+  "enrich_attempts": 1, "enrich_error": null,
+
+  // …plus the stored Apify payload, unwrapped from raw_json
+  "profile": {
+    "name": "…", "headline": "…", "about": "…", "location": "…",
+    "currentPosition": [{ "title": "…", "companyName": "…", "duration": "…" }],
+    "experience":  [{ "title": "…", "companyName": "…", "location": "…",
+                      "duration": "…", "startDate": "…", "endDate": "…",
+                      "description": "…" }],   // up to 12, newest first
+    "education":   [{ "schoolName": "…", "degree": "…", "fieldOfStudy": "…" }],
+    "skills":      ["Incident Response", "CISSP"],   // names only, up to 40
+    "topSkills":   ["…"],                            // up to 10
+    "certifications": [{ "name": "…", "authority": "…" }],
+    "languages":   ["…"]
+  }
+}
+```
+
+- `profile` is `null` for a connection that has not been enriched yet — the roster columns
+  will still carry whatever the CSV supplied (name, company, position, connected date).
+- Fields inside `profile` are omitted or empty when LinkedIn had nothing there. Measured over
+  400 real profiles: experience 99%, education 96%, skills 94%, about 82%, certifications 61%.
+- `raw_json` is never returned as a string — it is parsed into `profile`.
+- **An old slug still resolves** after a public-URL change: the alias table maps it to the
+  merged connection, and the response carries the surviving `profile_url`.
+- `404` if the slug is not a connection.
 
 ## Enrichment
 
