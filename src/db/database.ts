@@ -187,6 +187,15 @@ export function runMigrations(db: DB): void {
   if (cols.length > 0 && !cols.includes('enrich_concurrency')) {
     db.exec('ALTER TABLE settings ADD COLUMN enrich_concurrency INTEGER NOT NULL DEFAULT 8');
   }
+  // --- Enrichment halt latch (2026-07-31, auto-drain) ---
+  // Automatic enrichment needs somewhere to say "I stopped, and why" — otherwise a rotated
+  // API key is a line in relay.log nobody reads while the roster silently stops growing.
+  if (appCols.length > 0 && !appCols.includes('enrich_halted')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN enrich_halted INTEGER NOT NULL DEFAULT 0');
+    db.exec('ALTER TABLE app_state ADD COLUMN enrich_halt_reason TEXT');
+    db.exec('ALTER TABLE app_state ADD COLUMN enrich_halt_detail TEXT');
+    db.exec('ALTER TABLE app_state ADD COLUMN enrich_halted_at TEXT');
+  }
   // profiles: kind/full_name/thread_url/replied_at + UNIQUE(profile_url) -> UNIQUE(profile_url, kind).
   // SQLite cannot alter a column-level UNIQUE, so rebuild the table once. Detection: the
   // kind column is absent exactly on pre-messaging databases. IDs are preserved, so

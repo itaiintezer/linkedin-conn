@@ -1,7 +1,7 @@
 import type { DB } from './database.js';
 import type {
   Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind,
-  Connection, ConnectionInput, ConnectionSource, EnrichStatus, EnrichedProfile,
+  Connection, ConnectionInput, ConnectionSource, EnrichStatus, EnrichedProfile, EnrichHaltReason,
 } from '../types.js';
 import { firstNameFrom } from '../core/first-name.js';
 
@@ -184,6 +184,26 @@ export class AppStateRepo {
   clearGuardrail(): void {
     this.db.prepare(
       'UPDATE app_state SET guardrail_tripped = 0, guardrail_reason = NULL, guardrail_detail = NULL, guardrail_tripped_at = NULL WHERE id = 1',
+    ).run();
+  }
+
+  /**
+   * Latch "automatic enrichment stopped, and here is why".
+   *
+   * Separate from the guardrail on purpose: that one means the LinkedIn session is in
+   * trouble, this one only ever means Apify work cannot proceed. Clearing either must
+   * never clear the other. `detail` is operator-facing text and must never carry the token.
+   */
+  haltEnrichment(reason: EnrichHaltReason, detail: string, atIso: string): void {
+    this.db.prepare(
+      'UPDATE app_state SET enrich_halted = 1, enrich_halt_reason = ?, enrich_halt_detail = ?, enrich_halted_at = ? WHERE id = 1',
+    ).run(reason, detail, atIso);
+  }
+
+  /** Clear the latch entirely — a half-cleared halt would render a stale reason. */
+  clearEnrichHalt(): void {
+    this.db.prepare(
+      'UPDATE app_state SET enrich_halted = 0, enrich_halt_reason = NULL, enrich_halt_detail = NULL, enrich_halted_at = NULL WHERE id = 1',
     ).run();
   }
 

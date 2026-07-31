@@ -30,7 +30,7 @@ Three capabilities:
 | Removals | **Not tracked.** Roster is append-only. `source` and `last_seen_at` are recorded anyway, leaving a cheap future path |
 | Enrichment provider | Apify, ported to TypeScript. Actor `LpVuK3Zozwuipa5bp` (harvestapi/linkedin-profile-scraper), mode `Profile details no email ($4 per 1k)` |
 | Posts | **Not scraped at all.** ~4× the profile cost, stale in days, adds nothing to the search use case |
-| Enrichment trigger | Backfill everyone, then re-enrich past a 180-day TTL. Auto-starts on import |
+| Enrichment trigger | Backfill everyone, then re-enrich past a 180-day TTL. **Amended 2026-08-01:** phase 2 shipped without any automatic trigger at all — rows enqueued themselves and only the Start button drained them, so roster-discovered connections sat `pending` forever. Now a 60-second drain tick consumes whatever is `pending` regardless of source, and an account-level failure halts with a dashboard alert. See [enrichment-auto-drain](../plans/2026-07-31-enrichment-auto-drain.md) |
 | Enrichment pacing | None. Apify runs on third-party infrastructure and poses **zero risk to the LinkedIn account** — no guardrail, no browser mutex, no drip. **One URL per run** (matching the reference implementation), N concurrent. Batching is unnecessary and would reintroduce an index-misalignment hazard |
 | Failures | `enrich_status` per row; 3 bounded attempts (silent-empty counts as an attempt), then parked as `failed`. Manual re-arm only |
 | API key | `settings.apify_api_key`, write-only over HTTP (`GET /api/settings` returns `apify_key_set` only). `APIFY_API_KEY` env overrides |
@@ -159,9 +159,11 @@ Response:
 
 ## Known limitations (accepted)
 
-1. **Auto-start on import spends ~$32 as a side effect of dropping a file.** Mitigated by
+1. **Automatic enrichment spends ~$32 as a side effect of dropping a file.** Mitigated by
    showing row count and estimated cost on the import screen before the file is confirmed,
-   and by a Pause control on the running job — but not gated behind a second click.
+   and by a Pause control on the running job — but not gated behind a second click. Accepted
+   again on 2026-08-01, deliberately with no daily ceiling: at $4/1k, "everything is enriched"
+   beats "everything is enriched, eventually".
 2. **No removal tracking** — search can return people who are no longer connections. The
    send-time `not_connected` skip catches it if one enters a message campaign.
 3. **Enriched-only search** — a connection the CSV knows about but Apify hasn't reached is

@@ -241,6 +241,11 @@ export function buildServer(
           settings: { ...s, weekly_cap: s.msg_weekly_cap, batch_size: s.msg_batch_size, batches_per_day: s.msg_batches_per_day },
         }, now),
       },
+      // Automatic enrichment stopped itself. Carried on the dashboard poll so the banner
+      // renders without a second request, and null (not a half-filled object) when fine.
+      enrich_halt: a.enrich_halted === 1
+        ? { reason: a.enrich_halt_reason, detail: a.enrich_halt_detail, at: a.enrich_halted_at }
+        : null,
       guardrail: {
         tripped: a.guardrail_tripped,
         reason: a.guardrail_reason,
@@ -396,6 +401,9 @@ export function buildServer(
   app.post('/api/enrichment/start', async (reqm, reply) => {
     if (isEnrichmentRunning()) return reply.code(409).send({ error: 'Enrichment is already running' });
     const client = apifyClient(); // throws 400 when unconfigured
+    // Clicking Start IS the operator saying "I fixed it", so it clears any halt latch. Done
+    // after the key check, so a Start with no key still leaves the no_api_key alert standing.
+    repos.appState.clearEnrichHalt();
     const queued = repos.connections.countsByEnrichStatus().pending;
     const concurrency = repos.settings.get().enrich_concurrency;
     logger.info('enrich', 'start', { queued, concurrency });
@@ -412,6 +420,24 @@ export function buildServer(
     const paused = pauseEnrichment();
     if (paused) logger.info('enrich', 'pause requested');
     return { paused };
+  });
+
+  /**
+   * "I've fixed it" for the enrichment halt — the banner's button. Clears the latch and
+   * starts a run immediately rather than leaving the operator to wonder whether the next
+   * 60-second tick picked it up.
+   */
+  app.post('/api/enrichment/resume', async (reqm, reply) => {
+    const client = apifyClient(); // throws 400 when still unconfigured
+    repos.appState.clearEnrichHalt();
+    const queued = repos.connections.countsByEnrichStatus().pending;
+    logger.info('enrich', 'resume', { queued });
+    if (queued > 0 && !isEnrichmentRunning()) {
+      const concurrency = repos.settings.get().enrich_concurrency;
+      void runEnrichment(repos, { client, concurrency })
+        .catch((e: Error) => logger.error('enrich', 'run failed', { error: e.message }));
+    }
+    return reply.send({ resumed: true, queued });
   });
 
   app.post('/api/enrichment/retry-failed', async () => {

@@ -158,10 +158,12 @@ message falls back to `there` rather than guessing.
 
 ### Enrichment
 
-Once the roster exists, **Start enrichment** scrapes each person's profile through
-[Apify](https://apify.com) — location, current role, full work history, education and
-skills — which is what makes the list searchable. Paste an Apify API key under
-**Settings → Connections** first; it's stored locally and the app never hands it back out.
+Each person's profile is scraped through [Apify](https://apify.com) — location, current role,
+full work history, education and skills — which is what makes the list searchable. Paste an
+Apify API key under **Settings → Connections**; it's stored locally and the app never hands it
+back out. From then on this looks after itself: anything not yet enriched is picked up within
+a minute, so the roster converges on fully-searchable without you asking. **Start enrichment**
+is there for when you want a run to begin this second.
 
 - **Cost:** about **$0.004 per profile** — roughly **$29** for a 7,000-connection roster,
   one time. The button shows the exact count and estimate before you click it.
@@ -171,11 +173,20 @@ skills — which is what makes the list searchable. Paste an Apify API key under
   it isn't paced, capped, or able to trip a captcha. Pause and resume freely; it always
   picks up where it stopped.
 - **Staying current:** anyone new is enriched automatically, and everyone is re-scraped
-  after 180 days (`enrich_ttl_days`) so job changes don't rot the data.
+  after 180 days (`enrich_ttl_days`) so job changes don't rot the data. Steady state is a few
+  cents a day.
+- **While paused:** automatic enrichment stands down, so a paused Relay never spends money on
+  its own. **Start enrichment** still works if you want a run anyway.
 
 Some people can't be scraped — restricted or deleted profiles come back empty. Those are
 marked and never retried automatically (each attempt costs money); **Retry failed** re-arms
 them if you want to try again later.
+
+If something bigger breaks — an expired API key, an Apify plan out of credit, or several
+profiles failing in a row — enrichment **stops and says so** in an amber banner rather than
+grinding through your roster racking up failures. Fix the cause, then press **I've fixed it —
+try again**. Nothing is lost: the affected people stay queued, with no attempts spent against
+them.
 
 ### Searching
 

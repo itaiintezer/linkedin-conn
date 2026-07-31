@@ -96,6 +96,12 @@ CREATE TABLE IF NOT EXISTS app_state (
   guardrail_detail TEXT,
   guardrail_tripped_at TEXT,
   failure_streak INTEGER NOT NULL DEFAULT 0,
+  -- Automatic enrichment halted itself (bad key, billing, repeated errors). A latch, so the
+  -- 60s drain tick reports the problem once instead of retrying it 1,440 times a day.
+  enrich_halted INTEGER NOT NULL DEFAULT 0,
+  enrich_halt_reason TEXT,
+  enrich_halt_detail TEXT,
+  enrich_halted_at TEXT,
   acceptance_checked_at TEXT,
   replies_checked_at TEXT,
   roster_synced_at TEXT,

@@ -1,6 +1,8 @@
 import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { Mutex } from '../core/mutex.js';
+import { type ApifyClient, HttpApifyClient } from '../core/apify-client.js';
+import { runEnrichment, isEnrichmentRunning } from './enrichment.js';
 import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending } from './scheduler-service.js';
 import { runSenderOnce, type SenderOptions } from './sender.js';
 import { runAcceptanceCheck } from './acceptance-checker.js';
@@ -67,6 +69,10 @@ export class Orchestrator {
     private driver: BrowserDriver,
     private browserLock: Mutex = new Mutex(),
     private senderOptions: Pick<SenderOptions, 'sleep' | 'rng'> = {},
+    /** Injected so no test ever spends money. Built per run from the key currently in
+     *  settings — same shape and reason as buildServer's — so re-keying takes effect on the
+     *  next tick rather than needing a restart. */
+    private apifyClientFactory: (token: string) => ApifyClient = (t: string) => new HttpApifyClient(t),
   ) {}
 
   /**
@@ -178,6 +184,50 @@ export class Orchestrator {
     if (n > 0) log.info('enrich', 'requeued stale profiles for refresh', { count: n, ttlDays: s.enrich_ttl_days });
   }
 
+  /**
+   * Drain the pending enrichment queue. THE consumer — the piece whose absence meant a
+   * connection discovered by roster sync stayed un-enriched forever, invisible to search.
+   *
+   * Source-agnostic on purpose. It asks the database "is there work?" and never "where did
+   * the work come from?", so import, roster discovery, the TTL sweep and crash recovery are
+   * all served by one trigger, and a future path that inserts connections is drained for
+   * free. Reasoning per-source is what let this fall through the cracks the first time.
+   *
+   * `guardrail_tripped` is deliberately NOT a gate: the guardrail means the LinkedIn session
+   * is in trouble, and Apify never touches that session. Please do not "fix" this.
+   */
+  async runEnrichDrainTick(now: Date = new Date()): Promise<void> {
+    const s = this.repos.settings.get();
+    // Pause is the operator's "stop doing things" switch, so it also stops unattended
+    // spending. Manual Start still works while paused — that is the override.
+    if (s.paused) return;
+    // A latched halt is a problem already reported on the dashboard. Retrying it every 60s
+    // would hammer Apify 1,440 times a day and bury the alert in noise.
+    if (this.repos.appState.get().enrich_halted === 1) return;
+    if (isEnrichmentRunning()) return;
+
+    // The steady state, so it must be the cheap path: one indexed COUNT and nothing else.
+    const pending = this.repos.connections.countsByEnrichStatus().pending;
+    if (pending === 0) return;
+
+    // There is work but no credential. Say so where the operator will see it, rather than
+    // logging into the void — but only once there is actually something to enrich, so a
+    // fresh install with an empty roster never nags about a key it does not need.
+    if (!s.apify_api_key) {
+      this.repos.appState.haltEnrichment('no_api_key', 'No Apify API key is configured.', now.toISOString());
+      log.error('enrich', 'halted', { reason: 'no_api_key', pending });
+      return;
+    }
+
+    log.info('enrich', 'auto-drain starting', { pending, concurrency: s.enrich_concurrency });
+    // Fire and forget, exactly as the Start endpoint does: a backfill can run for hours, and
+    // the next tick's isEnrichmentRunning() check is what keeps it to one run at a time.
+    void runEnrichment(this.repos, {
+      client: this.apifyClientFactory(s.apify_api_key),
+      concurrency: s.enrich_concurrency,
+    }).catch((e: Error) => log.error('enrich', 'auto-drain failed', { error: e.message }));
+  }
+
   start(): void {
     // Recover rows stranded in 'sending' by a mid-send crash BEFORE re-sorting: a fresh
     // process has nothing genuinely in flight (the browser is in-process), so any 'sending'
@@ -208,9 +258,14 @@ export class Orchestrator {
     this.timers.push(setInterval(() => { void this.runReplyTick(); }, 30 * 60 * 1000));
     // Roster discovery of newly-added connections — same cadence, same slot-gate reasoning.
     this.timers.push(setInterval(() => { void this.runRosterSyncTick(); }, 30 * 60 * 1000));
-    // Enrichment staleness sweep. Six-hourly is plenty for a 180-day TTL, and it only moves
-    // rows back to `pending` — the operator still decides when to spend.
+    // Enrichment staleness sweep. Six-hourly is plenty for a 180-day TTL. Also run once now:
+    // on the interval alone, a Relay restarted more often than every 6 hours would never
+    // sweep at all.
+    this.runEnrichRefreshTick();
     this.timers.push(setInterval(() => this.runEnrichRefreshTick(), 6 * 60 * 60 * 1000));
+    // The consumer for everything the sweep and the roster sync enqueue. A minute's latency
+    // on a newly-discovered connection is invisible, and an idle tick is one indexed COUNT.
+    this.timers.push(setInterval(() => { void this.runEnrichDrainTick(); }, 60 * 1000));
   }
 
   stop(): void { this.timers.forEach(clearInterval); this.timers = []; }

@@ -246,16 +246,29 @@ person up — it does that through a service called Apify.
 
 1. Make an account at `apify.com`, copy your API key from *Settings → Integrations*.
 2. Paste it into **Settings → Connections → Apify API key** and press **Save key**.
-3. Press **Start enrichment**. The button tells you how many people and roughly what it will
-   cost — about **$0.004 each**, so ~$29 for 7,000 connections, once.
+
+That's the whole setup. Looking people up starts on its own within a minute and keeps going
+from then on — every new connection your connections page turns up gets looked up without you
+asking. **Start enrichment** just begins a run this second instead of waiting; the button tells
+you how many people and roughly what it will cost — about **$0.004 each**, so ~$29 for 7,000
+connections, once.
 
 It takes a couple of hours for a large list. You can close the page; it keeps going, and
 **Pause** stops it safely — restarting picks up exactly where it left off. This does not use
 your LinkedIn session at all, so it can't get your account flagged and isn't slowed down for
-safety like sending is.
+safety like sending is. Pausing The Machine also pauses looking people up, so a paused Relay
+never spends money while you're away.
 
 A few people can't be looked up (deleted accounts, locked-down profiles). They're marked and
 not retried, since each attempt costs money. **Retry failed** tries them again if you want.
+
+**If looking people up stops.** An amber banner appears across the top saying why — usually
+the Apify key stopped working or the account ran out of credit. It also stops itself if several
+people in a row fail, rather than working through your whole list collecting failures. Nobody
+is written off: the people it hadn't got to stay queued with nothing spent against them. Fix
+the cause (usually: paste a fresh key), then press **I've fixed it — try again**. To test
+without committing to a full run, open one person from the **Connections** tab and press
+**Refresh** — that works even while it's stopped.
 
 **Searching.** The **Connections** tab. Each box takes a comma-separated list, and the boxes
 combine — *(CISO **or** SOC **or** appsec)* **and** *(Seattle **or** Bellevue)*. The
