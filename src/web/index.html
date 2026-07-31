@@ -572,12 +572,24 @@
           <div class="enrich-legend" id="enrichLegend"></div>
 
           <div class="field">
-            <label for="setApifyKey">Apify API key <span class="hint" id="apifyKeyState"></span></label>
+            <label for="setApifyKey">Apify API key <span class="tag" id="apifyKeyState" hidden></span></label>
             <p class="hint">Stored locally and never returned by the API. Get one at
               <code>console.apify.com</code> → Settings → Integrations.</p>
-            <div class="conn-key-row">
+
+            <!-- Stored state. `readonly`, deliberately NOT `disabled`: a disabled input is
+                 skipped by screen readers and cannot be focused or copied, so the one thing
+                 the field exists to communicate would be unreachable by keyboard. -->
+            <div class="conn-key-row" id="apifyKeySaved" hidden>
+              <input id="apifyKeyMask" class="key-mask" type="text" readonly
+                     aria-label="Stored Apify API key, masked" />
+              <button class="btn btn-ghost" id="replaceApifyKey" type="button">Replace</button>
+            </div>
+
+            <!-- Entry state: no key yet, or Replace was pressed. -->
+            <div class="conn-key-row" id="apifyKeyEdit" hidden>
               <input id="setApifyKey" type="password" autocomplete="off" placeholder="apify_api_…" />
               <button class="btn" id="saveApifyKey" type="button">Save key</button>
+              <button class="btn btn-ghost" id="cancelApifyKey" type="button" hidden>Cancel</button>
             </div>
           </div>
         </div>

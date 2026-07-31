@@ -1172,11 +1172,35 @@ async function loadSettings() {
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
     $('#setRosterSync').value = s.roster_sync_per_day ?? '';
-    // The key itself is never returned — only whether one is set.
-    $('#apifyKeyState').textContent = s.apify_key_set ? '— configured' : '— not set';
+    renderApifyKey(s);
     refreshConnections();
     loadLogs();
   } catch (_) { /* ignore */ }
+}
+
+/**
+ * The Apify key field has two states, because the key is write-only: the server can prove a
+ * key exists and show a mask of it, but can never hand it back.
+ *
+ *   stored  -> a readonly mask + "Replace"
+ *   entry   -> an empty password input + "Save key" (+ "Cancel", only if replacing)
+ *
+ * Previously it was always the entry state, so a saved key showed an EMPTY box beside the
+ * words "— configured". The empty box is the louder signal and operators read it as "my key
+ * didn't save". Showing the mask makes the two agree.
+ */
+function renderApifyKey(s) {
+  const has = !!s.apify_key_set;
+  const state = $('#apifyKeyState');
+  state.hidden = false;
+  state.textContent = has ? 'Configured' : 'Not set';
+  state.classList.toggle('on', has);
+
+  $('#apifyKeyMask').value = s.apify_key_hint ?? '';
+  $('#setApifyKey').value = '';            // never leave a credential sitting in the DOM
+  $('#apifyKeySaved').hidden = !has;
+  $('#apifyKeyEdit').hidden = has;
+  $('#cancelApifyKey').hidden = !has;      // nothing to go back to when no key is stored
 }
 
 /* ---------- connections roster (Settings → Connections) ----------
@@ -1625,6 +1649,26 @@ function initEnrichment() {
     await refreshEnrichment();
   });
 
+  // Swap to the entry state. The stored mask stays rendered underneath so Cancel can
+  // restore it without another round-trip.
+  $('#replaceApifyKey')?.addEventListener('click', () => {
+    $('#apifyKeySaved').hidden = true;
+    $('#apifyKeyEdit').hidden = false;
+    $('#setApifyKey').focus();
+  });
+
+  $('#cancelApifyKey')?.addEventListener('click', () => {
+    $('#setApifyKey').value = '';
+    $('#apifyKeyEdit').hidden = true;
+    $('#apifyKeySaved').hidden = false;
+    $('#replaceApifyKey').focus();   // put focus back where it came from
+  });
+
+  // Enter submits: a one-field row where the only action is Save should not need the mouse.
+  $('#setApifyKey')?.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); $('#saveApifyKey').click(); }
+  });
+
   $('#saveApifyKey')?.addEventListener('click', async () => {
     const key = $('#setApifyKey').value.trim();
     if (!key) { toast(result(), 'Paste a key first.', true); return; }
@@ -1632,7 +1676,7 @@ function initEnrichment() {
       await api('/api/settings', { method: 'POST', body: { apify_api_key: key } });
       $('#setApifyKey').value = '';   // never leave a credential sitting in the DOM
       toast(result(), 'Apify key saved.');
-      await loadSettings();
+      await loadSettings();           // re-renders into the stored state, mask and all
     } catch (err) {
       toast(result(), err.message, true);
     }

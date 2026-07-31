@@ -49,9 +49,30 @@ const ALLOWED_SETTINGS_KEYS = new Set([
  * so sanitizing one and not the other still leaks the key to any local process that can
  * reach the port — and into the browser devtools of whoever is looking at Settings.
  */
-function publicSettings(s: Settings): Omit<Settings, 'apify_api_key'> & { apify_key_set: boolean } {
+/**
+ * A maskable stand-in for a stored secret: visible head, masked body, visible last four.
+ *
+ * The last four are what make a rotation verifiable — "did my new key actually save?" is
+ * unanswerable against a row of identical dots, and that is the whole reason Settings shows
+ * anything. The head is the vendor prefix, which is constant across every Apify key and so
+ * identifies the key TYPE without narrowing the secret.
+ *
+ * Below 20 characters the head and tail would together be most of the value, so nothing is
+ * revealed at all. Never widen this: the raw key must not become derivable from the hint.
+ */
+function maskSecret(key: string): string {
+  if (key.length < 20) return '•'.repeat(12);
+  return `${key.slice(0, 10)}${'•'.repeat(12)}${key.slice(-4)}`;
+}
+
+function publicSettings(s: Settings): Omit<Settings, 'apify_api_key'>
+  & { apify_key_set: boolean; apify_key_hint: string | null } {
   const { apify_api_key, ...rest } = s;
-  return { ...rest, apify_key_set: !!apify_api_key };
+  return {
+    ...rest,
+    apify_key_set: !!apify_api_key,
+    apify_key_hint: apify_api_key ? maskSecret(apify_api_key) : null,
+  };
 }
 
 export function buildServer(

@@ -148,3 +148,38 @@ test('refresh 404s on an unknown slug', async () => {
   withKey();
   expect((await app.inject({ method: 'POST', url: '/api/connections/nobody/refresh' })).statusCode).toBe(404);
 });
+
+/* ---------- the masked hint shown in Settings ----------
+   The UI cannot render an empty box next to "configured" — it reads as "nothing saved".
+   So the server sends a MASK, never the key: enough to tell one key from another after a
+   rotation, and far short of the secret. */
+
+test('GET /api/settings returns a masked hint, never enough to reconstruct the key', async () => {
+  const KEY = 'apify_api_ZbQ7hT2mNv8xLp3RwK9dYs4Ee1Uc6Ao0Ij5Gf';
+  repos.settings.update({ apify_api_key: KEY });
+
+  const res = await app.inject({ method: 'GET', url: '/api/settings' });
+  const hint = res.json().apify_key_hint as string;
+
+  expect(res.body).not.toContain(KEY);
+  expect(hint).toContain('•');
+  expect(hint.startsWith('apify_api_')).toBe(true);   // the prefix identifies the key type
+  expect(hint.endsWith('Gf')).toBe(true);             // last 4 identify WHICH key
+  // The revealed characters must not add up to the key: everything between the visible
+  // head and tail is masked.
+  const revealed = hint.replace(/•/g, '');
+  expect(revealed.length).toBeLessThan(KEY.length);
+  expect(KEY).not.toContain(hint);
+});
+
+test('the hint reveals nothing at all for an implausibly short key', async () => {
+  // A short value cannot be hinted without handing over most of it, so it is all dots.
+  repos.settings.update({ apify_api_key: 'short-key' });
+  const hint = (await app.inject({ method: 'GET', url: '/api/settings' })).json().apify_key_hint as string;
+  expect(hint).toMatch(/^•+$/);
+  expect(hint).not.toContain('short');
+});
+
+test('no key configured means no hint', async () => {
+  expect((await app.inject({ method: 'GET', url: '/api/settings' })).json().apify_key_hint).toBeNull();
+});
