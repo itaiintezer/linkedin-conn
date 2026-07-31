@@ -247,3 +247,12 @@ test('the outcome reports how many were already in a campaign', async () => {
   expect(txt).toContain('1');
   expect(txt).toMatch(/2 (were )?already/i);
 });
+
+test('the impact line is not written in broken English for a single person', async () => {
+  await search(results(3));
+  check(0);
+  byId('selectionAdd').dispatchEvent(new Event('click', { bubbles: true }));
+  await flush();
+  expect(byId('campImpact').textContent).toContain('1 person');
+  expect(byId('campImpact').textContent).not.toContain('1 people');
+});

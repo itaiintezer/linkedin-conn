@@ -1347,9 +1347,10 @@ async function openCampaignDialog() {
   const cap = settings.msg_weekly_cap || 0;
   const n = selected.size;
   const weeks = cap > 0 ? Math.ceil(n / cap) : 0;
+  const who = `${fmtInt(n)} ${n === 1 ? 'person' : 'people'}`;
   $('#campImpact').textContent = weeks > 1
-    ? `${fmtInt(n)} people · about ${weeks} weeks to send at ${fmtInt(cap)}/week`
-    : `${fmtInt(n)} people · under a week at ${fmtInt(cap)}/week`;
+    ? `${who} · about ${weeks} weeks to send at ${fmtInt(cap)}/week`
+    : `${who} · under a week at ${fmtInt(cap)}/week`;
 
   syncCampaignTemplate();
   $('#campModal').hidden = false;

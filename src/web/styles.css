@@ -1036,9 +1036,21 @@ body > .drawer {
 /* ---------- Connection search (Connections tab) ---------- */
 .search-form { margin-bottom: 20px; }
 .search-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px 20px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px 20px;
 }
-.search-opts { justify-content: flex-end; flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* Stack each label over its hint and reserve both lines, so a field whose label wraps
+   ("Title or headline") keeps its input on the same baseline as its neighbours. Without
+   this the grid row heights differ per column and the form looks broken. */
+.search-grid .field label { display: block; min-height: 34px; }
+.search-grid .field label .hint { display: block; margin-top: 2px; }
+
+/* Options and buttons belong on their own row, not squeezed into a grid cell where they
+   wrap into a ragged stack. */
+.search-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line-soft); flex-wrap: wrap;
+}
+.search-buttons { display: flex; gap: 8px; }
 .checkline {
   display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600;
   color: var(--ink-2); cursor: pointer; white-space: nowrap;
