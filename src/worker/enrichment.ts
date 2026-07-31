@@ -35,8 +35,17 @@ export interface EnrichmentResult {
   haltReason?: EnrichHaltReason;
 }
 
+/** What the dashboard needs to explain a halt without a second request. */
+export interface EnrichmentHalt {
+  reason: EnrichHaltReason | null;
+  detail: string | null;
+  at: string | null;
+}
+
 export interface EnrichmentProgress {
   running: boolean;
+  /** Non-null when automatic enrichment has stopped itself and needs the operator. */
+  halt: EnrichmentHalt | null;
   total: number;
   enriched: number;
   pending: number;
@@ -61,8 +70,12 @@ export function pauseEnrichment(): boolean {
 
 export function enrichmentProgress(repos: Repos): EnrichmentProgress {
   const c = repos.connections.countsByEnrichStatus();
+  const a = repos.appState.get();
   return {
     running: active !== null,
+    halt: a.enrich_halted === 1
+      ? { reason: a.enrich_halt_reason, detail: a.enrich_halt_detail, at: a.enrich_halted_at }
+      : null,
     total: repos.connections.count(),
     enriched: c.enriched,
     pending: c.pending,
