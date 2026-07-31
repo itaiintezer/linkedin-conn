@@ -62,6 +62,32 @@ console.log(`changed         : ${changed.length}`);
 console.log(`unchanged       : ${unchanged.length}`);
 console.log(`  of which suspicious: ${suspects.length}`);
 
+/**
+ * Health of the column AS IT IS STORED RIGHT NOW — not of what the rule would do to it.
+ * These are the five defect classes the original design doc measured over the roster; after
+ * the backfill they should all read 0. This is the check to re-run when asking "is the
+ * database actually clean", because it inspects the values the sender will really send.
+ */
+const CLASSES: [string, (s: string) => boolean][] = [
+  ['multi-token', (s) => /\s/.test(s)],
+  ['odd punctuation', (s) => /[^\p{L}\p{M}'’.\-]/u.test(s)],
+  ['emoji / pictograph', (s) => /\p{Extended_Pictographic}/u.test(s)],
+  ['honorific', (s) => /^(dr|mr|mrs|ms|prof|er|maj|capt|col|sir|rev|ts)\b\.?$/i.test(s.split(/[\s.]/)[0] ?? '')],
+  ['invisible / bidi', (s) => /[\u200B-\u200F\u202A-\u202E\u2060\u2066-\u2069\u00AD\uFEFF]/.test(s)],
+  ['lone initial', (s) => /^\p{L}\.?$/u.test(s)],
+];
+const stored = rows.map((r) => r.fn).filter((s): s is string => s !== null);
+console.log(`\nstored column health (${stored.length} non-null of ${rows.length}):`);
+let storedDefects = 0;
+for (const [label, hit] of CLASSES) {
+  const found = stored.filter(hit);
+  storedDefects += found.length;
+  const eg = found.slice(0, 3).map((s) => JSON.stringify(s)).join(', ');
+  console.log(`  ${label.padEnd(20)} ${String(found.length).padStart(5)}${eg ? '   e.g. ' + eg : ''}`);
+}
+console.log(`  ${'TOTAL DEFECTS'.padEnd(20)} ${String(storedDefects).padStart(5)}`);
+console.log(`  ${'null (send "there")'.padEnd(20)} ${String(rows.length - stored.length).padStart(5)}`);
+
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, JSON.stringify({ changed, suspects }, null, 2));
 console.log(`\nwrote ${OUT} — ${changed.length} changed + ${suspects.length} suspect rows`);
