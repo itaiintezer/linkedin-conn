@@ -15,3 +15,23 @@ test('FakeDriver can script a card-read failure', async () => {
   d.connectionCardsError = 'checkpoint detected during roster sync';
   await expect(d.readConnectionCards()).rejects.toThrow('checkpoint detected during roster sync');
 });
+
+test('FakeDriver prefers an injected first name over the one it would read', async () => {
+  const d = new FakeDriver();
+  d.firstName = 'Scraped';
+  await d.sendConnectionRequest('https://www.linkedin.com/in/a', 'Hi {firstName}', { firstName: 'Ada' });
+  expect(d.sentLog[0].message).toBe('Hi Ada');
+});
+
+test('FakeDriver falls back to its own name when none is injected', async () => {
+  const d = new FakeDriver();
+  d.firstName = 'Scraped';
+  await d.sendConnectionRequest('https://www.linkedin.com/in/a', 'Hi {firstName}');
+  expect(d.sentLog[0].message).toBe('Hi Scraped');
+});
+
+test('an injected name flows into a direct message too', async () => {
+  const d = new FakeDriver();
+  await d.sendMessage('https://www.linkedin.com/in/a', 'Hi {firstName}', { firstName: 'Grace' });
+  expect(d.msgLog[0].message).toBe('Hi Grace');
+});

@@ -1,9 +1,10 @@
 import type { Page } from 'playwright-core';
-import type { BrowserDriver, SendOutcome, LoginSnapshot, CheckpointScan, InboxRow, ConnectionCard } from '../types.js';
+import type { BrowserDriver, SendOutcome, SendOptions, LoginSnapshot, CheckpointScan, InboxRow, ConnectionCard } from '../types.js';
 import { CloakSession } from './cloak-session.js';
 import { SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
+import { firstNameFrom } from '../core/first-name.js';
 import { detectCheckpoint } from '../core/checkpoint.js';
 import { captureEvidence } from './evidence.js';
 import { scrollToLoad, collectWhileScrolling } from './auto-scroll.js';
@@ -43,7 +44,7 @@ export class LinkedInDriver implements BrowserDriver {
     await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded' });
   }
 
-  async sendConnectionRequest(url: string, message: string | null): Promise<SendOutcome> {
+  async sendConnectionRequest(url: string, message: string | null, opts?: SendOptions): Promise<SendOutcome> {
     const page = await this.session.page();
     const slug = profileSlug(url);
     if (!slug) return { result: 'error', error: `cannot parse profile slug from ${url}` };
@@ -57,7 +58,7 @@ export class LinkedInDriver implements BrowserDriver {
       // counts toward the failure streak and halted the engine on 2026-07-27 when
       // three stale imports sat adjacent in the queue.
       if (isNotFoundUrl(page.url())) return this.notFoundOutcome(page);
-      const firstName = await this.readFirstName(page);
+      const firstName = opts?.firstName ?? await this.readFirstName(page);
       {
         const scan = await this.scanCheckpoint(page);
         if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
@@ -315,7 +316,9 @@ export class LinkedInDriver implements BrowserDriver {
   }
 
   private async readFirstName(page: Page): Promise<string | undefined> {
-    return (await this.readFullName(page))?.split(/\s+/)[0];
+    // The page title is a rendering artifact — it carries notification counts, bidi marks
+    // and headline tails. Two names were sent with a leading U+200F before this.
+    return firstNameFrom(await this.readFullName(page) ?? null) ?? undefined;
   }
 
   /**
@@ -326,15 +329,17 @@ export class LinkedInDriver implements BrowserDriver {
    * Send → verify structurally (composer cleared + our text present in the thread).
    * Anything not clearly a 1st-degree connection is 'not_connected' — never InMail.
    */
-  async sendMessage(url: string, message: string): Promise<SendOutcome> {
+  async sendMessage(url: string, message: string, opts?: SendOptions): Promise<SendOutcome> {
     const page = await this.session.page();
     try {
       // 1) Profile pre-visit: name capture + gates.
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       await sleep(rand(1500, 3500));
       if (isNotFoundUrl(page.url())) return this.notFoundOutcome(page);
+      // The full name is still read verbatim for the 1st-degree gate and the stored record;
+      // only the greeting name is sanitised, and an injected roster name wins outright.
       const fullName = await this.readFullName(page);
-      const firstName = fullName?.split(/\s+/)[0];
+      const firstName = opts?.firstName ?? firstNameFrom(fullName ?? null) ?? undefined;
       {
         const scan = await this.scanCheckpoint(page);
         if (scan.hit) return this.checkpointOutcome(page, scan, firstName);

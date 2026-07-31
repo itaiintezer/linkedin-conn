@@ -1,4 +1,4 @@
-import type { BrowserDriver, SendOutcome, SendResult, SendEvidence, LoginSnapshot, CheckpointScan, InboxRow, ConnectionCard } from '../types.js';
+import type { BrowserDriver, SendOutcome, SendResult, SendEvidence, SendOptions, LoginSnapshot, CheckpointScan, InboxRow, ConnectionCard } from '../types.js';
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 export type { BrowserDriver };
 
@@ -39,19 +39,19 @@ export class FakeDriver implements BrowserDriver {
     return { loggedIn: this.loggedIn, cookieExpiry: this.cookieExpiry };
   }
   async openLoginWindow() { this.open = true; this.loggedIn = true; }
-  async sendConnectionRequest(url: string, message: string | null): Promise<SendOutcome> {
+  async sendConnectionRequest(url: string, message: string | null, opts?: SendOptions): Promise<SendOutcome> {
     this.open = true;
-    // Faithfully mirror the real driver: substitute {firstName} with the name it reads.
-    const note = message === null ? null : applyFirstName(message, this.firstName);
+    // Faithfully mirror the real driver: an injected name wins, else the one it "reads".
+    const note = message === null ? null : applyFirstName(message, opts?.firstName ?? this.firstName);
     this.sentLog.push({ url, message: note });
     const result = this.scripted.get(url) ?? 'sent';
     const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable')
       ? this.evidence : undefined;
     return { result, firstName: this.firstName, ...(evidence ? { evidence } : {}) };
   }
-  async sendMessage(url: string, message: string): Promise<SendOutcome> {
+  async sendMessage(url: string, message: string, opts?: SendOptions): Promise<SendOutcome> {
     this.open = true;
-    const text = applyFirstName(message, this.firstName, MAX_MESSAGE);
+    const text = applyFirstName(message, opts?.firstName ?? this.firstName, MAX_MESSAGE);
     this.msgLog.push({ url, message: text });
     const result = this.msgScripted.get(url) ?? 'sent';
     const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable')
