@@ -54,7 +54,6 @@ export interface Settings {
   weekly_cap: number;
   batch_size: number;
   batches_per_day: number;
-  acceptance_checks_per_day: number;
   msg_weekly_cap: number;
   msg_batch_size: number;
   msg_batches_per_day: number;

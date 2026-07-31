@@ -305,3 +305,22 @@ test('migrates a pre-enrichment database: adds enrichment columns and the FTS ta
   const hit = db.prepare("SELECT rowid FROM connections_fts WHERE connections_fts MATCH 'securit*'").get();
   expect(hit).toBeTruthy();
 });
+
+test('drops acceptance_checks_per_day, a setting nothing reads since the cutover', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1),
+      weekly_cap INTEGER NOT NULL DEFAULT 100,
+      acceptance_checks_per_day INTEGER NOT NULL DEFAULT 2);
+    INSERT INTO settings (id) VALUES (1);
+    CREATE TABLE app_state (id INTEGER PRIMARY KEY CHECK (id = 1), failure_streak INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO app_state (id) VALUES (1);
+  `);
+
+  runMigrations(db);
+
+  const cols = (db.prepare('PRAGMA table_info(settings)').all() as { name: string }[]).map((c) => c.name);
+  expect(cols).not.toContain('acceptance_checks_per_day');
+  expect(cols).toContain('weekly_cap');   // the rest of the row survives
+  expect(() => runMigrations(db)).not.toThrow();
+});

@@ -10,7 +10,7 @@ const PROFILE_COLUMNS = new Set([
 ]);
 const SETTINGS_COLUMNS = new Set([
   'workday_start_hour', 'workday_end_hour', 'weekdays_only', 'weekly_cap',
-  'batch_size', 'batches_per_day', 'acceptance_checks_per_day',
+  'batch_size', 'batches_per_day',
   'msg_weekly_cap', 'msg_batch_size', 'msg_batches_per_day', 'reply_checks_per_day',
   'roster_sync_per_day',
   'apify_api_key', 'enrich_ttl_days', 'enrich_concurrency',

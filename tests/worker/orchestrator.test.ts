@@ -2,7 +2,7 @@ import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
-import { refreshLoginCache, Orchestrator, acceptanceSlot } from '../../src/worker/orchestrator.js';
+import { refreshLoginCache, Orchestrator, daySlot } from '../../src/worker/orchestrator.js';
 
 let repos: Repos; let driver: FakeDriver;
 const NOW = new Date('2026-06-30T10:00:00.000Z');
@@ -134,27 +134,27 @@ test('start() rebuilds the whole scheduled backlog, not just overdue slots', () 
    build dates with the local constructor to stay timezone-independent. */
 
 test('one check per day: every hour of the same day is the same slot', () => {
-  expect(acceptanceSlot(new Date(2026, 6, 28, 0, 5), 1))
-    .toBe(acceptanceSlot(new Date(2026, 6, 28, 23, 55), 1));
+  expect(daySlot(new Date(2026, 6, 28, 0, 5), 1))
+    .toBe(daySlot(new Date(2026, 6, 28, 23, 55), 1));
 });
 
 test('two checks per day: the day splits at noon', () => {
-  const morning = acceptanceSlot(new Date(2026, 6, 28, 9, 0), 2);
-  const noon = acceptanceSlot(new Date(2026, 6, 28, 12, 0), 2);
-  const evening = acceptanceSlot(new Date(2026, 6, 28, 23, 0), 2);
+  const morning = daySlot(new Date(2026, 6, 28, 9, 0), 2);
+  const noon = daySlot(new Date(2026, 6, 28, 12, 0), 2);
+  const evening = daySlot(new Date(2026, 6, 28, 23, 0), 2);
   expect(morning).not.toBe(noon);
   expect(noon).toBe(evening);
 });
 
 test('slots never collide across days', () => {
-  expect(acceptanceSlot(new Date(2026, 6, 28, 9, 0), 2))
-    .not.toBe(acceptanceSlot(new Date(2026, 6, 29, 9, 0), 2));
+  expect(daySlot(new Date(2026, 6, 28, 9, 0), 2))
+    .not.toBe(daySlot(new Date(2026, 6, 29, 9, 0), 2));
 });
 
 test('a nonsensical checks-per-day falls back to one check per day', () => {
   for (const n of [0, -3, NaN]) {
-    expect(acceptanceSlot(new Date(2026, 6, 28, 1, 0), n))
-      .toBe(acceptanceSlot(new Date(2026, 6, 28, 22, 0), n));
+    expect(daySlot(new Date(2026, 6, 28, 1, 0), n))
+      .toBe(daySlot(new Date(2026, 6, 28, 22, 0), n));
   }
 });
 
@@ -260,7 +260,7 @@ test('start() recovers a profile stranded in sending by a mid-send crash', () =>
   expect(repos.profiles.findById(p.id)!.status).not.toBe('sending');
 });
 
-// Local-component Date constructors: acceptanceSlot slices the LOCAL day, so building
+// Local-component Date constructors: daySlot slices the LOCAL day, so building
 // these from a UTC ISO string would make the slot boundary timezone-dependent.
 const localAt = (h: number, m = 0) => new Date(2026, 6, 31, h, m, 0, 0);
 

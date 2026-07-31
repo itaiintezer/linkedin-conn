@@ -59,9 +59,6 @@ CREATE TABLE IF NOT EXISTS settings (
   weekly_cap INTEGER NOT NULL DEFAULT 100,
   batch_size INTEGER NOT NULL DEFAULT 5,
   batches_per_day INTEGER NOT NULL DEFAULT 4,
-  -- Acceptance passes per day, spread across equal slots of the day (2 = morning +
-  -- afternoon). Honored by Orchestrator.runAcceptanceTick via acceptanceSlot().
-  acceptance_checks_per_day INTEGER NOT NULL DEFAULT 2,
   msg_weekly_cap INTEGER NOT NULL DEFAULT 250,
   msg_batch_size INTEGER NOT NULL DEFAULT 5,
   msg_batches_per_day INTEGER NOT NULL DEFAULT 6,

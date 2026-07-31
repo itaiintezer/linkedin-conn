@@ -33,14 +33,18 @@ export async function refreshLoginCache(repos: Repos, driver: BrowserDriver, now
 }
 
 /**
- * Identify which acceptance slot a moment falls in. The day is divided into
- * `checksPerDay` equal slots and at most one successful pass runs per slot, so
- * checks are spread across the day (2/day = morning + afternoon) instead of
- * bunching into consecutive ticks. Computed in LOCAL time — the operator thinks
- * in local days. A nonsensical setting degrades to one check per day.
+ * Identify which slot of the day a moment falls in. The day is divided into `perDay` equal
+ * slots and at most one successful pass runs per slot, so passes spread across the day
+ * (2/day = morning + afternoon) instead of bunching into consecutive ticks. Computed in
+ * LOCAL time — the operator thinks in local days. A nonsensical setting degrades to one
+ * pass per day.
+ *
+ * Generic: used by the reply check and the roster sync. (It was named acceptanceSlot until
+ * the acceptance pass stopped being slot-gated — it is now a free DB read that runs every
+ * tick, so it no longer has a slot at all.)
  */
-export function acceptanceSlot(when: Date, checksPerDay: number): string {
-  const n = Math.min(24, Math.max(1, Math.floor(checksPerDay) || 1));
+export function daySlot(when: Date, perDay: number): string {
+  const n = Math.min(24, Math.max(1, Math.floor(perDay) || 1));
   const slot = Math.floor((when.getHours() * n) / 24);
   return `${when.getFullYear()}-${when.getMonth()}-${when.getDate()}#${slot}`;
 }
@@ -103,8 +107,7 @@ export class Orchestrator {
    * every tick. Detection latency is now bounded solely by `roster_sync_per_day`, which is
    * what actually determines when a new connection becomes visible.
    *
-   * `acceptance_checks_per_day` is retained in settings only for backwards compatibility;
-   * nothing reads it any more.
+   * The old `acceptance_checks_per_day` setting is gone — nothing paced this any more.
    */
   async runAcceptanceTick(now: Date = new Date()): Promise<void> {
     const app = this.repos.appState.get();
@@ -118,7 +121,7 @@ export class Orchestrator {
 
   /**
    * Reply pass, at most once per slot (slot math shared with acceptance checks via
-   * acceptanceSlot — it is a generic day-slicer). The gate reads the PERSISTED
+   * daySlot — it is a generic day-slicer). The gate reads the PERSISTED
    * replies_checked_at, which runReplyCheck stamps only on a clean, non-empty read — a
    * bailed-out pass leaves the stamp untouched so the next 30-minute tick retries
    * (acceptance-checker lesson). Queues behind in-flight browser work rather than being
@@ -128,9 +131,9 @@ export class Orchestrator {
     const s = this.repos.settings.get();
     const app = this.repos.appState.get();
     if (s.paused || app.guardrail_tripped === 1) return;
-    const slot = acceptanceSlot(now, s.reply_checks_per_day);
+    const slot = daySlot(now, s.reply_checks_per_day);
     if (app.replies_checked_at
-      && acceptanceSlot(new Date(app.replies_checked_at), s.reply_checks_per_day) === slot) return;
+      && daySlot(new Date(app.replies_checked_at), s.reply_checks_per_day) === slot) return;
     try {
       await this.browserLock.run(() => runReplyCheck(this.repos, this.driver, now));
     } catch (err) {
@@ -140,7 +143,7 @@ export class Orchestrator {
 
   /**
    * Roster pass, at most once per slot (slot math shared with acceptance/reply checks via
-   * acceptanceSlot — it is a generic day-slicer). The gate reads the PERSISTED
+   * daySlot — it is a generic day-slicer). The gate reads the PERSISTED
    * `roster_synced_at`, which runRosterSync stamps only on a clean, non-empty read, so a
    * bailed-out pass leaves the stamp untouched and the next 30-minute tick retries.
    * Queues behind in-flight browser work rather than being dropped, for the same reason
@@ -150,9 +153,9 @@ export class Orchestrator {
     const s = this.repos.settings.get();
     const app = this.repos.appState.get();
     if (s.paused || app.guardrail_tripped === 1) return;
-    const slot = acceptanceSlot(now, s.roster_sync_per_day);
+    const slot = daySlot(now, s.roster_sync_per_day);
     if (app.roster_synced_at
-      && acceptanceSlot(new Date(app.roster_synced_at), s.roster_sync_per_day) === slot) return;
+      && daySlot(new Date(app.roster_synced_at), s.roster_sync_per_day) === slot) return;
     try {
       await this.browserLock.run(() => runRosterSync(this.repos, this.driver, now));
     } catch (err) {

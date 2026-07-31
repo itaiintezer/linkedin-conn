@@ -7,7 +7,7 @@ import type { Settings } from '../../src/types.js';
 function settings(over: Partial<Settings> = {}): Settings {
   return {
     id: 1, workday_start_hour: 8, workday_end_hour: 20, weekdays_only: 1,
-    weekly_cap: 100, batch_size: 5, batches_per_day: 4, acceptance_checks_per_day: 1,
+    weekly_cap: 100, batch_size: 5, batches_per_day: 4,
     msg_weekly_cap: 200, msg_batch_size: 5, msg_batches_per_day: 4, reply_checks_per_day: 2,
     roster_sync_per_day: 2,
     apify_api_key: null, enrich_ttl_days: 180, enrich_concurrency: 8,

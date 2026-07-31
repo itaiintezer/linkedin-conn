@@ -143,6 +143,14 @@ export function runMigrations(db: DB): void {
   if (appCols.length > 0 && !appCols.includes('connections_seeded_at')) {
     db.exec('ALTER TABLE app_state ADD COLUMN connections_seeded_at TEXT');
   }
+  // acceptance_checks_per_day paced the old twice-daily connections scrape. Since the
+  // phase-3 cutover the acceptance pass is a pure DB read that runs every tick, and nothing
+  // reads this column — a setting the API accepted and then ignored. Dropped for the same
+  // reason account_type was above.
+  if (cols.includes('acceptance_checks_per_day')) {
+    db.exec('ALTER TABLE settings DROP COLUMN acceptance_checks_per_day');
+  }
+
   // --- Enrichment (2026-07-31, phase 2) ---
   // connections_fts needs no migration: schema.sql's CREATE VIRTUAL TABLE IF NOT EXISTS
   // back-fills it on every openDatabase, same as any other new table.
