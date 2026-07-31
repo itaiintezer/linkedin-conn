@@ -1033,6 +1033,16 @@ body > .drawer {
 .conn-key-row input { flex: 1 1 auto; font-family: var(--mono); font-size: 13px; }
 .conn-key-row .btn { flex: 0 0 auto; }
 
+/* The stored key reads as a RECORD, not an empty field waiting for input — that mismatch
+   (blank box beside the word "configured") was the original confusion. Recessed fill and
+   muted ink say "this holds a value you cannot edit here"; the dots carry a little tracking
+   so the mask does not clot into a solid bar. Still focusable — see the note in index.html. */
+.key-mask {
+  background: var(--neutral-bg); color: var(--ink-2);
+  cursor: default; letter-spacing: 0.055em;
+}
+.key-mask:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+
 /* ---------- Connection search (Connections tab) ---------- */
 .search-form { margin-bottom: 20px; }
 .search-grid {
