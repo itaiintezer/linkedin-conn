@@ -13,7 +13,6 @@ export class FakeDriver implements BrowserDriver {
   /** Attached to checkpoint/error outcomes, mirroring the real driver's capture. */
   evidence: SendEvidence | undefined;
   pending: string[] = [];
-  connections: string[] = [];
   scripted = new Map<string, SendResult>();
   /** Name this fake "reads" from profiles; {firstName} is substituted with it. */
   firstName = 'Test';
@@ -72,7 +71,6 @@ export class FakeDriver implements BrowserDriver {
     return this.inboxRows;
   }
   async readPendingInvites() { return this.pending; }
-  async readRecentConnections() { return this.connections; }
   async readConnectionCards(): Promise<ConnectionCard[]> {
     this.open = true;
     if (this.connectionCardsError) throw new Error(this.connectionCardsError);

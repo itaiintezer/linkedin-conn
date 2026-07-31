@@ -110,7 +110,7 @@ cohort without saying which kind it means.
 | Weekly cap | `weekly_cap` = 100 | `msg_weekly_cap` = 250 |
 | Batches | `batch_size` 5 × `batches_per_day` 4 | `msg_batch_size` 5 × `msg_batches_per_day` 6 |
 | Funnel | queued → scheduled → sending → sent → accepted | queued → scheduled → sending → sent → replied |
-| Tracked by | Recent connections read (`acceptance_checks_per_day`) | messaging inbox read (`reply_checks_per_day`) |
+| Tracked by | connection roster (`roster_sync_per_day`) | messaging inbox read (`reply_checks_per_day`) |
 
 `{firstName}` works in both. Working hours, the weekdays-only rule, `min_delay_ms` /
 `max_delay_ms`, the pause state and the guardrail are **shared** — pausing pauses both, and a
@@ -127,8 +127,8 @@ If a profile turns out not to be a 1st-degree connection at send time, The Machi
 ## Connections
 
 Separate from the campaigns, The Machine keeps a **roster** of the people you're actually
-connected to — one row per person, independent of any cohort. It's the foundation for
-searching your network; enrichment and search arrive in later releases.
+connected to — one row per person, independent of any cohort. Enrich it once and the whole
+network becomes searchable.
 
 Three things fill it:
 
@@ -149,6 +149,46 @@ Re-importing the same file is safe and cheap: it updates existing rows rather th
 duplicating them. **Sync now** on the Settings panel forces a read immediately and tells you
 what it found — or why it declined to run.
 
+### Enrichment
+
+Once the roster exists, **Start enrichment** scrapes each person's profile through
+[Apify](https://apify.com) — location, current role, full work history, education and
+skills — which is what makes the list searchable. Paste an Apify API key under
+**Settings → Connections** first; it's stored locally and the app never hands it back out.
+
+- **Cost:** about **$0.004 per profile** — roughly **$29** for a 7,000-connection roster,
+  one time. The button shows the exact count and estimate before you click it.
+- **Speed:** ~7 seconds per profile, 8 at a time, so a 7,000-row backfill takes ~1½ hours.
+  You can close the page; it keeps going.
+- **Safety:** this runs on Apify's servers, not your LinkedIn session — so unlike sending,
+  it isn't paced, capped, or able to trip a captcha. Pause and resume freely; it always
+  picks up where it stopped.
+- **Staying current:** anyone new is enriched automatically, and everyone is re-scraped
+  after 180 days (`enrich_ttl_days`) so job changes don't rot the data.
+
+Some people can't be scraped — restricted or deleted profiles come back empty. Those are
+marked and never retried automatically (each attempt costs money); **Retry failed** re-arms
+them if you want to try again later.
+
+### Searching
+
+The **Connections** tab searches the enriched roster by title, location, company and free
+text. Each box takes a comma-separated list of alternatives, and the boxes combine: *(CISO
+**or** SOC **or** appsec) **and** (Seattle **or** Bellevue)*. The **Exclude** box drops
+anyone whose profile mentions a term anywhere — which is how you get "security people" from
+a network that also contains physical-security and asset-protection roles.
+
+Two things worth knowing:
+
+- Matching is by substring, so `CISO` will not find someone whose title is spelled out as
+  "Chief Information Security Officer". List both spellings.
+- The header always shows how much of your roster is searchable. If enrichment is still
+  running, an empty result may just mean those people haven't been scraped yet — the app
+  says so rather than pretending nobody matched.
+
+The same query is available to AI agents at `POST /api/connections/search` — see
+[API.md](API.md).
+
 Two deliberate limits:
 
 - **Removals aren't tracked.** Nothing here ever deletes a connection, so someone who
@@ -167,9 +207,9 @@ Two deliberate limits:
   and requeues the profile it was about to send. The message pass doesn't get to run
   standalone after that either: the account was just rate-limited, so both wait for your
   **Resume**.
-- Acceptance tracking reads the Recent connections page twice a day by default
-  (`acceptance_checks_per_day`, one successful pass per equal slot of the day) and marks
-  anyone found there accepted. Absence never marks anything — "expired" comes only from the
+- Acceptance tracking works off the connection roster: the connections page is read twice a
+  day (`roster_sync_per_day`) and anyone found there is added to your roster, then any
+  pending invite to that person is marked accepted within a minute. Absence never marks anything — "expired" comes only from the
   optional `expiry_days` age backstop. This read does not consume your weekly cap.
 - Reply tracking works the same way for messages (`reply_checks_per_day`, default 2, also
   free of the weekly cap): one read of the messaging inbox, and a messaged contact whose

@@ -1,13 +1,26 @@
+/**
+ * Acceptance resolution, AFTER the phase-3 cutover (2026-07-31).
+ *
+ * This pass no longer scrapes: roster-sync owns the connections-page read, and acceptance
+ * asks the roster "is this sent invite a connection yet?". The safety contract is unchanged
+ * and is what these tests pin down:
+ *   - presence promotes; ABSENCE NEVER EXPIRES (expiry comes only from the age backstop)
+ *   - an empty roster changes nothing
+ *   - message-kind rows belong to the reply funnel and must never be promoted here
+ * The browser-facing failure modes (checkpoint, lost session, empty scrape) moved with the
+ * scrape itself and are covered in tests/worker/roster-sync.test.ts.
+ */
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { runAcceptanceCheck } from '../../src/worker/acceptance-checker.js';
 
-let repos: Repos; let driver: FakeDriver;
+let repos: Repos;
+const NOW = new Date('2026-06-29T12:00:00.000Z');
+
 beforeEach(() => {
   repos = new Repos(openDatabase(':memory:'));
-  driver = new FakeDriver();
   repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
 });
 
@@ -17,33 +30,71 @@ function seedSent(url: string, cohortId: number, sentAt = '2026-06-20T00:00:00Z'
   return p;
 }
 
-test('promotes only profiles found in the connections list; absence never expires', async () => {
+function roster(...urls: string[]): void {
+  for (const u of urls) repos.connections.upsert({ profile_url: u }, 'scrape', '2026-06-29T00:00:00.000Z');
+}
+
+test('promotes only profiles present in the roster; absence never expires', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const a = seedSent('https://www.linkedin.com/in/a', c.id);
   const b = seedSent('https://www.linkedin.com/in/b', c.id);
   const cc = seedSent('https://www.linkedin.com/in/c', c.id);
 
-  driver.connections = ['https://www.linkedin.com/in/b'];
+  roster('https://www.linkedin.com/in/b');
 
-  const now = new Date('2026-06-29T12:00:00Z');
-  await runAcceptanceCheck(repos, driver, now);
+  await runAcceptanceCheck(repos, NOW);
 
   const accepted = repos.profiles.byStatus('accepted');
   expect(accepted.map((p) => p.id)).toEqual([b.id]);
-  expect(accepted[0].accepted_at).toBe(now.toISOString());
-  // a and c are simply not in connections -> they stay pending, NOT expired.
+  expect(accepted[0].accepted_at).toBe(NOW.toISOString());
+  // a and c are simply not connections yet -> still pending, NOT expired.
   expect(repos.profiles.byStatus('sent').map((p) => p.id).sort()).toEqual([a.id, cc.id].sort());
   expect(repos.profiles.byStatus('expired')).toHaveLength(0);
 });
 
-test('an empty connections read changes nothing (fail-safe) and does not stamp checked_at', async () => {
+test('opens no browser at all — the whole point of the cutover', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedSent('https://www.linkedin.com/in/a', c.id);
+  roster('https://www.linkedin.com/in/a');
+  const driver = new FakeDriver();
+
+  await runAcceptanceCheck(repos, NOW);
+
+  // The function no longer even accepts a driver, and nothing opened one. This pass is
+  // free, which is why it can now run every minute instead of twice a day.
+  expect(driver.open).toBe(false);
+});
+
+test('an empty roster changes nothing (fail-safe) and does not stamp checked_at', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const a = seedSent('https://www.linkedin.com/in/a', c.id);
-  driver.connections = []; // suspiciously empty read
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+
+  const r = await runAcceptanceCheck(repos, NOW);
+
+  expect(r).toMatchObject({ ran: false, reason: 'empty_roster' });
   expect(repos.profiles.byStatus('sent').map((p) => p.id)).toEqual([a.id]);
-  expect(repos.profiles.byStatus('expired')).toHaveLength(0);
   expect(repos.appState.get().acceptance_checked_at).toBeNull();
+});
+
+test('nothing pending means no work and no stamp', async () => {
+  roster('https://www.linkedin.com/in/somebody');
+  const r = await runAcceptanceCheck(repos, NOW);
+  expect(r).toMatchObject({ ran: false, reason: 'no_pending' });
+});
+
+test('an invite sent to a slug the person has since changed still resolves via its alias', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedSent('https://www.linkedin.com/in/old-slug', c.id);
+  // The roster met them again under a new slug and merged; the old URL survives as an alias.
+  roster('https://www.linkedin.com/in/new-slug');
+  const conn = repos.connections.findByUrl('https://www.linkedin.com/in/new-slug')!;
+  repos.db.prepare('INSERT INTO connection_aliases (profile_url, connection_id) VALUES (?, ?)')
+    .run('https://www.linkedin.com/in/old-slug', conn.id);
+
+  await runAcceptanceCheck(repos, NOW);
+
+  // Without alias resolution this invite would sit pending forever.
+  expect(repos.profiles.byStatus('accepted').map((x) => x.id)).toEqual([p.id]);
 });
 
 test('age-based expiry backstop: expires unaccepted invites older than expiry_days', async () => {
@@ -51,9 +102,9 @@ test('age-based expiry backstop: expires unaccepted invites older than expiry_da
   const old = seedSent('https://www.linkedin.com/in/old', c.id, '2026-05-01T00:00:00Z'); // 59d
   const fresh = seedSent('https://www.linkedin.com/in/fresh', c.id, '2026-06-27T00:00:00Z'); // 2d
   repos.settings.update({ expiry_days: 42 });
-  driver.connections = ['https://www.linkedin.com/in/someone-else']; // non-empty read
+  roster('https://www.linkedin.com/in/someone-else'); // non-empty roster
 
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+  await runAcceptanceCheck(repos, NOW);
 
   expect(repos.profiles.byStatus('expired').map((p) => p.id)).toEqual([old.id]);
   expect(repos.profiles.byStatus('sent').map((p) => p.id)).toEqual([fresh.id]);
@@ -61,127 +112,57 @@ test('age-based expiry backstop: expires unaccepted invites older than expiry_da
 
 test('acceptance wins over age expiry for the same profile', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
-  const old = seedSent('https://www.linkedin.com/in/old', c.id, '2026-05-01T00:00:00Z');
+  const p = seedSent('https://www.linkedin.com/in/both', c.id, '2026-05-01T00:00:00Z');
   repos.settings.update({ expiry_days: 42 });
-  driver.connections = ['https://www.linkedin.com/in/old']; // they accepted, even though old
+  roster('https://www.linkedin.com/in/both');
 
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
+  await runAcceptanceCheck(repos, NOW);
 
-  expect(repos.profiles.findById(old.id)!.status).toBe('accepted');
-  expect(repos.profiles.byStatus('expired')).toHaveLength(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('accepted');
 });
 
-test('skips when paused', async () => {
+test('message-kind sent rows are never promoted — they belong to the reply funnel', async () => {
+  const msg = repos.cohorts.create('M', 'hello', false, 'message');
+  const m = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/m', null, 'message');
+  repos.profiles.setStatus(m.id, 'sent', { sent_at: '2026-06-20T00:00:00Z' });
+  roster('https://www.linkedin.com/in/m');
+
+  const r = await runAcceptanceCheck(repos, NOW);
+
+  expect(r).toMatchObject({ ran: false, reason: 'no_pending' });
+  expect(repos.profiles.findById(m.id)!.status).toBe('sent');
+});
+
+test('paused blocks a scheduled pass; force overrides only that gate', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
-  seedSent('https://www.linkedin.com/in/a', c.id);
+  const p = seedSent('https://www.linkedin.com/in/a', c.id);
+  roster('https://www.linkedin.com/in/a');
   repos.settings.update({ paused: 1 });
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  await runAcceptanceCheck(repos, driver, new Date());
-  expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
+
+  expect(await runAcceptanceCheck(repos, NOW)).toMatchObject({ ran: false, reason: 'paused' });
+  expect(await runAcceptanceCheck(repos, NOW, { force: true })).toMatchObject({ ran: true, accepted: 1 });
+  expect(repos.profiles.findById(p.id)!.status).toBe('accepted');
 });
 
-test('does not open the browser when there are no sent profiles', async () => {
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
-  expect(driver.open).toBe(false);
-});
-
-test('skips when guardrail tripped', async () => {
+test('a tripped guardrail blocks even a forced pass', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   seedSent('https://www.linkedin.com/in/a', c.id);
-  repos.appState.trip('checkpoint', 'x', '2026-06-29T00:00:00.000Z');
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
-  expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
+  roster('https://www.linkedin.com/in/a');
+  repos.appState.trip('checkpoint', 'captcha', NOW.toISOString());
+
+  expect(await runAcceptanceCheck(repos, NOW, { force: true })).toMatchObject({ ran: false, reason: 'guardrail' });
 });
 
-test('a checkpoint thrown during the connections read trips the guardrail', async () => {
+test('a clean pass does NOT clear a failure streak', async () => {
+  // It performs no network I/O, so it is not evidence that LinkedIn is healthy. Clearing the
+  // sender's streak here would mask a genuinely failing account.
   const c = repos.cohorts.create('A', 'hi', true);
   seedSent('https://www.linkedin.com/in/a', c.id);
-  driver.readRecentConnections = async () => { throw new Error('checkpoint detected during connections read'); };
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
-  expect(repos.appState.get().guardrail_tripped).toBe(1);
-  expect(repos.appState.get().guardrail_reason).toBe('checkpoint');
-});
+  roster('https://www.linkedin.com/in/a');
+  repos.appState.incFailureStreak();
+  repos.appState.incFailureStreak();
 
-test('login lost on the live check trips login_lost and reads nothing', async () => {
-  const c = repos.cohorts.create('A', 'hi', true);
-  seedSent('https://www.linkedin.com/in/a', c.id);
-  driver.loggedIn = false;
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
-  expect(repos.appState.get().guardrail_reason).toBe('login_lost');
-  expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
-});
+  await runAcceptanceCheck(repos, NOW);
 
-test('stamps acceptance_checked_at after a clean, non-empty read', async () => {
-  const c = repos.cohorts.create('A', 'hi', true);
-  seedSent('https://www.linkedin.com/in/a', c.id);
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  const now = new Date('2026-06-29T12:00:00Z');
-  await runAcceptanceCheck(repos, driver, now);
-  expect(repos.appState.get().acceptance_checked_at).toBe(now.toISOString());
-});
-
-test('does not stamp acceptance_checked_at when there is nothing to verify', async () => {
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
-  expect(repos.appState.get().acceptance_checked_at).toBeNull();
-});
-
-test('force runs the check even while paused and promotes accepted profiles', async () => {
-  const c = repos.cohorts.create('A', 'hi', true);
-  const a = seedSent('https://www.linkedin.com/in/a', c.id);
-  repos.settings.update({ paused: 1 });
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'), { force: true });
-  expect(res).toEqual({ ran: true, accepted: 1, expired: 0, checkedAt: '2026-06-29T12:00:00.000Z' });
-  expect(repos.profiles.findById(a.id)!.status).toBe('accepted');
-});
-
-test('without force, a paused engine returns reason "paused" and changes nothing', async () => {
-  const c = repos.cohorts.create('A', 'hi', true);
-  seedSent('https://www.linkedin.com/in/a', c.id);
-  repos.settings.update({ paused: 1 });
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
-  expect(res).toEqual({ ran: false, reason: 'paused', accepted: 0, expired: 0 });
-  expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
-});
-
-test('reports reason "no_pending" when there is nothing to verify', async () => {
-  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
-  expect(res).toEqual({ ran: false, reason: 'no_pending', accepted: 0, expired: 0 });
-});
-
-test('reports reason "empty_read" on a suspiciously empty connections read', async () => {
-  const c = repos.cohorts.create('A', 'hi', true);
-  seedSent('https://www.linkedin.com/in/a', c.id);
-  driver.connections = [];
-  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'), { force: true });
-  expect(res).toEqual({ ran: false, reason: 'empty_read', accepted: 0, expired: 0 });
-});
-
-test('message-kind sent rows are never promoted by the invite acceptance pass, even when their URL appears in recent connections', async () => {
-  const ci = repos.cohorts.create('A', 'hi', true, 'invite');
-  const invitePending = seedSent('https://www.linkedin.com/in/inv', ci.id);
-  const cm = repos.cohorts.create('M', 'hi', true, 'message');
-  const msg = repos.profiles.add(cm.id, 'https://www.linkedin.com/in/msg', null, 'message');
-  repos.profiles.setStatus(msg.id, 'sent', { sent_at: '2026-06-20T00:00:00Z' });
-
-  driver.connections = ['https://www.linkedin.com/in/inv', 'https://www.linkedin.com/in/msg'];
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'));
-
-  expect(repos.profiles.findById(invitePending.id)!.status).toBe('accepted');
-  // The message-kind row is untouched — it stays in the reply funnel, never
-  // hijacked into 'accepted' just because the invite pass reads unfiltered by kind.
-  expect(repos.profiles.findById(msg.id)!.status).toBe('sent');
-});
-
-test('reports reason "guardrail" when the guardrail is tripped, even with force', async () => {
-  const c = repos.cohorts.create('A', 'hi', true);
-  seedSent('https://www.linkedin.com/in/a', c.id);
-  repos.appState.trip('checkpoint', 'x', '2026-06-29T00:00:00.000Z');
-  driver.connections = ['https://www.linkedin.com/in/a'];
-  const res = await runAcceptanceCheck(repos, driver, new Date('2026-06-29T12:00:00Z'), { force: true });
-  expect(res).toEqual({ ran: false, reason: 'guardrail', accepted: 0, expired: 0 });
-  expect(repos.profiles.byStatus('accepted')).toHaveLength(0);
+  expect(repos.appState.get().failure_streak).toBe(2);
 });

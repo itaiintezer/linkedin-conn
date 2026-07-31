@@ -293,3 +293,15 @@ test('a fresh database has the connections tables with a unique profile_url', ()
   ).toThrow();
   expect((db.prepare('SELECT enrich_status s FROM connections').get() as { s: string }).s).toBe('pending');
 });
+
+test('migrates a pre-enrichment database: adds enrichment columns and the FTS table', () => {
+  const db = openDatabase(':memory:');
+  const cols = (db.prepare('PRAGMA table_info(connections)').all() as { name: string }[]).map((c) => c.name);
+  expect(cols).toContain('location_country_code');
+  const scols = (db.prepare('PRAGMA table_info(settings)').all() as { name: string }[]).map((c) => c.name);
+  expect(scols).toEqual(expect.arrayContaining(['apify_api_key', 'enrich_ttl_days', 'enrich_concurrency']));
+  // FTS5 must be usable — node:sqlite ships it (verified 2026-07-31).
+  db.exec("INSERT INTO connections_fts (rowid, doc) VALUES (1, 'seattle security engineer')");
+  const hit = db.prepare("SELECT rowid FROM connections_fts WHERE connections_fts MATCH 'securit*'").get();
+  expect(hit).toBeTruthy();
+});

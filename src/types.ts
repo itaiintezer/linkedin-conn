@@ -60,6 +60,10 @@ export interface Settings {
   msg_batches_per_day: number;
   reply_checks_per_day: number;
   roster_sync_per_day: number;
+  /** Apify credential. Never leaves the process over HTTP — see publicSettings(). */
+  apify_api_key: string | null;
+  enrich_ttl_days: number;
+  enrich_concurrency: number;
   note_quota_exhausted: number;
   min_delay_ms: number;
   max_delay_ms: number;
@@ -107,9 +111,9 @@ export interface BrowserDriver {
   /** One-page scan of the messaging inbox conversation list. */
   readInboxSnapshot(): Promise<InboxRow[]>;
   readPendingInvites(): Promise<string[]>;     // normalized profile URLs
-  readRecentConnections(): Promise<string[]>;  // normalized profile URLs
   /** One scroll-loaded read of the connections page, returning URL + display name per card.
-   *  Roster sync uses this; `readRecentConnections` above stays until the phase-3 cutover. */
+   *  The single source of connection discovery: roster-sync calls this, and acceptance
+   *  resolves against the roster it fills rather than scraping again. */
   readConnectionCards(): Promise<ConnectionCard[]>;
   /** Scan the currently-loaded page for a checkpoint/captcha (url + what matched). */
   checkpointScan(): Promise<CheckpointScan>;
@@ -169,6 +173,7 @@ export interface Connection {
   location_city: string | null;
   location_region: string | null;
   location_country: string | null;
+  location_country_code: string | null;   // ISO-3166 alpha-2, from Apify's parsed location
   current_title: string | null;
   current_company: string | null;
   /** ISO date. ONLY from the CSV export or a known accepted_at — never inferred. */
@@ -200,3 +205,77 @@ export interface ConnectionCard {
   url: string;                      // normalized
   name: string | null;
 }
+
+/* ---------- Apify enrichment (phase 2) ---------- */
+
+/** Apify uses `position` for the role title, not `title`. */
+export interface ApifyPosition {
+  position?: string | null;
+  title?: string | null;
+  companyName?: string | null;
+  location?: unknown;
+  employmentType?: string | null;
+  duration?: string | null;
+  startDate?: unknown;
+  endDate?: unknown;
+  description?: string | null;
+}
+
+/**
+ * The subset of Apify's ~50-field payload we read. Shapes verified against live runs on
+ * 2026-07-31 — see "Apify payload findings" in the design doc.
+ */
+export interface ApifyProfile {
+  id?: string | null;                    // stable LinkedIn URN; slug-change merge key
+  publicIdentifier?: string | null;
+  linkedinUrl?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  name?: string | null;
+  headline?: string | null;
+  about?: string | null;
+  /** Apify PRE-PARSES this. Never comma-split linkedinText yourself. Older payloads
+   *  (and the reference Python script's cache) carry a bare string instead. */
+  location?: {
+    linkedinText?: string | null;
+    countryCode?: string | null;
+    parsed?: {
+      text?: string | null; city?: string | null; state?: string | null;
+      country?: string | null; countryFull?: string | null; countryCode?: string | null;
+    } | null;
+  } | string | null;
+  currentPosition?: ApifyPosition[] | null;
+  experience?: ApifyPosition[] | null;
+  education?: Record<string, unknown>[] | null;
+  skills?: ({ name?: string | null } | string)[] | null;
+  topSkills?: ({ name?: string | null } | string)[] | null;
+  certifications?: Record<string, unknown>[] | null;
+  languages?: ({ name?: string | null } | string)[] | null;
+  originalQuery?: { query?: string | null } | null;
+}
+
+/** What extraction produces: indexed scalars, a compact payload, and the FTS document. */
+export interface EnrichedProfile {
+  linkedin_id: string | null;
+  public_identifier: string | null;
+  full_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  headline: string | null;
+  location_raw: string | null;
+  location_city: string | null;
+  location_region: string | null;
+  location_country: string | null;
+  location_country_code: string | null;
+  current_title: string | null;
+  current_company: string | null;
+  /** Cherry-picked payload, stored as raw_json. */
+  compact: Record<string, unknown>;
+  /** Flattened searchable text for connections_fts. */
+  doc: string;
+}
+
+export type EnrichOutcome =
+  | { kind: 'enriched'; profile: EnrichedProfile }
+  | { kind: 'empty' }                       // silent-empty shell: 200 OK, no signal
+  | { kind: 'failed'; error: string };

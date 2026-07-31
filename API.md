@@ -122,8 +122,7 @@ connected to, with no cohort and no campaign status. A person in two campaigns i
 connection, and a connection you never contacted is still a first-class record.
 
 The roster is **append-only** — nothing here removes a connection, and absence from a scrape
-never deletes anyone. Enrichment and search land in later phases; today the roster holds
-what the CSV, the connections page and your own campaign history already know.
+never deletes anyone.
 
 ### POST /api/connections/import
 Ingest a roster. Request: `{ "text": "…" }`. The body is the same whether you send a
@@ -148,8 +147,8 @@ while the row is un-enriched — once enriched, scraped data wins over a stale C
 ### GET /api/connections?limit=N&offset=M
 Browse the roster, newest first. Response:
 `{ "total", "limit", "offset", "results": [ …connection rows… ] }`.
-`limit` defaults to 50 and is clamped to 200. **This is not the search API** — structured
-search (`title_any`, `location_any`, `exclude_any`, …) arrives in a later phase.
+`limit` defaults to 50 and is clamped to 200. This is a plain browse view over the whole
+roster including un-enriched rows; for filtered queries use `POST /api/connections/search`.
 
 ### GET /api/connections/stats
 `{ "total", "by_enrich_status": { "pending", "enriching", "enriched", "empty", "failed" }, "last_synced_at" }`.
@@ -165,10 +164,131 @@ that declines to run is reported, never silently treated as a successful no-op.
 
 ### Roster sync (scheduled)
 `roster_sync_per_day` (default 2) governs automatic discovery of newly-added connections,
-using the same day-slicing as acceptance and reply checks: at most one successful pass per
-equal slot of the day, retried on the next 30-minute tick if a pass bails out. The pass is
-read-only against LinkedIn and does not consume any weekly cap. An empty read changes
-nothing and does not consume the slot.
+using the same day-slicing as reply checks: at most one successful pass per equal slot of the
+day, retried on the next 30-minute tick if a pass bails out. The pass is read-only against
+LinkedIn and does not consume any weekly cap. An empty read changes nothing and does not
+consume the slot.
+
+**This is the only place connections are discovered.** Acceptance tracking resolves pending
+invites against the roster rather than scraping separately, so `roster_sync_per_day` alone
+determines how quickly an accepted invite is noticed. `acceptance_checks_per_day` is retained
+in settings for backwards compatibility but nothing reads it: the acceptance pass is now a
+pure database read and runs every minute.
+
+### POST /api/connections/search
+
+Structured search over the **enriched** roster. This is the endpoint an AI agent should use.
+
+```jsonc
+{
+  "name_any":     [],
+  "title_any":    ["CISO", "Chief Information Security", "SOC", "appsec", "threat intel"],
+  "location_any": ["Seattle", "Bellevue"],
+  "company_any":  [],
+  "exclude_any":  ["physical security", "asset protection"],
+  "q":            "",              // free text over the whole profile document
+  "include_past_roles": false,
+  "limit": 25, "offset": 0
+}
+```
+
+**Semantics: OR within a field, AND across fields.** Every array is a group of alternatives;
+the groups are combined with AND. That is what lets one concept ("security practitioner") be
+fanned out into many keywords in a single round trip.
+
+- `name_any` matches the person's name (substring, case-insensitive).
+- `title_any` matches `current_title` OR `headline` — the headline matters, because senior
+  people often describe themselves there rather than in their job title. Matching is
+  **substring**, so supply the spellings you want: `"CISO"` does not match
+  `"Chief Information Security Officer"`.
+- `location_any` matches `location_raw` / city / region / country as substrings, so
+  `"Seattle"` finds `"Seattle Metropolitan Area"`. A **two-letter** term is treated as an
+  ISO-3166 country code and matched exactly — otherwise `"US"` would match Ho*us*ton,
+  A*us*tralia and Br*us*sels.
+- `company_any` matches the current employer; with `include_past_roles` it also matches
+  anyone who ever worked there.
+- `include_past_roles` widens `title_any`/`company_any` to the full experience history.
+  Default `false`, because "is a security practitioner" is a present-tense claim.
+- `exclude_any` drops a person if any term appears **anywhere** in their profile document.
+- `q` is free text over the whole document — certifications, technologies, schools.
+- `limit` defaults to 25, max 200. A bare string is accepted anywhere an array is expected.
+
+Response:
+
+```jsonc
+{
+  "total": 34, "limit": 25, "offset": 0,
+  "coverage": { "total": 7147, "enriched": 6140, "pending": 986, "unresolvable": 21 },
+  "results": [{
+    "profile_url": "…", "full_name": "…", "headline": "…",
+    "current_title": "…", "current_company": "…",
+    "location_raw": "…", "location_city": "…", "location_country": "…",
+    "connected_on": "2023-04-11", "enriched_at": "…",
+    "matched": { "title_any": ["CISO"], "location_any": ["Seattle"] }
+  }]
+}
+```
+
+`matched` reports which supplied terms hit which field, so a strong hit is distinguishable
+from a weak one. **Always read `coverage`**: search covers enriched rows only, so a thin
+result set may mean the corpus is still filling rather than that nobody matches.
+
+Results are ordered current-role-first, then most-recently-connected. Deliberately not bm25:
+term frequency across a profile rewards headline-stuffers, which is the wrong bias for
+"who does this job".
+
+### GET /api/connections/:slug
+
+Everything known about one person: every roster column plus `profile`, the full stored Apify
+payload (about, experience, education, skills, certifications). An old slug still resolves
+via its alias after a merge. `404` if unknown.
+
+## Enrichment
+
+Every connection is scraped once via Apify (actor `harvestapi/linkedin-profile-scraper`,
+mode *Profile details no email*, ~**$0.004/profile**) and re-scraped after
+`enrich_ttl_days` (default 180). Enrichment runs on Apify's infrastructure and **never
+touches your LinkedIn session**, so unlike the sender it has no pacing, no weekly cap and no
+guardrail — the only limits are money and your Apify plan's concurrency
+(`enrich_concurrency`, default 8).
+
+Each connection carries an `enrich_status`:
+
+| Status | Meaning |
+|---|---|
+| `pending` | queued for scraping |
+| `enriching` | claimed by a worker right now |
+| `enriched` | scraped successfully |
+| `empty` | Apify returned a shell with no identifying signal — restricted or deleted. **Terminal**: a retry cannot make it real |
+| `failed` | 3 attempts failed. **Terminal** — only `retry-failed` re-arms it, because every attempt bills |
+
+### POST /api/enrichment/start
+Begin draining the pending queue. Returns immediately — a full backfill runs for over an
+hour. Response: `{ "started": true, "queued": 7147, "estimated_cost_usd": 28.59 }`.
+`400` if no Apify key is configured; `409` if a run is already in progress.
+
+### GET /api/enrichment/status
+`{ "running", "total", "enriched", "pending", "enriching", "empty", "failed", "startedAt" }`.
+Safe to poll while idle.
+
+### POST /api/enrichment/pause
+Stops claiming new work; in-flight requests finish. Every claimed-but-unprocessed row is
+returned to `pending`, so **nothing is ever stranded in `enriching`**. Response:
+`{ "paused": true|false }` — `false` means nothing was running. Restarting resumes exactly
+where it stopped.
+
+### POST /api/enrichment/retry-failed
+Re-arms every `failed`/`empty` row back to `pending` with attempts zeroed.
+Response: `{ "requeued": N }`. Never happens automatically.
+
+### POST /api/connections/:slug/refresh
+Re-scrape one person immediately. Response `{ "status": "enriched" | "empty" }`; `404` for an
+unknown slug, `502` when Apify fails.
+
+### The Apify key
+Set it with `POST /api/settings` `{ "apify_api_key": "…" }`. It is **write-only**:
+`GET /api/settings` returns `apify_key_set: true|false` and never the key itself — and
+neither does the `POST` response, which echoes the same sanitized shape.
 
 ## Queue
 

@@ -546,18 +546,6 @@ export class LinkedInDriver implements BrowserDriver {
     return this.collectProfileLinks(page, SEL.invitationCardLink);
   }
 
-  async readRecentConnections(): Promise<string[]> {
-    const page = await this.session.page();
-    await page.goto(URLS.connections, { waitUntil: 'domcontentloaded' });
-    await sleep(rand(2000, 4000));
-    if ((await this.scanCheckpoint(page)).hit) {
-      await captureEvidence(page, 'checkpoint', { during: 'connections read' });
-      throw new Error('checkpoint detected during connections read');
-    }
-    await this.scrollConnections(page, 6); // a few pages of "recently added" (weeks of history)
-    return this.collectProfileLinks(page, SEL.connectionCardLink);
-  }
-
   /**
    * Roster sync's read of the connections page: same navigation and scroll as
    * readRecentConnections, but returns the display name alongside each URL so a

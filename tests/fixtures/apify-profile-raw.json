@@ -1,0 +1,470 @@
+{
+  "id": "ACoAABCb3-UBTG79PeQUR4P-txeGhSMVy1_AU5k",
+  "publicIdentifier": "keren-tevet-3453a079",
+  "linkedinUrl": "https://www.linkedin.com/in/keren-tevet-3453a079",
+  "firstName": "Keren",
+  "lastName": "Tevet",
+  "headline": "Senior software engineer",
+  "location": {
+    "linkedinText": "Israel",
+    "countryCode": "IL",
+    "parsed": {
+      "text": "Israel",
+      "countryCode": "IL",
+      "regionCode": null,
+      "country": "Israel",
+      "countryFull": "Israel"
+    }
+  },
+  "about": "Passionate about solving complex engineering challenges. \nI bring a versatile technical background, ranging from designing and building distributed scalable systems, to development of deep operating systems internals.",
+  "currentPosition": [
+    {
+      "position": "Senior Software Engineer",
+      "location": null,
+      "employmentType": "Full-time",
+      "workplaceType": null,
+      "companyName": "Aiven",
+      "companyLinkedinUrl": "https://www.linkedin.com/company/aiven/",
+      "companyId": "10294984",
+      "duration": "11 mos",
+      "description": null,
+      "skills": null,
+      "startDate": {
+        "month": "Sep",
+        "year": 2025,
+        "text": "Sep 2025"
+      },
+      "endDate": {
+        "text": "Present"
+      },
+      "companyLogo": {
+        "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGsapbGZVwqIQ/company-logo_400_400/B4EZ8dmdyKJYAc-/0/1782908050800/aiven_logo?e=1787184000&v=beta&t=La3o0l4HycCpkhHUB-OoVkXhc5PTquav-ugTCYUb3Nc",
+        "sizes": [
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGsapbGZVwqIQ/company-logo_400_400/B4EZ8dmdyKJYAc-/0/1782908050800/aiven_logo?e=1787184000&v=beta&t=La3o0l4HycCpkhHUB-OoVkXhc5PTquav-ugTCYUb3Nc",
+            "width": 400,
+            "height": 400
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGsapbGZVwqIQ/company-logo_200_200/B4EZ8dmdyKJYAM-/0/1782908050800/aiven_logo?e=1787184000&v=beta&t=bXDnSWDRGgJ4rc3tnL7a5wxh-8noRIhquSKwQ0CFoVM",
+            "width": 200,
+            "height": 200
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGsapbGZVwqIQ/company-logo_100_100/B4EZ8dmdyKJYAQ-/0/1782908050800/aiven_logo?e=1787184000&v=beta&t=cg-53fij8LnuesxZaiBpCS3r6dFCfOzGKPBhpoILVQs",
+            "width": 100,
+            "height": 100
+          }
+        ]
+      },
+      "companyUniversalName": "aiven"
+    }
+  ],
+  "experience": [
+    {
+      "position": "Senior Software Engineer",
+      "location": null,
+      "employmentType": "Full-time",
+      "workplaceType": null,
+      "companyName": "Aiven",
+      "companyLinkedinUrl": "https://www.linkedin.com/company/aiven/",
+      "companyId": "10294984",
+      "duration": "11 mos",
+      "description": null,
+      "skills": null,
+      "startDate": {
+        "month": "Sep",
+        "year": 2025,
+        "text": "Sep 2025"
+      },
+      "endDate": {
+        "text": "Present"
+      },
+      "companyLogo": {
+        "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGsapbGZVwqIQ/company-logo_400_400/B4EZ8dmdyKJYAc-/0/1782908050800/aiven_logo?e=1787184000&v=beta&t=La3o0l4HycCpkhHUB-OoVkXhc5PTquav-ugTCYUb3Nc",
+        "sizes": [
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGsapbGZVwqIQ/company-logo_400_400/B4EZ8dmdyKJYAc-/0/1782908050800/aiven_logo?e=1787184000&v=beta&t=La3o0l4HycCpkhHUB-OoVkXhc5PTquav-ugTCYUb3Nc",
+            "width": 400,
+            "height": 400
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGsapbGZVwqIQ/company-logo_200_200/B4EZ8dmdyKJYAM-/0/1782908050800/aiven_logo?e=1787184000&v=beta&t=bXDnSWDRGgJ4rc3tnL7a5wxh-8noRIhquSKwQ0CFoVM",
+            "width": 200,
+            "height": 200
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQGsapbGZVwqIQ/company-logo_100_100/B4EZ8dmdyKJYAQ-/0/1782908050800/aiven_logo?e=1787184000&v=beta&t=cg-53fij8LnuesxZaiBpCS3r6dFCfOzGKPBhpoILVQs",
+            "width": 100,
+            "height": 100
+          }
+        ]
+      },
+      "companyUniversalName": "aiven"
+    },
+    {
+      "position": "Backend Tech Lead",
+      "location": "Ramat Gan, Tel Aviv District, Israel",
+      "employmentType": "Full-time",
+      "workplaceType": "Hybrid",
+      "companyName": "Placer.ai",
+      "companyLinkedinUrl": "https://www.linkedin.com/company/placer/",
+      "companyId": "3027652",
+      "duration": "9 mos",
+      "description": null,
+      "skills": null,
+      "startDate": {
+        "month": "Dec",
+        "year": 2024,
+        "text": "Dec 2024"
+      },
+      "endDate": {
+        "month": "Aug",
+        "year": 2025,
+        "text": "Aug 2025"
+      },
+      "companyLogo": {
+        "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG2l0X1QVmyeQ/company-logo_400_400/B4DZ6MsksALEAU-/0/1780476955640/placer_logo?e=1787184000&v=beta&t=p1z_9nG1ujdPRY4mg6euPouQHrHUJMYWbfNHyxEI7js",
+        "sizes": [
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG2l0X1QVmyeQ/company-logo_400_400/B4DZ6MsksALEAU-/0/1780476955640/placer_logo?e=1787184000&v=beta&t=p1z_9nG1ujdPRY4mg6euPouQHrHUJMYWbfNHyxEI7js",
+            "width": 400,
+            "height": 400
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG2l0X1QVmyeQ/company-logo_200_200/B4DZ6MsksALEAE-/0/1780476955640/placer_logo?e=1787184000&v=beta&t=cMt4GqcieIxiNSkFNDKsxIA6pXMsH7rxeVZcYd2Y9Pg",
+            "width": 200,
+            "height": 200
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4D0BAQG2l0X1QVmyeQ/company-logo_100_100/B4DZ6MsksALEAI-/0/1780476955639/placer_logo?e=1787184000&v=beta&t=vxn2_3KA3lZoYhIaiDYrLkZS5oNS7uW4F7LTRYDpJko",
+            "width": 100,
+            "height": 100
+          }
+        ]
+      },
+      "companyUniversalName": "placer"
+    },
+    {
+      "position": "Senior Software Engineer",
+      "location": "New York City Metropolitan Area",
+      "employmentType": null,
+      "workplaceType": null,
+      "companyName": "Lyft",
+      "companyLinkedinUrl": "https://www.linkedin.com/company/lyft/",
+      "companyId": "2620735",
+      "duration": "5 yrs",
+      "description": "•\tLed multiple technology initiatives involving cross-functional teams to enhance the passenger waiting experience at Lyft.\n•\tArchitected and implemented Server-driven UI infrastructure solutions, significantly boosting development velocity for Lyft engineers.\n•\tBackend development: Python, DynamoDB",
+      "skills": [
+        "Python (Programming Language)"
+      ],
+      "startDate": {
+        "year": 2018,
+        "text": "2018"
+      },
+      "endDate": {
+        "year": 2023,
+        "text": "2023"
+      },
+      "companyLogo": {
+        "url": "https://media.licdn.com/dms/image/v2/D4E0BAQG5JWwh4GET8A/company-logo_400_400/B4EZdbVQ6oHcAg-/0/1749583990773/lyft_logo?e=1787184000&v=beta&t=2AlRbAj2tfyar8AXGGlj92acDzoiDuVkIuN9-EhYrX0",
+        "sizes": [
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQG5JWwh4GET8A/company-logo_400_400/B4EZdbVQ6oHcAg-/0/1749583990773/lyft_logo?e=1787184000&v=beta&t=2AlRbAj2tfyar8AXGGlj92acDzoiDuVkIuN9-EhYrX0",
+            "width": 400,
+            "height": 400
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQG5JWwh4GET8A/company-logo_200_200/B4EZdbVQ6oHcAQ-/0/1749583990773/lyft_logo?e=1787184000&v=beta&t=DAaPFv-KZwH4pBe3nGUZhtSvr4wYhds7GAyg5xex6H4",
+            "width": 200,
+            "height": 200
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQG5JWwh4GET8A/company-logo_100_100/B4EZdbVQ6oHcAY-/0/1749583990773/lyft_logo?e=1787184000&v=beta&t=R5FirThqA4-HrgbO0NbKp-t9HRZ4diGsc6HaQSaDFsQ",
+            "width": 100,
+            "height": 100
+          }
+        ]
+      },
+      "companyUniversalName": "lyft"
+    },
+    {
+      "position": "Senior Software Engineer",
+      "location": null,
+      "employmentType": null,
+      "workplaceType": null,
+      "companyName": "Minerva Labs",
+      "companyLinkedinUrl": "https://www.linkedin.com/company/minerva-labs/",
+      "companyId": "5360625",
+      "duration": "1 yr",
+      "description": "•\tDeveloping innovative cyber security products on Windows and Mac environments.\n•\tLow level development (Windows/Mac Internals) as well as user-facing components (Web).\n•\tFull Stack development: Angular/JavaScript;  C++, C#, Python, MongoDB, SQL Server.",
+      "skills": null,
+      "startDate": {
+        "year": 2017,
+        "text": "2017"
+      },
+      "endDate": {
+        "year": 2018,
+        "text": "2018"
+      },
+      "companyLogo": {
+        "url": "https://media.licdn.com/dms/image/v2/C4E0BAQHxGWUtKjm49A/company-logo_400_400/company-logo_400_400/0/1653578053980/minerva_labs_logo?e=1787184000&v=beta&t=UDzeta4ZfeW5cGY4V7M9we0FWqyE-HO80KVGQrpAhiE",
+        "sizes": [
+          {
+            "url": "https://media.licdn.com/dms/image/v2/C4E0BAQHxGWUtKjm49A/company-logo_400_400/company-logo_400_400/0/1653578053980/minerva_labs_logo?e=1787184000&v=beta&t=UDzeta4ZfeW5cGY4V7M9we0FWqyE-HO80KVGQrpAhiE",
+            "width": 400,
+            "height": 400
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/C4E0BAQHxGWUtKjm49A/company-logo_200_200/company-logo_200_200/0/1653578053980/minerva_labs_logo?e=1787184000&v=beta&t=B_oEz53oVyzHVPjH-NQuCdMNymfWuTtwGw5UCbWc_Zs",
+            "width": 200,
+            "height": 200
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/C4E0BAQHxGWUtKjm49A/company-logo_100_100/company-logo_100_100/0/1653578053980/minerva_labs_logo?e=1787184000&v=beta&t=AEKJTvzndgO_Xo2wDGCPsCKQGjN7vEDZw7biLntqKU4",
+            "width": 100,
+            "height": 100
+          }
+        ]
+      },
+      "companyUniversalName": "minerva-labs"
+    },
+    {
+      "position": "Hands-On Software Architect",
+      "location": null,
+      "employmentType": null,
+      "workplaceType": null,
+      "companyName": "CyberArk",
+      "companyLinkedinUrl": "https://www.linkedin.com/company/cyber-ark-software/",
+      "companyId": "26630",
+      "duration": "1 yr",
+      "description": "•\tFirst Engineer/Architect in a new team to build CyberArk’s new Cloud (SaaS) offering.\n•\tLed the team technologically, including setting up development standards, and designing architecture/infrastructure from scratch.\n•\tFull Stack development:  Angular/JavaScript;  Java/Spring, MySQL.\n",
+      "skills": null,
+      "experienceGroupId": "7a9a84f21d2200a08d5f79c48a60cae400fad954",
+      "startDate": {
+        "year": 2016,
+        "text": "2016"
+      },
+      "endDate": {
+        "year": 2017,
+        "text": "2017"
+      },
+      "companyLogo": {
+        "url": "https://media.licdn.com/dms/image/v2/D4E0BAQF_LV6_60xwnA/company-logo_400_400/company-logo_400_400/0/1727881963334/cyber_ark_software_logo?e=1787184000&v=beta&t=G8jxuUTJEjkxdzLF1is8f1vnvyVf4nwXf1SsAuT3Glo",
+        "sizes": [
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQF_LV6_60xwnA/company-logo_400_400/company-logo_400_400/0/1727881963334/cyber_ark_software_logo?e=1787184000&v=beta&t=G8jxuUTJEjkxdzLF1is8f1vnvyVf4nwXf1SsAuT3Glo",
+            "width": 400,
+            "height": 400
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQF_LV6_60xwnA/company-logo_200_200/company-logo_200_200/0/1727881963333/cyber_ark_software_logo?e=1787184000&v=beta&t=AmGQGJ77taT9bGD5nUcdNxVSHgHbvHj9FP6O18Or1YM",
+            "width": 200,
+            "height": 200
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQF_LV6_60xwnA/company-logo_100_100/company-logo_100_100/0/1727881963334/cyber_ark_software_logo?e=1787184000&v=beta&t=PZCJoHKbXEm1FontGf7MEJSlU4-A6bzfZHfRoh_yOU8",
+            "width": 100,
+            "height": 100
+          }
+        ]
+      },
+      "companyUniversalName": "cyber-ark-software"
+    },
+    {
+      "position": "Senior Software Engineer and Architect",
+      "location": null,
+      "employmentType": null,
+      "workplaceType": null,
+      "companyName": "CyberArk",
+      "companyLinkedinUrl": "https://www.linkedin.com/company/cyber-ark-software/",
+      "companyId": "26630",
+      "duration": "3 yrs",
+      "description": "•\tLeading and designing key features of the product.  Had to come with creative solutions for very challenging low-level tasks.\n•\tC++, Windows Internals, Linux Internals.\n•\tPromoted to Software Architect during this time period",
+      "skills": null,
+      "experienceGroupId": "7a9a84f21d2200a08d5f79c48a60cae400fad954",
+      "startDate": {
+        "year": 2013,
+        "text": "2013"
+      },
+      "endDate": {
+        "year": 2016,
+        "text": "2016"
+      },
+      "companyLogo": {
+        "url": "https://media.licdn.com/dms/image/v2/D4E0BAQF_LV6_60xwnA/company-logo_400_400/company-logo_400_400/0/1727881963334/cyber_ark_software_logo?e=1787184000&v=beta&t=G8jxuUTJEjkxdzLF1is8f1vnvyVf4nwXf1SsAuT3Glo",
+        "sizes": [
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQF_LV6_60xwnA/company-logo_400_400/company-logo_400_400/0/1727881963334/cyber_ark_software_logo?e=1787184000&v=beta&t=G8jxuUTJEjkxdzLF1is8f1vnvyVf4nwXf1SsAuT3Glo",
+            "width": 400,
+            "height": 400
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQF_LV6_60xwnA/company-logo_200_200/company-logo_200_200/0/1727881963333/cyber_ark_software_logo?e=1787184000&v=beta&t=AmGQGJ77taT9bGD5nUcdNxVSHgHbvHj9FP6O18Or1YM",
+            "width": 200,
+            "height": 200
+          },
+          {
+            "url": "https://media.licdn.com/dms/image/v2/D4E0BAQF_LV6_60xwnA/company-logo_100_100/company-logo_100_100/0/1727881963334/cyber_ark_software_logo?e=1787184000&v=beta&t=PZCJoHKbXEm1FontGf7MEJSlU4-A6bzfZHfRoh_yOU8",
+            "width": 100,
+            "height": 100
+          }
+        ]
+      },
+      "companyUniversalName": "cyber-ark-software"
+    },
+    {
+      "position": "Development Team Leader and Engineer",
+      "location": null,
+      "employmentType": null,
+      "workplaceType": null,
+      "companyName": "Israel Defense Forces",
+      "companyLinkedinUrl": "https://www.linkedin.com/company/3149/",
+      "companyId": "3149",
+      "duration": "3 yrs",
+      "description": "•\tResponsible for delivering projects under a tight schedule, in the field of military logistics.\n•\tLed a team of 10 engineers, while working directly with customers and international partners.\n•\tDesign and development with Object-Oriented languages in Mainframe environments.",
+      "skills": null,
+      "experienceGroupId": "6f03a62a0909ccaf587b71a4a389f437c5694532",
+      "startDate": {
+        "year": 2010,
+        "text": "2010"
+      },
+      "endDate": {
+        "year": 2013,
+        "text": "2013"
+      }
+    },
+    {
+      "position": "MAMRAM Course Instructor",
+      "location": null,
+      "employmentType": null,
+      "workplaceType": null,
+      "companyName": "Israel Defense Forces",
+      "companyLinkedinUrl": "https://www.linkedin.com/company/3149/",
+      "companyId": "3149",
+      "duration": "2 yrs",
+      "description": "•\tInstructor in the elite MAMRAM programming course, for training new recruits for Software Engineering roles in the Israeli Army.\n•\tTeaching a large variety of subjects, e.g. Algorithms, C++, Networking, Databases, OS Internals, OOP, etc.",
+      "skills": null,
+      "experienceGroupId": "6f03a62a0909ccaf587b71a4a389f437c5694532",
+      "startDate": {
+        "year": 2008,
+        "text": "2008"
+      },
+      "endDate": {
+        "year": 2010,
+        "text": "2010"
+      }
+    }
+  ],
+  "education": [
+    {
+      "schoolName": "College Of Management",
+      "schoolLinkedinUrl": "https://www.linkedin.com/search/results/all/?keywords=College+Of+Management",
+      "schoolId": null,
+      "degree": "Bachelor of Science (B.Sc.)",
+      "fieldOfStudy": "Computer Science",
+      "skills": [],
+      "insights": "Grade: Dean’s List and summa cum laude",
+      "startDate": {
+        "year": 2011,
+        "text": "2011"
+      },
+      "endDate": {
+        "year": 2014,
+        "text": "2014"
+      },
+      "period": "2011 - 2014",
+      "schoolLogo": null
+    },
+    {
+      "schoolName": "MAMRAM Programming Course, IDF",
+      "schoolLinkedinUrl": "https://www.linkedin.com/search/results/all/?keywords=MAMRAM+Programming+Course%2C+IDF",
+      "schoolId": null,
+      "degree": null,
+      "fieldOfStudy": null,
+      "skills": [],
+      "insights": "Grade: Finished First in Class",
+      "startDate": null,
+      "endDate": {
+        "year": 2008,
+        "text": "2008"
+      },
+      "period": "2008",
+      "schoolLogo": null
+    }
+  ],
+  "skills": [
+    {
+      "name": "Python (Programming Language)",
+      "positions": [
+        "Senior Software Engineer at Lyft"
+      ]
+    },
+    {
+      "name": "C++",
+      "positions": [
+        "Endorsed by 9 colleagues at Minerva Labs (Acquired by Rapid7)"
+      ],
+      "endorsements": "25 endorsements"
+    },
+    {
+      "name": "C#",
+      "positions": [
+        "Endorsed by 9 colleagues at Minerva Labs (Acquired by Rapid7)"
+      ],
+      "endorsements": "32 endorsements"
+    },
+    {
+      "name": ".NET",
+      "endorsements": "10 endorsements"
+    },
+    {
+      "name": "Angular"
+    },
+    {
+      "name": "Programming",
+      "endorsements": "24 endorsements"
+    },
+    {
+      "name": "Software Engineering",
+      "endorsements": "22 endorsements"
+    },
+    {
+      "name": "Scrum",
+      "endorsements": "17 endorsements"
+    },
+    {
+      "name": "Software Design",
+      "endorsements": "20 endorsements"
+    },
+    {
+      "name": "Software Development",
+      "endorsements": "18 endorsements"
+    },
+    {
+      "name": "Software Project Management",
+      "endorsements": "13 endorsements"
+    },
+    {
+      "name": "Object Oriented Design",
+      "endorsements": "14 endorsements"
+    },
+    {
+      "name": "OOP",
+      "endorsements": "12 endorsements"
+    }
+  ],
+  "topSkills": [],
+  "certifications": [],
+  "languages": [
+    {
+      "name": "English"
+    },
+    {
+      "name": "Hebrew"
+    }
+  ],
+  "originalQuery": {
+    "query": "https://www.linkedin.com/in/keren-tevet-3453a079"
+  }
+}

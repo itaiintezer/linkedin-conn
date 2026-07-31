@@ -127,23 +127,23 @@ Or use **Retry all** to requeue everything at once.
 
 ## 6. How acceptance tracking works
 The Machine opens **one** LinkedIn page in the background — **Recent connections** — and
-compares it against **every** profile still sitting in **Pending**. Anyone who shows up
-there is marked **accepted**. That's the only way a profile leaves Pending.
+adds everyone it finds to your **connection list** (see section 10). Any profile sitting in
+**Pending** who turns up on that list is marked **accepted**. That's the only way a profile
+leaves Pending.
 
-Absence proves nothing, so absence never marks anything: a pending request that isn't in
-recent connections just stays pending. (Inferring "expired" from absence is what used to
-mislabel still-valid invites.) **Expired** now comes only from the optional age backstop —
+Absence proves nothing, so absence never marks anything: a pending request that isn't yet a
+connection just stays pending. (Inferring "expired" from absence is what used to mislabel
+still-valid invites.) **Expired** now comes only from the optional age backstop —
 `expiry_days`, off by default.
 
-**How often:** `acceptance_checks_per_day` (default **2**). The day is split into that many
-equal slots and one successful check runs per slot — so 2 means roughly one in the morning
-and one in the afternoon, not two in a row. If a check can't complete (logged out, LinkedIn
-read error, page rendered empty) nothing is recorded and it simply retries on the next
-30-minute tick, still inside the same slot. The "checked …" time on the Accepted card tells
-you when a check last succeeded.
+**How often:** the connections page is read `roster_sync_per_day` times a day (default
+**2**) — roughly one read in the morning and one in the afternoon, not two in a row. If a
+read can't complete (logged out, LinkedIn error, page rendered empty) nothing is recorded and
+it retries on the next 30-minute tick. Matching pending invites against the list is free, so
+that happens every minute; the "checked …" time on the Accepted card shows when it last ran.
 
 This read is lightweight and does **not** count against your weekly send cap. **Recheck now**
-on the Accepted card forces a pass immediately, ignoring slots and even a pause.
+on the Accepted card forces a pass immediately, even during a pause.
 
 ## 7. How reply tracking works
 Same idea, for messages. The Machine opens **one** LinkedIn page in the background — your
@@ -220,3 +220,45 @@ from someone you hadn't. Treat **Replied** as a floor, and your LinkedIn inbox a
   `Chromium`), then `npm start` again.
 - **Stop everything** → click the terminal running `npm start` and press **Ctrl+C**. Wait
   for it to return to a prompt. Only then close the window.
+
+## 10. Your connection list
+Separate from campaigns, The Machine keeps a list of everyone you're actually connected to,
+and can make it searchable.
+
+**Getting it in.** Go to **Settings → Connections**. Either paste your LinkedIn
+`Connections.csv` export (LinkedIn: *Settings & Privacy → Get a copy of your data →
+Connections* — they email you a file) or paste a plain list of profile URLs. Re-importing the
+same file later is safe: it updates people rather than duplicating them. From then on, the
+twice-daily read of your connections page adds anyone new automatically.
+
+**Making it searchable.** The list starts with just names, companies and job titles from the
+export. To search by *location* or by someone's full history, The Machine has to look each
+person up — it does that through a service called Apify.
+
+1. Make an account at `apify.com`, copy your API key from *Settings → Integrations*.
+2. Paste it into **Settings → Connections → Apify API key** and press **Save key**.
+3. Press **Start enrichment**. The button tells you how many people and roughly what it will
+   cost — about **$0.004 each**, so ~$29 for 7,000 connections, once.
+
+It takes a couple of hours for a large list. You can close the page; it keeps going, and
+**Pause** stops it safely — restarting picks up exactly where it left off. This does not use
+your LinkedIn session at all, so it can't get your account flagged and isn't slowed down for
+safety like sending is.
+
+A few people can't be looked up (deleted accounts, locked-down profiles). They're marked and
+not retried, since each attempt costs money. **Retry failed** tries them again if you want.
+
+**Searching.** The **Connections** tab. Each box takes a comma-separated list, and the boxes
+combine — *(CISO **or** SOC **or** appsec)* **and** *(Seattle **or** Bellevue)*. The
+**Exclude** box removes anyone whose profile mentions a word anywhere, which is how you get
+security *practitioners* without every physical-security guard in your network.
+
+Two things that will otherwise surprise you:
+
+- It matches on the letters you type. `CISO` will **not** find someone whose title is written
+  out as "Chief Information Security Officer" — put both in the box.
+- The line above the results says how much of your list is searchable. If enrichment is still
+  running, "no matches" may just mean those people haven't been looked up yet — it tells you
+  so rather than pretending nobody matched.
+
+Click any row to see everything The Machine knows about that person.

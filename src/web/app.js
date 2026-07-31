@@ -1172,6 +1172,8 @@ async function loadSettings() {
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
     $('#setRosterSync').value = s.roster_sync_per_day ?? '';
+    // The key itself is never returned — only whether one is set.
+    $('#apifyKeyState').textContent = s.apify_key_set ? '— configured' : '— not set';
     refreshConnections();
     loadLogs();
   } catch (_) { /* ignore */ }
@@ -1190,6 +1192,7 @@ async function refreshConnections() {
     $('#connPending').textContent = fmtInt(s.by_enrich_status.pending);
     $('#connSynced').textContent = s.last_synced_at ? fmtTime(s.last_synced_at) : 'never';
   } catch (_) { /* leave the last-known figures rather than blanking the panel */ }
+  await refreshEnrichment();
 }
 
 /** One import path for both the pasted textarea and the wizard — the endpoint only ever
@@ -1204,6 +1207,267 @@ async function importConnections(text, resultNode) {
   } catch (err) {
     toast(resultNode, err.message, true);
   }
+}
+
+/* ---------- connection search (Connections tab) ---------- */
+const SEARCH_PAGE = 25;
+let searchState = { query: null, offset: 0, total: 0 };
+
+/** "a, b , c" -> ["a","b","c"]. Blank input yields undefined so the field is omitted. */
+function csvTerms(sel) {
+  const raw = ($(sel)?.value ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  return raw.length ? raw : undefined;
+}
+
+function buildSearchQuery() {
+  return {
+    name_any: csvTerms('#sqName'),
+    title_any: csvTerms('#sqTitle'),
+    location_any: csvTerms('#sqLocation'),
+    company_any: csvTerms('#sqCompany'),
+    exclude_any: csvTerms('#sqExclude'),
+    q: ($('#sqFree')?.value ?? '').trim() || undefined,
+    include_past_roles: $('#sqPast')?.checked === true,
+  };
+}
+
+function connRow(r) {
+  const slug = slugFromUrl(r.profile_url);
+  const tr = el('tr', { class: 'search-row', 'data-slug': slug });
+  const name = el('td', {},
+    el('span', { class: 'search-name', text: r.full_name || slug }),
+    r.headline ? el('span', { class: 'search-headline', text: r.headline }) : null,
+  );
+  tr.appendChild(name);
+  tr.appendChild(el('td', { text: r.current_title || '—' }));
+  tr.appendChild(el('td', { text: r.current_company || '—' }));
+  tr.appendChild(el('td', { text: r.location_raw || '—' }));
+  tr.appendChild(el('td', { class: 'mono-cell', text: r.connected_on || '—' }));
+  return tr;
+}
+
+function renderCoverage(cov) {
+  const node = $('#searchCoverage');
+  if (!node) return;
+  // Always visible: an agent OR a human needs to know the corpus is still filling, or a
+  // thin result set reads as "nobody matches" when it means "we haven't looked yet".
+  const bits = [`${fmtInt(cov.enriched)} of ${fmtInt(cov.total)} searchable`];
+  if (cov.pending) bits.push(`${fmtInt(cov.pending)} still enriching`);
+  if (cov.unresolvable) bits.push(`${fmtInt(cov.unresolvable)} unreachable`);
+  node.textContent = bits.join(' · ');
+}
+
+async function runSearch(append = false) {
+  const body = { ...searchState.query, limit: SEARCH_PAGE, offset: append ? searchState.offset : 0 };
+  const res = await api('/api/connections/search', { method: 'POST', body });
+
+  searchState.total = res.total;
+  searchState.offset = (append ? searchState.offset : 0) + res.results.length;
+
+  const tbody = $('#searchResults');
+  if (!append) tbody.replaceChildren();
+  for (const r of res.results) tbody.appendChild(connRow(r));
+
+  renderCoverage(res.coverage);
+  $('#searchResultsWrap').hidden = res.total === 0;
+  $('#searchEmpty').hidden = res.total !== 0;
+  $('#searchEmpty').textContent = res.coverage.pending
+    ? `No matches yet — but ${fmtInt(res.coverage.pending)} connections are still being enriched, so try again shortly.`
+    : 'No connections match those filters.';
+  $('#searchMeta').hidden = false;
+  $('#searchMeta').textContent = `${fmtInt(res.total)} match${res.total === 1 ? '' : 'es'}`;
+  $('#searchMore').hidden = searchState.offset >= res.total;
+}
+
+async function openConnection(slug) {
+  const drawer = $('#connDrawer'); const backdrop = $('#drawerBackdrop');
+  const body = $('#connDrawerBody');
+  body.replaceChildren(el('p', { class: 'empty', text: 'loading…' }));
+  drawer.hidden = false; backdrop.hidden = false;
+
+  try {
+    const c = await api(`/api/connections/${encodeURIComponent(slug)}`);
+    $('#connDrawerName').textContent = c.full_name || slug;
+    $('#connDrawerSub').textContent = [c.current_title, c.current_company].filter(Boolean).join(' · ') || slug;
+    body.replaceChildren(renderConnectionDetail(c, slug));
+  } catch (err) {
+    body.replaceChildren(el('p', { class: 'empty', text: `Could not load: ${err.message}` }));
+  }
+}
+
+function detailSection(title, children) {
+  if (!children.length) return null;
+  return el('section', { class: 'cd-section' }, el('h4', { text: title }), ...children);
+}
+
+function renderConnectionDetail(c, slug) {
+  const p = c.profile || {};
+  const wrap = el('div', { class: 'conn-detail' });
+
+  wrap.appendChild(el('div', { class: 'cd-meta' },
+    el('a', { class: 'btn btn-ghost', href: c.profile_url, target: '_blank', rel: 'noopener', text: 'Open on LinkedIn' }),
+    el('button', { class: 'btn', id: 'cdRefresh', type: 'button', 'data-slug': slug, text: 'Refresh from LinkedIn' }),
+  ));
+
+  const facts = [
+    ['Location', c.location_raw], ['Connected', c.connected_on],
+    ['Enriched', c.enriched_at ? fmtTime(c.enriched_at) : 'not yet'],
+    ['Source', c.source],
+  ].filter(([, v]) => v);
+  wrap.appendChild(el('dl', { class: 'cd-facts' },
+    ...facts.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', { text: String(v) })])));
+
+  if (p.about) wrap.appendChild(detailSection('About', [el('p', { class: 'cd-about', text: p.about })]));
+
+  const exp = (p.experience || []).map((e) => el('div', { class: 'cd-item' },
+    el('span', { class: 'cd-item-title', text: e.title || '—' }),
+    el('span', { class: 'cd-item-sub', text: [e.companyName, e.duration].filter(Boolean).join(' · ') }),
+  ));
+  wrap.appendChild(detailSection('Experience', exp));
+
+  const edu = (p.education || []).map((e) => el('div', { class: 'cd-item' },
+    el('span', { class: 'cd-item-title', text: e.schoolName || '—' }),
+    el('span', { class: 'cd-item-sub', text: [e.degree, e.fieldOfStudy].filter(Boolean).join(' · ') }),
+  ));
+  wrap.appendChild(detailSection('Education', edu));
+
+  const skills = (p.skills || []).map((s) => el('span', { class: 'cd-chip', text: s }));
+  wrap.appendChild(detailSection('Skills', skills.length ? [el('div', { class: 'cd-chips' }, ...skills)] : []));
+
+  if (!c.enriched_at) {
+    wrap.appendChild(el('p', { class: 'hint', text: 'This connection has not been enriched yet — only what the import supplied is shown.' }));
+  }
+  return wrap;
+}
+
+function closeConnDrawer() {
+  $('#connDrawer').hidden = true;
+  if ($('#statusDrawer').hidden) $('#drawerBackdrop').hidden = true;
+}
+
+function initSearch() {
+  $('#searchForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    searchState.query = buildSearchQuery();
+    try { await runSearch(false); } catch (err) { toast($('#searchMeta'), err.message, true); }
+  });
+
+  $('#sqClear')?.addEventListener('click', () => {
+    for (const id of ['#sqName', '#sqTitle', '#sqLocation', '#sqCompany', '#sqExclude', '#sqFree']) $(id).value = '';
+    $('#sqPast').checked = false;
+    $('#searchResults').replaceChildren();
+    $('#searchResultsWrap').hidden = true;
+    $('#searchMeta').hidden = true;
+    $('#searchEmpty').hidden = false;
+    $('#searchEmpty').textContent = 'Search your connections above.';
+  });
+
+  $('#searchMore')?.addEventListener('click', () => { void runSearch(true); });
+
+  $('#searchResults')?.addEventListener('click', (ev) => {
+    const row = ev.target.closest('.search-row');
+    if (row) void openConnection(row.dataset.slug);
+  });
+
+  $('#connDrawerClose')?.addEventListener('click', closeConnDrawer);
+  $('#drawerBackdrop')?.addEventListener('click', closeConnDrawer);
+
+  $('#connDrawerBody')?.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('#cdRefresh');
+    if (!btn) return;
+    btn.disabled = true; btn.textContent = 'Refreshing…';
+    try {
+      await api(`/api/connections/${encodeURIComponent(btn.dataset.slug)}/refresh`, { method: 'POST', body: {} });
+      await openConnection(btn.dataset.slug);
+    } catch (err) {
+      btn.disabled = false; btn.textContent = `Refresh failed: ${err.message}`;
+    }
+  });
+}
+
+/* ---------- enrichment ----------
+   Poll only while a run is live: an idle dashboard should not wake up every 3s forever. */
+let enrichPollTimer = null;
+
+function renderEnrichment(p) {
+  const panel = byIdOrNull('connEnrich');
+  if (!panel) return;
+  panel.hidden = p.total === 0;
+
+  const done = p.enriched;
+  const parked = p.empty + p.failed;
+  const pct = p.total ? (100 * done) / p.total : 0;
+  const parkedPct = p.total ? (100 * parked) / p.total : 0;
+  $('#enrichFill').style.width = `${pct}%`;
+  $('#enrichParked').style.width = `${parkedPct}%`;
+  $('#enrichBar').setAttribute('aria-valuenow', Math.round(pct));
+
+  const bits = [`${fmtInt(done)} of ${fmtInt(p.total)} enriched`];
+  if (p.pending) bits.push(`${fmtInt(p.pending)} pending`);
+  if (p.failed) bits.push(`${fmtInt(p.failed)} failed`);
+  if (p.empty) bits.push(`${fmtInt(p.empty)} unreachable`);
+  $('#enrichLegend').textContent = bits.join(' · ');
+
+  const start = $('#enrichStart');
+  start.disabled = p.running || p.pending === 0;
+  start.textContent = p.running
+    ? 'Running…'
+    : p.pending
+      ? `Start enrichment — ${fmtInt(p.pending)} · ~$${(p.pending * 0.004).toFixed(2)}`
+      : 'Everything enriched';
+  $('#enrichPause').hidden = !p.running;
+  $('#enrichRetry').hidden = parked === 0 || p.running;
+}
+
+async function refreshEnrichment() {
+  try {
+    const p = await api('/api/enrichment/status');
+    renderEnrichment(p);
+    // Self-terminating poll: start it when a run begins, stop as soon as it ends.
+    if (p.running && !enrichPollTimer) enrichPollTimer = setInterval(refreshEnrichment, 3000);
+    if (!p.running && enrichPollTimer) { clearInterval(enrichPollTimer); enrichPollTimer = null; }
+  } catch (_) { /* leave the last-known figures on screen */ }
+}
+
+function byIdOrNull(id) { return document.getElementById(id); }
+
+function initEnrichment() {
+  const result = () => $('#connImportResult');
+
+  $('#enrichStart')?.addEventListener('click', async () => {
+    try {
+      const r = await api('/api/enrichment/start', { method: 'POST', body: {} });
+      toast(result(), `Enriching ${fmtInt(r.queued)} connections — about $${r.estimated_cost_usd.toFixed(2)}. You can leave this page.`);
+      await refreshEnrichment();
+    } catch (err) {
+      toast(result(), err.message, true);
+    }
+  });
+
+  $('#enrichPause')?.addEventListener('click', async () => {
+    const r = await api('/api/enrichment/pause', { method: 'POST', body: {} });
+    toast(result(), r.paused ? 'Paused. Restart any time — it picks up where it left off.' : 'Nothing was running.', !r.paused);
+    await refreshEnrichment();
+  });
+
+  $('#enrichRetry')?.addEventListener('click', async () => {
+    const r = await api('/api/enrichment/retry-failed', { method: 'POST', body: {} });
+    toast(result(), `Re-queued ${fmtInt(r.requeued)} for another attempt.`);
+    await refreshEnrichment();
+  });
+
+  $('#saveApifyKey')?.addEventListener('click', async () => {
+    const key = $('#setApifyKey').value.trim();
+    if (!key) { toast(result(), 'Paste a key first.', true); return; }
+    try {
+      await api('/api/settings', { method: 'POST', body: { apify_api_key: key } });
+      $('#setApifyKey').value = '';   // never leave a credential sitting in the DOM
+      toast(result(), 'Apify key saved.');
+      await loadSettings();
+    } catch (err) {
+      toast(result(), err.message, true);
+    }
+  });
 }
 
 function initConnections() {
@@ -1412,6 +1676,8 @@ function init() {
   initCohorts();
   initSettings();
   initConnections();
+  initEnrichment();
+  initSearch();
   initAttention();
   initLogViewer();
   initWizard();

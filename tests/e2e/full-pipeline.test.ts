@@ -58,12 +58,12 @@ test('happy path: list -> schedule -> send -> accept -> metrics', async () => {
   expect(repos.profiles.byStatus('sent')).toHaveLength(3);
 
   // 4. Acceptance check: 2 became connections; the third simply isn't a connection yet,
-  //    so it stays pending. Absence from the connections list is NEVER treated as expiry.
-  driver.connections = [
-    'https://www.linkedin.com/in/qa-alice',
-    'https://www.linkedin.com/in/qa-bob',
-  ];
-  await runAcceptanceCheck(repos, driver, new Date('2026-06-30T09:00:00Z'));
+  //    so it stays pending. Absence from the roster is NEVER treated as expiry.
+  //    Post-cutover the roster is the source of truth — roster-sync puts people there.
+  for (const u of ['https://www.linkedin.com/in/qa-alice', 'https://www.linkedin.com/in/qa-bob']) {
+    repos.connections.upsert({ profile_url: u }, 'scrape', '2026-06-30T09:00:00.000Z');
+  }
+  await runAcceptanceCheck(repos, new Date('2026-06-30T09:00:00Z'));
   expect(repos.profiles.byStatus('accepted')).toHaveLength(2);
   expect(repos.profiles.byStatus('sent')).toHaveLength(1);   // qa-carol still pending
   expect(repos.profiles.byStatus('expired')).toHaveLength(0); // never false-expired
