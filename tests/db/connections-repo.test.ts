@@ -135,3 +135,36 @@ test('a roster-sync card name is sanitised too', () => {
   repos.connections.upsert({ profile_url: URL_A, full_name: '\u200FErik Decker' }, 'scrape', '2026-07-31T00:00:00.000Z');
   expect(repos.connections.findByUrl(URL_A)!.first_name).toBe('Erik');
 });
+
+test('backfillFirstNames repairs existing rows and is idempotent', () => {
+  const rows = [
+    ['https://www.linkedin.com/in/a', 'Dr. Chidhanandham', 'Dr. Chidhanandham Arunachalam'],
+    ['https://www.linkedin.com/in/b', '🪐 Leonardo', '🪐 Leonardo Pizarro'],
+    ['https://www.linkedin.com/in/c', 'Ada', 'Ada Lovelace'],          // already clean
+    ['https://www.linkedin.com/in/d', 'M.', 'M. G.'],                  // unusable
+  ];
+  for (const [url, fn, fl] of rows) {
+    repos.db.prepare(
+      "INSERT INTO connections (profile_url, first_name, full_name, source, first_seen_at, last_seen_at) VALUES (?,?,?,'csv','x','x')",
+    ).run(url, fn, fl);
+  }
+
+  expect(repos.connections.backfillFirstNames()).toBe(3);   // c was already correct
+
+  const get = (u: string) => repos.connections.findByUrl(u)!.first_name;
+  expect(get('https://www.linkedin.com/in/a')).toBe('Chidhanandham');
+  expect(get('https://www.linkedin.com/in/b')).toBe('Leonardo');
+  expect(get('https://www.linkedin.com/in/c')).toBe('Ada');
+  expect(get('https://www.linkedin.com/in/d')).toBeNull();  // nothing usable -> "there" at send
+
+  // Idempotent: a second pass changes nothing.
+  expect(repos.connections.backfillFirstNames()).toBe(0);
+});
+
+test('the backfill never touches full_name', () => {
+  repos.db.prepare(
+    "INSERT INTO connections (profile_url, first_name, full_name, source, first_seen_at, last_seen_at) VALUES (?,?,?,'csv','x','x')",
+  ).run('https://www.linkedin.com/in/z', '🪐 Leonardo', '🪐 Leonardo Pizarro');
+  repos.connections.backfillFirstNames();
+  expect(repos.connections.findByUrl('https://www.linkedin.com/in/z')!.full_name).toBe('🪐 Leonardo Pizarro');
+});

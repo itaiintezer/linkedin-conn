@@ -25,6 +25,11 @@ const repos = new Repos(openDatabase(DB_PATH));
 const seeded = seedConnectionsFromProfiles(repos, new Date().toISOString());
 if (seeded > 0) log.info('roster', 'seeded connections from existing profiles', { seeded });
 
+// One-time repair of names written before sanitisation existed. Cheap and idempotent after
+// the first pass (it only writes rows whose value would change).
+const repaired = repos.connections.backfillFirstNames();
+if (repaired > 0) log.info('roster', 'repaired first names', { repaired });
+
 const driver = new LinkedInDriver();
 // One lock shared between the scheduler and the API so the periodic sender, the acceptance
 // reader, the reply reader and the manual "run now" trigger never drive the browser at once.

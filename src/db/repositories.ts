@@ -308,6 +308,34 @@ export class ConnectionRepo {
     return { inserted, updated };
   }
 
+  /**
+   * Rewrite every stored greeting name through firstNameFrom. One-time repair for rows
+   * written before sanitisation existed; safe to re-run (it only writes rows whose value
+   * would actually change, and re-sanitising a clean name is a no-op).
+   *
+   * Only `first_name` is touched — `full_name` stays verbatim as the display name, and is
+   * the input the repair derives from when the stored first name is unusable.
+   * Returns how many rows changed.
+   */
+  backfillFirstNames(): number {
+    const rows = this.db.prepare('SELECT id, first_name, full_name FROM connections')
+      .all() as unknown as { id: number; first_name: string | null; full_name: string | null }[];
+    const upd = this.db.prepare('UPDATE connections SET first_name = ? WHERE id = ?');
+    let changed = 0;
+    this.db.exec('BEGIN');
+    try {
+      for (const r of rows) {
+        const next = firstNameFrom(r.first_name) ?? firstNameFrom(r.full_name);
+        if (next !== r.first_name) { upd.run(next, r.id); changed++; }
+      }
+      this.db.exec('COMMIT');
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+      throw e;
+    }
+    return changed;
+  }
+
   count(): number {
     return (this.db.prepare('SELECT COUNT(*) c FROM connections').get() as unknown as { c: number }).c;
   }

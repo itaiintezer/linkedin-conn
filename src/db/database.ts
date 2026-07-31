@@ -34,6 +34,15 @@ export function openDatabase(path: string): DB {
       db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); // fold the WAL in — a bare file copy misses it
       copyFileSync(path, rosterBackup);
     }
+    // Same safety net for the first-name backfill (src/index.ts), which rewrites the
+    // first_name column of every roster row. full_name is untouched and Apify's raw values
+    // are kept in raw_json, so this is belt-and-braces — but the backfill is the only thing
+    // that mass-overwrites a column operators read, so snapshot the file once before it runs.
+    const nameBackup = `${path}.pre-firstname-backup`;
+    if (hasTable('connections') && !existsSync(nameBackup)) {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      copyFileSync(path, nameBackup);
+    }
   }
   const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
   db.exec(schema);
