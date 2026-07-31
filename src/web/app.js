@@ -1337,10 +1337,13 @@ async function openCampaignDialog() {
   const [cohorts, settings] = await Promise.all([api('/api/cohorts'), api('/api/settings')]);
   // Message cohorts only. Offering an invite cohort would earn a 409 from /api/lists, and
   // everyone here is already a connection so an invite would just be skipped anyway.
+  // Terminology: the app calls the container a COHORT everywhere it is picked or named
+  // ("Add to cohort", "Cohort name", "New cohort"); "campaign" is reserved for its TYPE
+  // ("Campaign type"). The dialog follows that.
   const msgCohorts = cohorts.filter((c) => c.kind === 'message');
   sel.replaceChildren(
     ...msgCohorts.map((c) => el('option', { value: c.name, text: c.name, 'data-template': c.message_template || '' })),
-    el('option', { value: '__new__', text: '+ New campaign…' }),
+    el('option', { value: '__new__', text: '+ New cohort…' }),
   );
   if (msgCohorts.length === 0) sel.value = '__new__';
 
@@ -1367,7 +1370,7 @@ function syncCampaignTemplate() {
   ta.classList.toggle('is-locked', !isNew);
   $('#campTemplateHint').textContent = isNew
     ? 'required — {firstName} is substituted at send time'
-    : "this campaign's existing message · edit it in the Cohorts tab";
+    : "this cohort's existing message · edit it in the Cohorts tab";
   const opt = sel.selectedOptions[0];
   ta.value = isNew ? '' : (opt ? opt.dataset.template || '' : '');
 }
@@ -1380,8 +1383,8 @@ async function submitCampaign() {
   const name = isNew ? $('#campName').value.trim() : $('#campCohort').value;
   const template = $('#campTemplate').value.trim();
 
-  if (isNew && !name) { toast(result, 'Name the new campaign first.', true); return; }
-  if (isNew && !template) { toast(result, 'A message campaign needs a message body.', true); return; }
+  if (isNew && !name) { toast(result, 'Name the new cohort first.', true); return; }
+  if (isNew && !template) { toast(result, 'A message cohort needs a message body.', true); return; }
   if (selected.size === 0) { toast(result, 'Nothing selected.', true); return; }
 
   const body = { cohort: name, kind: 'message', text: [...selected].join('\n') };
@@ -1394,9 +1397,9 @@ async function submitCampaign() {
     const r = await api('/api/lists', { method: 'POST', body });
     const dupes = r.found - r.added;
     const bits = [`Added ${fmtInt(r.added)} to “${name}”`];
-    // /api/lists dedupes on (profile_url, kind), so anyone already in a message campaign is
+    // /api/lists dedupes on (profile_url, kind), so anyone already in a message cohort is
     // skipped. Say so — silence here reads as a partial failure.
-    if (dupes > 0) bits.push(`${fmtInt(dupes)} were already in a message campaign`);
+    if (dupes > 0) bits.push(`${fmtInt(dupes)} ${dupes === 1 ? 'was' : 'were'} already in a message cohort`);
     toast(result, `${bits.join(' · ')}.`);
     clearSelection();
   } catch (err) {

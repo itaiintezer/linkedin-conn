@@ -245,7 +245,7 @@ test('the outcome reports how many were already in a campaign', async () => {
 
   const txt = byId('campResult').textContent!;
   expect(txt).toContain('1');
-  expect(txt).toMatch(/2 (were )?already/i);
+  expect(txt).toMatch(/2 were already/i);
 });
 
 test('the impact line is not written in broken English for a single person', async () => {
@@ -255,4 +255,45 @@ test('the impact line is not written in broken English for a single person', asy
   await flush();
   expect(byId('campImpact').textContent).toContain('1 person');
   expect(byId('campImpact').textContent).not.toContain('1 people');
+});
+
+test('the dialog calls the container a cohort, matching the rest of the app', async () => {
+  // The app's convention: the object you pick or name is a COHORT ("Add to cohort",
+  // "Cohort name", "New cohort", the Cohorts tab); "campaign" names only its TYPE
+  // ("Campaign type"). The Add List form already pairs both in one place.
+  await search();
+  check(0);
+  byId('selectionAdd').dispatchEvent(new Event('click', { bubbles: true }));
+  await flush();
+
+  const dialog = byId('campModal').textContent!;
+  expect(dialog).toContain('Cohort');
+  expect(dialog).toContain('Add to cohort');
+  expect(Array.from(byId<HTMLSelectElement>('campCohort').options).map((o) => o.textContent))
+    .toContain('+ New cohort…');
+
+  const sel = byId<HTMLSelectElement>('campCohort');
+  sel.value = '__new__';
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  expect(byId('campNameField').textContent).toContain('New cohort name');
+});
+
+test('the dedupe report is not written in broken English for a single duplicate', async () => {
+  const body = results(2);
+  stubFetchRoutes({
+    '/api/connections/search': { body },
+    '/api/cohorts': { body: COHORTS },
+    '/api/settings': { body: { msg_weekly_cap: 250 } },
+    '/api/lists': { body: { added: 1, found: 2 } },   // exactly one duplicate
+  });
+  byId('searchForm').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+  await flush();
+  check(0); check(1);
+  byId('selectionAdd').dispatchEvent(new Event('click', { bubbles: true }));
+  await flush();
+  byId('campConfirm').dispatchEvent(new Event('click', { bubbles: true }));
+  await flush();
+
+  expect(byId('campResult').textContent).toMatch(/1 was already/i);
+  expect(byId('campResult').textContent).not.toMatch(/1 were/i);
 });
