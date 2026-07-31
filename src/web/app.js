@@ -299,6 +299,32 @@ const GUARDRAIL_TEXT = {
   repeated_failures: 'Several actions failed in a row (LinkedIn may have changed its UI or is blocking us). Check the browser window, then re-check.',
 };
 
+/* Why automatic enrichment stopped, in the operator's terms rather than Apify's. Keep in
+   step with EnrichHaltReason (src/types.ts) — but an unknown reason must still render, so
+   the fallback below uses the server's detail rather than leaving an empty amber bar. */
+const ENRICH_HALT_TEXT = {
+  no_api_key: 'No Apify API key is configured, so new connections can’t be enriched. Add one below.',
+  auth: 'Apify rejected your API key. It may have been rotated or revoked — paste a fresh one below.',
+  billing: 'Apify refused the run for billing reasons — your plan may be out of credit.',
+  rate_limit: 'Apify is rate-limiting this account. It usually clears on its own.',
+  upstream: 'Apify is returning server errors. This is usually temporary.',
+  repeated_errors: 'Several profiles failed in a row, so enrichment stopped instead of burning attempts on all of them.',
+};
+
+/* Enrichment halt banner. Unattended work needs a visible failure: without this, a rotated
+   key is a line in relay.log while the roster quietly stops growing. */
+function applyEnrichHaltUi(status) {
+  const banner = $('#enrichBanner');
+  if (!banner) return;
+  const h = (status && status.enrich_halt) || null;
+  banner.hidden = !h;
+  if (!h) return;
+  $('#enrichHaltReason').textContent = ENRICH_HALT_TEXT[h.reason] || h.detail || 'Enrichment stopped.';
+  // Only show the raw error when it adds something beyond the sentence above.
+  $('#enrichHaltDetail').textContent = ENRICH_HALT_TEXT[h.reason] && h.detail ? h.detail : '';
+  $('#enrichHaltTime').textContent = h.at ? `Stopped ${fmtTime(h.at)}` : '';
+}
+
 function applyGuardrailUi(status) {
   const banner = $('#guardrailBanner');
   const g = (status && status.guardrail) || {};
@@ -342,6 +368,7 @@ async function refreshStatus() {
     applyEngineState(status);
     applyPauseUi(status);
     applyGuardrailUi(status);
+    applyEnrichHaltUi(status);
   } catch (_) { /* transient; next tick retries */ }
 }
 
@@ -1595,6 +1622,14 @@ function renderEnrichment(p) {
   $('#enrichParked').style.width = `${parkedPct}%`;
   $('#enrichBar').setAttribute('aria-valuenow', Math.round(pct));
 
+  // The dashboard banner already shouts about a halt; this repeats it where the operator
+  // comes to fix it (the key field is right below).
+  const alert = byIdOrNull('enrichPanelAlert');
+  if (alert) {
+    alert.hidden = !p.halt;
+    if (p.halt) alert.textContent = ENRICH_HALT_TEXT[p.halt.reason] || p.halt.detail || 'Enrichment stopped.';
+  }
+
   const bits = [`${fmtInt(done)} of ${fmtInt(p.total)} enriched`];
   if (p.pending) bits.push(`${fmtInt(p.pending)} pending`);
   if (p.failed) bits.push(`${fmtInt(p.failed)} failed`);
@@ -1641,6 +1676,23 @@ function initEnrichment() {
     const r = await api('/api/enrichment/pause', { method: 'POST', body: {} });
     toast(result(), r.paused ? 'Paused. Restart any time — it picks up where it left off.' : 'Nothing was running.', !r.paused);
     await refreshEnrichment();
+  });
+
+  // The banner's "I've fixed it": clear the halt and start a run now, so the operator sees
+  // whether the fix worked instead of waiting on the next 60-second tick.
+  $('#enrichHaltRetry')?.addEventListener('click', async () => {
+    const btn = $('#enrichHaltRetry');
+    btn.disabled = true;
+    try {
+      await api('/api/enrichment/resume', { method: 'POST', body: {} });
+      $('#enrichBanner').hidden = true;
+      await refreshEnrichment();
+    } catch (err) {
+      // Still broken — leave the banner up and say what happened this time.
+      $('#enrichHaltDetail').textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   $('#enrichRetry')?.addEventListener('click', async () => {

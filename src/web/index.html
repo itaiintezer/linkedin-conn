@@ -82,6 +82,24 @@
     <span><strong>Engine paused.</strong> <span id="pauseReason"></span></span>
   </div>
 
+  <!-- Automatic enrichment stopped itself. Amber, not red: nothing about the LinkedIn
+       account is at risk — the roster has simply stopped filling in, which is a
+       "fix when you can" problem rather than a "stop everything" one. -->
+  <div class="enrich-banner" id="enrichBanner" hidden role="alert">
+    <span class="enrich-banner-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 8v4m0 4h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </span>
+    <div class="enrich-banner-body">
+      <strong>Profile enrichment stopped.</strong>
+      <span id="enrichHaltReason"></span>
+      <span class="enrich-banner-detail" id="enrichHaltDetail"></span>
+      <span class="enrich-banner-time" id="enrichHaltTime"></span>
+    </div>
+    <button class="btn" id="enrichHaltRetry" type="button">I&rsquo;ve fixed it &mdash; try again</button>
+  </div>
+
   <div class="guardrail-banner" id="guardrailBanner" hidden role="alert">
     <span class="guardrail-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
@@ -554,8 +572,9 @@
           <div class="conn-enrich-head">
             <div>
               <h4>Profile enrichment</h4>
-              <p class="hint">Scrapes each connection's profile via Apify — location, current role,
-                full history and skills — so you can search your network. Runs on Apify's
+              <p class="hint">Runs by itself: anything not yet enriched is picked up within a
+                minute, so newly-discovered connections fill in without being asked. Scrapes each
+                profile via Apify — location, current role, full history and skills — on Apify's
                 infrastructure, never your LinkedIn session, so it isn't paced or capped.</p>
             </div>
             <div class="conn-enrich-actions">
@@ -564,6 +583,10 @@
               <button class="btn btn-ghost" id="enrichRetry" type="button" hidden>Retry failed</button>
             </div>
           </div>
+
+          <!-- The same halt reason as the dashboard banner, repeated where the operator comes
+               to do something about it. -->
+          <p class="enrich-panel-alert" id="enrichPanelAlert" hidden></p>
 
           <div class="enrich-bar" id="enrichBar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
             <span class="enrich-fill" id="enrichFill"></span>

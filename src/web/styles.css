@@ -160,6 +160,40 @@ body > *:not(.atmosphere) { position: relative; z-index: 1; }
   color: #8e2424; font-size: 14.5px;
   box-shadow: inset 0 -1px 0 rgba(214,58,58,0.06), var(--shadow-sm);
 }
+/* Enrichment halt. Structurally the guardrail banner, deliberately amber rather than red:
+   the LinkedIn account is not at risk, the roster has just stopped filling in. */
+.enrich-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 13px 34px 13px 30px;
+  background: linear-gradient(90deg, var(--amber-bg) 0%, #fdf6ea 100%);
+  border-bottom: 1px solid #eccf9b;
+  border-left: 4px solid var(--amber);
+  color: #8a5408; font-size: 14.5px;
+  box-shadow: var(--shadow-sm);
+}
+.enrich-banner-icon {
+  display: grid; place-items: center; flex: none;
+  width: 30px; height: 30px; border-radius: 9px;
+  color: #fff; background: linear-gradient(150deg, #d18b1c 0%, var(--amber) 100%);
+  box-shadow: 0 4px 12px -4px rgba(185,113,11,0.45), inset 0 1px 0 rgba(255,255,255,0.25);
+}
+.enrich-banner-body { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 9px; flex: 1; min-width: 0; line-height: 1.45; }
+.enrich-banner-body strong { color: #7a4a06; font-weight: 700; letter-spacing: 0.1px; }
+.enrich-banner-detail {
+  flex-basis: 100%; font-family: var(--mono); font-size: 12px; color: #9c6413;
+  overflow-wrap: anywhere;
+}
+.enrich-banner-detail:empty { display: none; }
+.enrich-banner-time {
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  color: #a4701f; letter-spacing: 0.1px; flex: none;
+}
+.enrich-banner-time:empty { display: none; }
+@media (max-width: 720px) {
+  .enrich-banner { flex-wrap: wrap; padding: 13px 20px; }
+  #enrichHaltRetry { width: 100%; justify-content: center; }
+}
+
 .guardrail-icon {
   display: grid; place-items: center; flex: none;
   width: 30px; height: 30px; border-radius: 9px;
@@ -1028,6 +1062,13 @@ body > .drawer {
 }
 .enrich-fill.is-parked { background: var(--neutral-bg); border-left: 1px solid var(--line); }
 .enrich-legend { font-family: var(--mono); font-size: 12.5px; color: var(--ink-3); }
+
+/* The halt reason, repeated inside the panel where the operator acts on it. */
+.enrich-panel-alert {
+  margin: 0 0 12px; padding: 10px 12px;
+  border: 1px solid #eccf9b; border-left: 3px solid var(--amber); border-radius: 8px;
+  background: var(--amber-bg); color: #8a5408; font-size: 13.5px; line-height: 1.45;
+}
 
 .conn-key-row { display: flex; gap: 8px; align-items: stretch; }
 .conn-key-row input { flex: 1 1 auto; font-family: var(--mono); font-size: 13px; }
