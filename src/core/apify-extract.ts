@@ -1,4 +1,5 @@
 import type { ApifyProfile, ApifyPosition, EnrichedProfile } from '../types.js';
+import { firstNameFrom } from './first-name.js';
 
 /** Trim to a non-empty string, or null. Everything downstream expects null, not ''. */
 const str = (v: unknown): string | null => {
@@ -193,7 +194,10 @@ export function extractProfile(raw: ApifyProfile): EnrichedProfile {
     linkedin_id: str(raw.id),
     public_identifier: str(raw.publicIdentifier),
     full_name: fullName,
-    first_name: first,
+    // Sanitised at WRITE time so the column is trustworthy everywhere it is read.
+    // Apify's own firstName is a display fragment ("Darrell J.", "🪐 Leonardo"), so it is a
+    // candidate, not an answer; the full name is the fallback.
+    first_name: firstNameFrom(first) ?? firstNameFrom(fullName),
     last_name: last,
     headline: str(raw.headline),
     location_raw: loc.raw,

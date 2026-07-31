@@ -123,3 +123,13 @@ test('the stored payload keeps Apify\'s raw first/last name', () => {
   expect(p.compact.firstNameRaw).toBe('Dr. Chidhanandham');
   expect(p.compact.lastNameRaw).toBe('Arunachalam');
 });
+
+test('extraction stores a sanitised first name, not Apify\'s raw fragment', () => {
+  const p = extractProfile({ firstName: '🪐 Leonardo', lastName: 'Pizarro', name: '🪐 Leonardo Pizarro' });
+  expect(p.first_name).toBe('Leonardo');
+  expect(p.full_name).toBe('🪐 Leonardo Pizarro');   // display name is NOT sanitised
+});
+
+test('falls back to the full name when the first-name field is unusable', () => {
+  expect(extractProfile({ firstName: 'M.', name: 'M. Grace Hopper' }).first_name).toBe('Grace');
+});

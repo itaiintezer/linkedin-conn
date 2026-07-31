@@ -121,3 +121,17 @@ test('list is newest-first and paginates', () => {
   expect(page).toHaveLength(2);
   expect(page[0].profile_url).toBe('https://www.linkedin.com/in/p3');
 });
+
+test('upsert sanitises the first name from CSV or scrape input', () => {
+  repos.connections.upsert(
+    { profile_url: URL_A, first_name: 'Dr. Chidhanandham', full_name: 'Dr. Chidhanandham Arunachalam' },
+    'csv', '2026-07-31T00:00:00.000Z',
+  );
+  expect(repos.connections.findByUrl(URL_A)!.first_name).toBe('Chidhanandham');
+  expect(repos.connections.findByUrl(URL_A)!.full_name).toBe('Dr. Chidhanandham Arunachalam');
+});
+
+test('a roster-sync card name is sanitised too', () => {
+  repos.connections.upsert({ profile_url: URL_A, full_name: '\u200FErik Decker' }, 'scrape', '2026-07-31T00:00:00.000Z');
+  expect(repos.connections.findByUrl(URL_A)!.first_name).toBe('Erik');
+});

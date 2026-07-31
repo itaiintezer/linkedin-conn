@@ -3,6 +3,7 @@ import type {
   Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind,
   Connection, ConnectionInput, ConnectionSource, EnrichStatus, EnrichedProfile,
 } from '../types.js';
+import { firstNameFrom } from '../core/first-name.js';
 
 const PROFILE_COLUMNS = new Set([
   'first_name', 'full_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
@@ -241,6 +242,8 @@ export class ConnectionRepo {
    */
   upsert(input: ConnectionInput, source: ConnectionSource, nowIso: string): 'inserted' | 'updated' {
     const existing = this.findByUrl(input.profile_url);
+    // Same rule as enrichment: whatever the source, the stored greeting name is sanitised.
+    const cleanFirst = firstNameFrom(input.first_name) ?? firstNameFrom(input.full_name);
     if (!existing) {
       this.db.prepare(`
         INSERT INTO connections
@@ -249,7 +252,7 @@ export class ConnectionRepo {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.profile_url,
-        input.full_name ?? null, input.first_name ?? null, input.last_name ?? null,
+        input.full_name ?? null, cleanFirst, input.last_name ?? null,
         input.current_title ?? null, input.current_company ?? null,
         input.connected_on ?? null,
         source, nowIso, nowIso,
@@ -261,7 +264,9 @@ export class ConnectionRepo {
     const vals: unknown[] = [nowIso];
     const enriched = existing.enrich_status === 'enriched';
     for (const col of CONNECTION_INPUT_COLUMNS) {
-      const incoming = input[col];
+      // first_name is the derived, sanitised value — never the caller's raw fragment. The
+      // fill-NULLs / overwrite-while-un-enriched rule below is unchanged; only the value is.
+      const incoming = col === 'first_name' ? cleanFirst : input[col];
       if (incoming === undefined || incoming === null || incoming === '') continue;
       if (existing[col] !== null && enriched) continue; // Apify's value stands
       sets.push(`${col} = ?`); vals.push(incoming);
