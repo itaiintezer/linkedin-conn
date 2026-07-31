@@ -10,6 +10,7 @@ import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
+import { isEnrichmentRunning } from '../../src/worker/enrichment.js';
 import type { ApifyClient } from '../../src/core/apify-client.js';
 import type { ApifyProfile } from '../../src/types.js';
 
@@ -84,10 +85,10 @@ test('import -> enrich -> search -> detail', async () => {
   // 3. Enrich.
   const started = await app.inject({ method: 'POST', url: '/api/enrichment/start' });
   expect(started.json()).toMatchObject({ started: true, queued: 4 });
-  for (let i = 0; i < 100 && repos.connections.countsByEnrichStatus().pending > 0; i++) {
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  await new Promise((r) => setTimeout(r, 30));
+  // Wait for the worker to actually finish rather than sleeping a fixed span: under CPU
+  // contention a fixed wait is a flaky test, and this one did flake once in a full run.
+  for (let i = 0; i < 500 && isEnrichmentRunning(); i++) await new Promise((r) => setTimeout(r, 10));
+  expect(isEnrichmentRunning()).toBe(false);
 
   const counts = repos.connections.countsByEnrichStatus();
   expect(counts.enriched).toBe(3);
