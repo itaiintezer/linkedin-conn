@@ -970,3 +970,35 @@ test('a paused engine still leaves an added list unscheduled', async () => {
   expect(repos.profiles.byStatus('scheduled')).toHaveLength(0);
   expect(repos.profiles.byStatus('queued')).toHaveLength(1);
 });
+
+// REGRESSION: allow_no_note is load-bearing (sender.ts) — on note-quota exhaustion, 1 means
+// "re-send with NO note", 0 means "route to needs_attention". /api/lists wrote it
+// unconditionally from deriveAllowNoNote(template), which is `true` for undefined — so
+// adding people to an existing templated invite cohort without restating its template
+// silently downgraded the whole campaign to bare requests.
+test('adding to an existing cohort without a template leaves its template and no-note policy alone', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Templated', text: 'https://www.linkedin.com/in/a', message_template: 'Hi {firstName}',
+  } });
+  const before = repos.cohorts.findByName('Templated')!;
+  expect(before.message_template).toBe('Hi {firstName}');
+  expect(before.allow_no_note).toBe(0);
+
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Templated', text: 'https://www.linkedin.com/in/b',
+  } });
+
+  const after = repos.cohorts.findByName('Templated')!;
+  expect(after.message_template).toBe('Hi {firstName}');
+  expect(after.allow_no_note).toBe(0);
+});
+
+test('a supplied template still updates the cohort', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Edit', text: 'https://www.linkedin.com/in/a', message_template: 'First',
+  } });
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Edit', text: 'https://www.linkedin.com/in/b', message_template: 'Second',
+  } });
+  expect(repos.cohorts.findByName('Edit')!.message_template).toBe('Second');
+});

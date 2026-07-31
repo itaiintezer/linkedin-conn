@@ -137,8 +137,15 @@ export function buildServer(
       return reply.code(409).send({ error: `cohort "${cohortName}" is ${existing.kind === 'invite' ? 'an invite' : 'a message'} cohort` });
     }
     const c = repos.cohorts.getOrCreate(cohortName, template ?? null, allowNoNote, kind);
-    repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
-      .run(template ?? c.message_template, allowNoNote ? 1 : 0, c.id);
+    // Only touch the cohort's template when one was actually supplied. This used to run
+    // unconditionally, and deriveAllowNoNote(undefined) is `true` — so merely ADDING people
+    // to an existing templated invite cohort flipped allow_no_note 0 -> 1, which tells the
+    // sender to re-send with NO note once LinkedIn's note quota is exhausted (sender.ts).
+    // A personalized campaign silently degraded into bare connection requests.
+    if (template !== undefined) {
+      repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
+        .run(template, allowNoNote ? 1 : 0, c.id);
+    }
     const urls = extractProfileUrls(text ?? '');
     const before = repos.profiles.countAll();
     for (const u of urls) repos.profiles.add(c.id, u, null, kind);
