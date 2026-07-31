@@ -2,6 +2,7 @@ import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver, InboxRow, Profile } from '../types.js';
 import { isTripped, tripLoginLost, recordReadError, recordSuccess } from './guardrail.js';
 import { canonicalName, nameTokens, tokensContained } from '../core/name-match.js';
+import { firstNameFrom } from '../core/first-name.js';
 import { selectNoteSource, applyFirstName, MAX_MESSAGE } from '../core/message.js';
 import { log } from '../core/log.js';
 
@@ -288,9 +289,9 @@ export async function runReplyCheck(
     }
     const source = selectNoteSource(p.custom_message, templateByCohort.get(p.cohort_id) ?? null);
     if (!source) return null;
-    // First token of the stored display name — the sender substituted the name it read live,
-    // and snippetIsOurOutreach tolerates the two disagreeing.
-    const firstName = (p.full_name ?? '').trim().split(/\s+/)[0] || null;
+    // Must match the sender exactly — see rosterFirstName in sender.ts. A divergence here
+    // does not fail loudly; it silently mis-detects replies.
+    const firstName = firstNameFrom(p.full_name);
     return applyFirstName(source, firstName, MAX_MESSAGE);
   };
 
