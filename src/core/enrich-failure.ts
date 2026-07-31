@@ -10,12 +10,16 @@
 
 export type EnrichFailureKind = 'auth' | 'billing' | 'rate_limit' | 'upstream' | 'profile';
 
+/** The kinds that mean the account is broken. Every one of them is also an EnrichHaltReason. */
+export type AccountLevelKind = Exclude<EnrichFailureKind, 'profile'>;
+
 /** Kinds where the profile is fine and the account is not. These halt the run. */
 const ACCOUNT_LEVEL: ReadonlySet<EnrichFailureKind> = new Set<EnrichFailureKind>([
   'auth', 'billing', 'rate_limit', 'upstream',
 ]);
 
-export function isAccountLevel(kind: EnrichFailureKind): boolean {
+/** A type guard, so a caller that halts on `true` cannot pass 'profile' as a halt reason. */
+export function isAccountLevel(kind: EnrichFailureKind): kind is AccountLevelKind {
   return ACCOUNT_LEVEL.has(kind);
 }
 
