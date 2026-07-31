@@ -408,24 +408,40 @@ touches your LinkedIn session**, so unlike the sender it has no pacing, no weekl
 guardrail — the only limits are money and your Apify plan's concurrency
 (`enrich_concurrency`, default 8).
 
+**Enrichment is automatic.** A drain tick every 60 seconds scrapes whatever is `pending`,
+whatever put it there — an import, roster discovery of a new connection, the TTL staleness
+sweep, or recovery after a crash. So the roster converges on fully-enriched without anyone
+clicking anything, and `POST /api/enrichment/start` exists for forcing a run (it also works
+while Relay is paused, which the automatic tick does not).
+
+The tick stands down while Relay is **paused** — pause is the operator's "stop doing things"
+switch, so it stops unattended spending too. It deliberately **ignores a tripped guardrail**,
+which is about LinkedIn session health and has no bearing on Apify.
+
 Each connection carries an `enrich_status`:
 
 | Status | Meaning |
 |---|---|
-| `pending` | queued for scraping |
+| `pending` | queued for scraping — picked up within a minute |
 | `enriching` | claimed by a worker right now |
 | `enriched` | scraped successfully |
 | `empty` | Apify returned a shell with no identifying signal — restricted or deleted. **Terminal**: a retry cannot make it real |
 | `failed` | 3 attempts failed. **Terminal** — only `retry-failed` re-arms it, because every attempt bills |
 
 ### POST /api/enrichment/start
-Begin draining the pending queue. Returns immediately — a full backfill runs for over an
-hour. Response: `{ "started": true, "queued": 7147, "estimated_cost_usd": 28.59 }`.
+Force a run now rather than waiting for the next tick, and clear any halt (see below).
+Returns immediately — a full backfill runs for over an hour. Response:
+`{ "started": true, "queued": 7147, "estimated_cost_usd": 28.59 }`.
 `400` if no Apify key is configured; `409` if a run is already in progress.
 
 ### GET /api/enrichment/status
-`{ "running", "total", "enriched", "pending", "enriching", "empty", "failed", "startedAt" }`.
-Safe to poll while idle.
+`{ "running", "halt", "total", "enriched", "pending", "enriching", "empty", "failed", "startedAt" }`.
+Safe to poll while idle. `halt` is `null` when healthy, otherwise
+`{ "reason", "detail", "at" }` — see [Halts](#halts).
+
+### POST /api/enrichment/resume
+Clear a halt and start a run immediately: the "I've fixed it" action behind the dashboard
+banner. Response `{ "resumed": true, "queued": N }`; `400` if there is still no Apify key.
 
 ### POST /api/enrichment/pause
 Stops claiming new work; in-flight requests finish. Every claimed-but-unprocessed row is
@@ -439,7 +455,30 @@ Response: `{ "requeued": N }`. Never happens automatically.
 
 ### POST /api/connections/:slug/refresh
 Re-scrape one person immediately. Response `{ "status": "enriched" | "empty" }`; `404` for an
-unknown slug, `502` when Apify fails.
+unknown slug, `502` when Apify fails. Works during a halt — one deliberate profile is how you
+test whether the problem is fixed.
+
+### Halts
+
+Because enrichment now runs unattended, a broken *account* must not be mistaken for broken
+*profiles*: three attempts park a row as `failed`, which only `retry-failed` undoes, so an
+expired key would otherwise convert the whole roster into rows needing manual rescue. Errors
+that are not a given profile's fault therefore stop the run, leave the rows `pending` with
+their attempt counts untouched, and latch a halt that the dashboard shows.
+
+| `reason` | Raised when |
+|---|---|
+| `no_api_key` | there is work to do and no key is configured |
+| `auth` | Apify returned 401/403 — key rotated or revoked |
+| `billing` | Apify returned 402 — plan out of credit |
+| `rate_limit` | Apify returned 429 |
+| `upstream` | Apify returned 5xx |
+| `repeated_errors` | 5 profile-level failures in a row with no success between them |
+
+While halted, the 60-second tick stands down — a reported problem must not be retried 1,440
+times a day. Clear it with `resume` (or `start`), or let a run that successfully enriches
+somebody clear it as a side effect. A run that enriched nothing leaves the halt standing,
+because it disproved nothing. `GET /api/status` carries the same object as `enrich_halt`.
 
 ### The Apify key
 Set it with `POST /api/settings` `{ "apify_api_key": "…" }`. It is **write-only**:
