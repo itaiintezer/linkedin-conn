@@ -34,15 +34,6 @@ export function openDatabase(path: string): DB {
       db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); // fold the WAL in — a bare file copy misses it
       copyFileSync(path, rosterBackup);
     }
-    // Same safety net for the first-name backfill (src/index.ts), which rewrites the
-    // first_name column of every roster row. full_name is untouched and Apify's raw values
-    // are kept in raw_json, so this is belt-and-braces — but the backfill is the only thing
-    // that mass-overwrites a column operators read, so snapshot the file once before it runs.
-    const nameBackup = `${path}.pre-firstname-backup`;
-    if (hasTable('connections') && !existsSync(nameBackup)) {
-      db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
-      copyFileSync(path, nameBackup);
-    }
   }
   const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
   db.exec(schema);
@@ -62,6 +53,26 @@ export function openDatabase(path: string): DB {
   }
   runMigrations(db);
   return db;
+}
+
+/**
+ * Copy the database file aside once, before something rewrites data in bulk.
+ *
+ * Unlike the two snapshots in `openDatabase`, this one cannot be triggered by inspecting the
+ * schema: the first-name backfill repairs *values*, and a database that needs repairing looks
+ * exactly like one that does not. So the caller decides, and calls this only when it is about
+ * to actually write — otherwise every new install would copy its whole database on the second
+ * start to guard a migration that will never run for it.
+ *
+ * Returns whether a file was written (false when one already exists, or on :memory:).
+ */
+export function snapshotOnce(db: DB, path: string, suffix: string): boolean {
+  if (path === ':memory:') return false;
+  const dest = `${path}.${suffix}`;
+  if (existsSync(dest)) return false;
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); // fold the WAL in — a bare file copy misses it
+  copyFileSync(path, dest);
+  return true;
 }
 
 /** Idempotent schema migrations for databases created before a column existed. */

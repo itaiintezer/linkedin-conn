@@ -1,4 +1,4 @@
-import { openDatabase } from './db/database.js';
+import { openDatabase, snapshotOnce } from './db/database.js';
 import { Repos } from './db/repositories.js';
 import { seedConnectionsFromProfiles } from './db/seed-connections.js';
 import { LinkedInDriver } from './browser/linkedin-driver.js';
@@ -26,8 +26,12 @@ const seeded = seedConnectionsFromProfiles(repos, new Date().toISOString());
 if (seeded > 0) log.info('roster', 'seeded connections from existing profiles', { seeded });
 
 // One-time repair of names written before sanitisation existed. Cheap and idempotent after
-// the first pass (it only writes rows whose value would change).
-const repaired = repos.connections.backfillFirstNames();
+// the first pass (it only writes rows whose value would change), and it snapshots the
+// database first — but only on a run that actually has rows to repair, so a fresh install
+// never copies its database to guard a migration it does not need.
+const repaired = repos.connections.backfillFirstNames(
+  () => { snapshotOnce(repos.db, DB_PATH, 'pre-firstname-backup'); },
+);
 if (repaired > 0) log.info('roster', 'repaired first names', { repaired });
 
 const driver = new LinkedInDriver();

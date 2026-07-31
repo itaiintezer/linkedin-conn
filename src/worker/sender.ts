@@ -27,12 +27,6 @@ export interface SenderOptions {
 /** Real timer-based sleep — the production default for `SenderOptions.sleep`. */
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** min + floor(rng() * (max - min + 1)), the repo's existing randomized-wait idiom
- *  (see core/schedule.ts, worker/scheduler-service.ts). `Number(...)` coerces a
- *  numeric-string setting (POST /api/settings does no coercion) instead of letting
- *  `NaN > 0` silently collapse the delay to 0. Clamped so a negative/NaN/non-numeric
- *  min degrades to 0, a misconfigured max < min degrades to min, and — since rng() can
- *  legitimately return exactly 1 — the result never overshoots max by 1ms either. */
 /**
  * The greeting name for a send. The roster is preferred because it is already sanitised and
  * available without a page read — but invitees are by definition NOT connections (measured:
@@ -43,6 +37,12 @@ function rosterFirstName(repos: Repos, profileUrl: string): string | undefined {
   return repos.connections.findByUrl(profileUrl)?.first_name ?? undefined;
 }
 
+/** min + floor(rng() * (max - min + 1)), the repo's existing randomized-wait idiom
+ *  (see core/schedule.ts, worker/scheduler-service.ts). `Number(...)` coerces a
+ *  numeric-string setting (POST /api/settings does no coercion) instead of letting
+ *  `NaN > 0` silently collapse the delay to 0. Clamped so a negative/NaN/non-numeric
+ *  min degrades to 0, a misconfigured max < min degrades to min, and — since rng() can
+ *  legitimately return exactly 1 — the result never overshoots max by 1ms either. */
 function randomDelayMs(min: number, max: number, rng: () => number): number {
   const minN = Number(min);
   const maxN = Number(max);

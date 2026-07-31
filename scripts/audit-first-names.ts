@@ -19,7 +19,8 @@
  *               mostly-clean names would spend the whole budget confirming "Ada" is fine.
  */
 import { DatabaseSync } from 'node:sqlite';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { firstNameFrom } from '../src/core/first-name.js';
 import { DB_PATH } from '../src/config.js';
 
@@ -61,6 +62,7 @@ console.log(`changed         : ${changed.length}`);
 console.log(`unchanged       : ${unchanged.length}`);
 console.log(`  of which suspicious: ${suspects.length}`);
 
+mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, JSON.stringify({ changed, suspects }, null, 2));
 console.log(`\nwrote ${OUT} — ${changed.length} changed + ${suspects.length} suspect rows`);
 

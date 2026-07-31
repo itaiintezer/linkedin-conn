@@ -168,3 +168,36 @@ test('the backfill never touches full_name', () => {
   repos.connections.backfillFirstNames();
   expect(repos.connections.findByUrl('https://www.linkedin.com/in/z')!.full_name).toBe('🪐 Leonardo Pizarro');
 });
+
+test('a backfill with nothing to repair writes nothing and takes no backup', () => {
+  // The fresh-install path. Rows written after sanitisation existed are already correct, so
+  // a new user must not have their whole database copied aside on the second start to guard
+  // a migration they never needed.
+  repos.connections.upsert(
+    { profile_url: URL_A, first_name: 'Dr. Chidhanandham', full_name: 'Dr. Chidhanandham Arunachalam' },
+    'csv', '2026-07-31T00:00:00.000Z',
+  );
+  let snapshots = 0;
+  expect(repos.connections.backfillFirstNames(() => { snapshots++; })).toBe(0);
+  expect(snapshots).toBe(0);
+});
+
+test('a backfill with work to do snapshots exactly once, before writing', () => {
+  repos.db.prepare(
+    "INSERT INTO connections (profile_url, first_name, full_name, source, first_seen_at, last_seen_at) VALUES (?,?,?,'csv','x','x')",
+  ).run('https://www.linkedin.com/in/y', 'Dr. Chidhanandham', 'Dr. Chidhanandham Arunachalam');
+  repos.db.prepare(
+    "INSERT INTO connections (profile_url, first_name, full_name, source, first_seen_at, last_seen_at) VALUES (?,?,?,'csv','x','x')",
+  ).run('https://www.linkedin.com/in/w', '🪐 Leonardo', '🪐 Leonardo Pizarro');
+
+  const seenAtSnapshot: (string | null)[] = [];
+  const changed = repos.connections.backfillFirstNames(() => {
+    // Called BEFORE any UPDATE: the rows must still hold their original values here, or the
+    // "backup" would be a copy of the already-rewritten database.
+    seenAtSnapshot.push(repos.connections.findByUrl('https://www.linkedin.com/in/y')!.first_name);
+  });
+
+  expect(changed).toBe(2);
+  expect(seenAtSnapshot).toEqual(['Dr. Chidhanandham']);   // exactly once, pre-write
+  expect(repos.connections.findByUrl('https://www.linkedin.com/in/y')!.first_name).toBe('Chidhanandham');
+});

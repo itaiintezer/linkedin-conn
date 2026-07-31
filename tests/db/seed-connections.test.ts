@@ -96,3 +96,22 @@ test('an empty profiles table seeds nothing but still stamps, so it never re-run
   expect(seedConnectionsFromProfiles(repos, NOW)).toBe(0);
   expect(repos.appState.get().connections_seeded_at).toBe(NOW);
 });
+
+test('names the seed carries over from campaign history end up sanitised', () => {
+  // The seed is a raw INSERT…SELECT: it copies profiles.first_name straight across, so it is
+  // the one write path that does NOT go through ConnectionRepo.upsert. What saves it is that
+  // src/index.ts runs the backfill immediately afterwards. That ordering is load-bearing and
+  // invisible — reorder those two calls and dirty names reappear with no test failing.
+  const c = repos.cohorts.create('msg', 'hi', false, 'message');
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/chid', null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', {
+    sent_at: NOW, full_name: 'Dr. Chidhanandham Arunachalam', first_name: 'Dr. Chidhanandham',
+  });
+
+  expect(seedConnectionsFromProfiles(repos, NOW)).toBe(1);
+  // Straight after the seed the roster still holds the raw fragment…
+  expect(repos.connections.findByUrl('https://www.linkedin.com/in/chid')!.first_name).toBe('Dr. Chidhanandham');
+  // …and the backfill, which index.ts runs next, is what makes it sendable.
+  expect(repos.connections.backfillFirstNames()).toBe(1);
+  expect(repos.connections.findByUrl('https://www.linkedin.com/in/chid')!.first_name).toBe('Chidhanandham');
+});

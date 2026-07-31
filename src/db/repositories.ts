@@ -315,25 +315,37 @@ export class ConnectionRepo {
    *
    * Only `first_name` is touched — `full_name` stays verbatim as the display name, and is
    * the input the repair derives from when the stored first name is unusable.
+   *
+   * The repair is decided in full BEFORE anything is written, so a run with nothing to do
+   * opens no transaction and — via `beforeWrite` — takes no backup. That is what keeps a
+   * fresh install from snapshotting its whole database to guard a migration it never needs:
+   * rows written after sanitisation existed are already correct. `beforeWrite` runs at most
+   * once, immediately before the first UPDATE.
+   *
    * Returns how many rows changed.
    */
-  backfillFirstNames(): number {
+  backfillFirstNames(beforeWrite?: () => void): number {
     const rows = this.db.prepare('SELECT id, first_name, full_name FROM connections')
       .all() as unknown as { id: number; first_name: string | null; full_name: string | null }[];
+
+    const pending: { id: number; next: string | null }[] = [];
+    for (const r of rows) {
+      const next = firstNameFrom(r.first_name) ?? firstNameFrom(r.full_name);
+      if (next !== r.first_name) pending.push({ id: r.id, next });
+    }
+    if (pending.length === 0) return 0;
+
+    beforeWrite?.();
     const upd = this.db.prepare('UPDATE connections SET first_name = ? WHERE id = ?');
-    let changed = 0;
     this.db.exec('BEGIN');
     try {
-      for (const r of rows) {
-        const next = firstNameFrom(r.first_name) ?? firstNameFrom(r.full_name);
-        if (next !== r.first_name) { upd.run(next, r.id); changed++; }
-      }
+      for (const p of pending) upd.run(p.next, p.id);
       this.db.exec('COMMIT');
     } catch (e) {
       try { this.db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
       throw e;
     }
-    return changed;
+    return pending.length;
   }
 
   count(): number {
