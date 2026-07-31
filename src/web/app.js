@@ -304,7 +304,7 @@ const GUARDRAIL_TEXT = {
    the fallback below uses the server's detail rather than leaving an empty amber bar. */
 const ENRICH_HALT_TEXT = {
   no_api_key: 'No Apify API key is configured, so new connections can’t be enriched. Add one below.',
-  auth: 'Apify rejected your API key. It may have been rotated or revoked — paste a fresh one below.',
+  auth: 'Apify rejected your API key. It may have been rotated or revoked — press Replace below and paste a fresh one.',
   billing: 'Apify refused the run for billing reasons — your plan may be out of credit.',
   rate_limit: 'Apify is rate-limiting this account. It usually clears on its own.',
   upstream: 'Apify is returning server errors. This is usually temporary.',
