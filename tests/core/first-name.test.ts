@@ -91,3 +91,46 @@ test('is pure and total — never throws on hostile input', () => {
     expect(() => firstNameFrom(s)).not.toThrow();
   }
 });
+
+/* ---------------------------------------------------------------------------
+ * Regressions found by the roster audit (scripts/audit-first-names.ts) after the
+ * first implementation landed. Each case below is a real person in the 7,153-row
+ * roster who would otherwise have been greeted wrongly.
+ * ------------------------------------------------------------------------- */
+
+test('an apostrophe INSIDE a name is part of the name, not a quote delimiter', () => {
+  // 5 real rows. "Hi Ze," to Ze'ev reads as a broken tool.
+  expect(firstNameFrom("Ze'ev Manilovich")).toBe("Ze'ev");
+  expect(firstNameFrom("Ra'anan Cohen")).toBe("Ra'anan");
+  expect(firstNameFrom("De'Onn Griffin, MBA, PhD.")).toBe("De'Onn");
+  expect(firstNameFrom("Ya'akov Ben David Ajb-Id")).toBe("Ya'akov");
+  expect(firstNameFrom('Ze’ev Dreifuss')).toBe('Ze’ev');   // curly apostrophe too
+  // …but a quoting apostrophe still goes: it is not between two letters.
+  expect(firstNameFrom("' John R.")).toBe('John');
+});
+
+test('drops "Ts." — the Malaysian technologist title', () => {
+  expect(firstNameFrom('Ts. Muhammad Haris Jafri')).toBe('Muhammad');
+  expect(firstNameFrom('Ts. Zulhairy Z.')).toBe('Zulhairy');
+});
+
+test('a lone trailing token after initials is a SURNAME, not a greeting name', () => {
+  // Greeting someone "Hi Palmore," is worse than "Hi there,".
+  expect(firstNameFrom('M. K. Palmore')).toBeNull();
+  expect(firstNameFrom('C M UPPIN')).toBeNull();
+  expect(firstNameFrom('S Kumar')).toBeNull();
+  expect(firstNameFrom('J A Chowdary')).toBeNull();
+  // Two tokens after the initials means the first of them IS the given name.
+  expect(firstNameFrom('M. Naveed Mukadam')).toBe('Naveed');
+  expect(firstNameFrom('P. Raquel B.')).toBe('Raquel');
+  expect(firstNameFrom('M D Sathees Kumar')).toBe('Sathees');
+  expect(firstNameFrom('M. Ariel Evans')).toBe('Ariel');
+});
+
+test('a leading initialism outranks the post-nominal list', () => {
+  // "jd" is Juris Doctor as a SUFFIX, but "J.D. Miller" is what the man is called.
+  expect(firstNameFrom('J.D. Miller')).toBe('J.D.');
+  // A post-nominal in its normal trailing position is still dropped.
+  expect(firstNameFrom('Dennis E. Leber, Ph.D.')).toBe('Dennis');
+  expect(firstNameFrom('Erik Decker, CISSP')).toBe('Erik');
+});

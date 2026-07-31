@@ -17,6 +17,7 @@ const INVISIBLE = new RegExp(`${ZERO_WIDTH.source}|[\u200E\u200F\u202A-\u202E\u2
 const HONORIFICS = new Set([
   'dr', 'mr', 'mrs', 'ms', 'miss', 'mx', 'prof', 'professor', 'sir', 'dame', 'lord', 'lady',
   'rabbi', 'fr', 'rev', 'pastor', 'imam', 'sheikh',
+  'ts',   // Malaysian "Ts." (Technologist); two in the live roster, both greeted "Ts" without it
   'capt', 'col', 'maj', 'sgt', 'lt', 'cmdr', 'gen',
   'er', 'eng', 'ing', 'arch', 'adv', 'hon',
 ]);
@@ -43,7 +44,11 @@ export function firstNameFrom(raw: string | null | undefined): string | null {
   s = s.replace(PICTOGRAPHIC, ' ');
   s = s.replace(/\([^)]*\)/g, ' ');       // "Xinyu (Jade) Fan"
   s = s.replace(/[()]/g, ' ');            // unbalanced remnant
-  s = s.replace(/["“”„«»']/g, ' ');       // 'Akyl "Ambition" Phillips'
+  s = s.replace(/["“”„«»]/g, ' ');        // 'Akyl "Ambition" Phillips'
+  // An apostrophe BETWEEN two letters belongs to the name — Ze'ev, Ra'anan, De'Onn, O'Brien.
+  // Only a dangling one is a quote mark ("' John R."). Stripping both cost five real people
+  // their name in the roster audit.
+  s = s.replace(/(?<!\p{L})['’](?!\p{L})/gu, ' ');
 
   // Comma handling, following the bounded rule in name-match.ts: a SINGLE-token head means
   // "Surname, Given" and the given name is the tail. A multi-token head means the tail is a
@@ -62,11 +67,26 @@ export function firstNameFrom(raw: string | null | undefined): string | null {
     .map((t) => t.replace(/^[^\p{L}]+/u, '').replace(/[^\p{L}.'’-]+$/u, ''))
     .filter(Boolean);
 
-  for (const token of tokens) {
+  // Whether every token examined so far was a bare initial. Once that is true, a token that
+  // is also the LAST one is the surname ("M. K. Palmore", "S Kumar") — greeting someone by
+  // their surname is worse than "there". Two tokens remaining means the first is the given
+  // name ("M. Naveed Mukadam"), which is why this tracks position rather than counting dots.
+  let onlyInitialsSoFar = true;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
     const bare = token.replace(/[.'’\-]/g, '').toLowerCase();
     if (!bare) continue;
-    if (HONORIFICS.has(bare)) continue;
-    if (POST_NOMINALS.has(bare)) continue;
+
+    // In FIRST position an initialism is the person's name and outranks the post-nominal
+    // list: "jd" is Juris Doctor as a trailing credential, but "J.D. Miller" is what he
+    // is called. Later positions keep the post-nominal reading.
+    if (i === 0 && INITIALISM.test(token)) return token;
+
+    // A title is not an initial: "Dr. Chase" should still yield Chase, so these clear the
+    // flag rather than carrying it. Only bare initials set it.
+    if (HONORIFICS.has(bare)) { onlyInitialsSoFar = false; continue; }
+    if (POST_NOMINALS.has(bare)) { onlyInitialsSoFar = false; continue; }
 
     // "K.C." is a name; keep its dots. Checked before the dot-splitting below.
     if (INITIALISM.test(token)) return token;
@@ -75,11 +95,13 @@ export function firstNameFrom(raw: string | null | undefined): string | null {
     if (token.includes('.')) {
       const seg = token.split('.').map((x) => x.trim()).filter((x) => x.length >= 2).pop();
       if (seg) return seg;
-      continue;                            // "J." — a lone initial is not a name
+      onlyInitialsSoFar = true;            // "J." — a lone initial is not a name
+      continue;
     }
 
-    if (bare.length < 2) continue;         // "B", "K"
+    if (bare.length < 2) { onlyInitialsSoFar = true; continue; }   // "B", "K"
     if (!/^\p{L}/u.test(token)) continue;
+    if (onlyInitialsSoFar && i > 0 && i === tokens.length - 1) return null;
     return token;
   }
   return null;
