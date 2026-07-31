@@ -447,10 +447,24 @@
 
       <div class="search-meta" id="searchMeta" hidden></div>
 
+      <!-- Appears only once something is selected: an always-present send affordance next to
+           a search box is how people queue campaigns they didn't mean to. -->
+      <div class="selection-bar" id="selectionBar" hidden>
+        <span class="selection-count" id="selectionCount">0 selected</span>
+        <div class="selection-actions">
+          <button class="btn btn-ghost" id="selectionClear" type="button">Clear</button>
+          <button class="btn btn-green" id="selectionAdd" type="button">Add to message campaign</button>
+        </div>
+      </div>
+      <button class="select-all-matching" id="selectAllMatching" type="button" hidden></button>
+
       <div class="table-wrap" id="searchResultsWrap" hidden>
         <table class="data-table search-table">
           <thead>
-            <tr><th>Name</th><th>Role</th><th>Company</th><th>Location</th><th>Connected</th></tr>
+            <tr>
+              <th class="c-select"><input type="checkbox" id="selectAllPage" aria-label="Select all on this page" /></th>
+              <th>Name</th><th>Role</th><th>Company</th><th>Location</th><th>Connected</th>
+            </tr>
           </thead>
           <tbody id="searchResults"></tbody>
         </table>
@@ -684,6 +698,41 @@
     </div>
     <div class="drawer-body" id="drawerBody"></div>
   </aside>
+
+  <!-- Search selection -> message campaign -->
+  <div class="modal-overlay" id="campModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Add to message campaign">
+      <div class="modal-head">
+        <div>
+          <h3>Add to message campaign</h3>
+          <p class="modal-sub" id="campImpact"></p>
+        </div>
+        <button class="modal-close" id="campClose" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="toast slim" id="campResult" hidden></div>
+        <div class="form-grid">
+          <div class="field">
+            <label for="campCohort">Campaign</label>
+            <select id="campCohort"></select>
+          </div>
+          <div class="field" id="campNameField" hidden>
+            <label for="campName">New campaign name</label>
+            <input id="campName" type="text" placeholder="Seattle security leaders" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label for="campTemplate">Message <span class="hint" id="campTemplateHint"></span></label>
+            <textarea id="campTemplate" rows="4" placeholder="Hi {firstName}, …"></textarea>
+          </div>
+          <div class="field">
+            <button class="btn btn-green" id="campConfirm" type="button">Add to campaign</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Connection detail: everything enrichment collected about one person -->
   <aside class="drawer drawer-wide" id="connDrawer" hidden aria-label="Connection detail">

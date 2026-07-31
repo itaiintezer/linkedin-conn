@@ -237,6 +237,16 @@ Results are ordered current-role-first, then most-recently-connected. Deliberate
 term frequency across a profile rewards headline-stuffers, which is the wrong bias for
 "who does this job".
 
+### Queueing search results
+
+There is no dedicated endpoint. Search returns `profile_url`; feed the ones you want to the
+existing `POST /api/lists` with `kind: "message"` and a newline-joined `text`. Two notes:
+
+- **Omit `message_template` when targeting an existing cohort.** Supplying one overwrites
+  that cohort's template for everyone already queued in it.
+- Anyone already present as a `message` profile is a no-op (`UNIQUE(profile_url, kind)`), so
+  the response's `added` vs `found` is your dedupe report.
+
 ### GET /api/connections/:slug
 
 Everything known about one person: every roster column plus `profile`, the full stored Apify

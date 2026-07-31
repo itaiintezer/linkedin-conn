@@ -189,6 +189,25 @@ Two things worth knowing:
 The same query is available to AI agents at `POST /api/connections/search` — see
 [API.md](API.md).
 
+### From search to a campaign
+
+Tick the people you want and **Add to message campaign** appears. Pick an existing message
+campaign or create one, and they're queued — subject to the same pacing as anything else
+(`msg_weekly_cap`, default 250/week), so the dialog tells you roughly how long the send will
+take before you commit.
+
+Three deliberate guards, because this is the one place a search box turns into outbound mail:
+
+- The header checkbox selects **only the rows on screen**. If more match, a separate line
+  offers to select all of them and states the number — it can't happen by reflex.
+- **Changing the search clears the selection.** You can build a selection across pages of one
+  result set, but never queue people picked under a filter you've since changed.
+- An existing campaign's message is shown but **not editable here** — editing it would rewrite
+  the message for everyone already queued in that campaign. Change it in the Cohorts tab.
+
+Anyone already in a message campaign is skipped rather than queued twice, and the result tells
+you how many that was. Invites aren't offered: everyone in the roster is already a connection.
+
 Two deliberate limits:
 
 - **Removals aren't tracked.** Nothing here ever deletes a connection, so someone who
