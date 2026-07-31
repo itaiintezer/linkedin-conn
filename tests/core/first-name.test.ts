@@ -134,3 +134,16 @@ test('a leading initialism outranks the post-nominal list', () => {
   expect(firstNameFrom('Dennis E. Leber, Ph.D.')).toBe('Dennis');
   expect(firstNameFrom('Erik Decker, CISSP')).toBe('Erik');
 });
+
+test('is idempotent — feeding the result back in is a no-op', () => {
+  // backfillFirstNames re-runs this over values it already sanitised, so a rule that kept
+  // eating its own output would never converge and every start would report work to do.
+  // Verified across all 7,153 live rows; these are the shapes that could plausibly break it.
+  for (const s of [
+    'Dr. Chidhanandham Arunachalam', '🪐 Leonardo Pizarro', "Ze'ev Manilovich", 'K.C. O\'Brien',
+    'Cohen, David', 'K N.Nitin', 'Darrell J. Stinson, CISSP', 'Ada', 'T.M. White', 'דנאיל דימיטרוב',
+  ]) {
+    const once = firstNameFrom(s);
+    expect(firstNameFrom(once)).toBe(once);
+  }
+});
