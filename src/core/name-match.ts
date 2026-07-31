@@ -17,14 +17,14 @@
  *  a space would split a token ("Ke<ZWSP>ren Tevet" -> "ke ren tevet") and lose the
  *  match. All of these survive NFKC and turn up in scraped names. NBSP is excluded on
  *  purpose — it IS a real space and is handled by the whitespace collapse below. */
-const ZERO_WIDTH = /[​‌‍⁠­﻿]/g;
+export const ZERO_WIDTH = /[​‌‍⁠­﻿]/g;
 
 /** Post-nominal letters: decorations that are never part of the person's name. Compared
  *  after stripping dots/spaces and lowercasing, so "Ph.D." -> "phd". This is an explicit
  *  allow-list on purpose. An earlier "short ASCII all-caps acronym" heuristic looked
  *  harmless but could only ever fire on a single-token head — i.e. exactly the
  *  "Surname, GIVEN" shape — so it silently merged "Cohen, DAVID" with "Cohen, RACHEL". */
-const POST_NOMINALS = new Set([
+export const POST_NOMINALS = new Set([
   'phd', 'md', 'do', 'dds', 'dvm', 'jd', 'esq', 'mba', 'emba', 'msc', 'ms', 'ma',
   'mph', 'mfa', 'llm', 'bsc', 'bs', 'ba', 'bcom', 'edd', 'psyd', 'rn', 'pe', 'cpa',
   'cfa', 'pmp', 'cissp', 'cism', 'cisa', 'crisc', 'cgeit', 'ccsp', 'oscp', 'ceh',
