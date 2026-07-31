@@ -1,6 +1,8 @@
 import { test, expect } from 'vitest';
 import { buildPendingIndex, resolveRow } from '../../src/worker/reply-checker.js';
 import type { InboxRow, Profile } from '../../src/types.js';
+import { firstNameFrom } from '../../src/core/first-name.js';
+import { applyFirstName, MAX_MESSAGE } from '../../src/core/message.js';
 
 // resolveRow is a pure policy function: no SQLite fixture, no fake driver. Only these
 // three profile fields participate in matching, so a partial stand-in is honest here.
@@ -175,4 +177,26 @@ test('snippetIsOurOutreach: with no known outreach text it never credits a reply
 
 test('snippetIsOurOutreach: too little text to judge stays conservative', () => {
   expect(snippetIsOurOutreach('You: ok', OUTREACH)).toBe(true);
+});
+
+/* ---------- the reconstruction must use the sender's name rule ----------
+   The sender greets "Dr. Chidhanandham Arunachalam" as "Chidhanandham". If the checker
+   rebuilds the outreach as "Hi Dr." the snippet no longer matches, the message looks like a
+   reply, and the contact is wrongly marked replied — irreversible, and it strands them.
+
+   This pins the CONTRACT at the seam: outreachFor is a private closure inside
+   runReplyCheck, so the resolver is exercised here with a stand-in, and the real closure is
+   covered end-to-end in reply-checker.test.ts. */
+test('our own outreach is recognised when the name needed sanitising', () => {
+  const p = prof(1, 'Dr. Chidhanandham Arunachalam');
+  const sent = 'Hi Chidhanandham, quick question';   // what the sender actually sent
+
+  const res = resolveRow(
+    row('Dr. Chidhanandham Arunachalam', { snippet: `You: ${sent}`, youSentLast: true }),
+    buildPendingIndex([p]),
+    // Stand-in for the closure under test: it MUST derive the same name the sender used.
+    (x) => applyFirstName('Hi {firstName}, quick question', firstNameFrom(x.full_name), MAX_MESSAGE),
+  );
+
+  expect(res.outcome).toBe('not_a_reply');
 });

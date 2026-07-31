@@ -27,6 +27,16 @@ export interface SenderOptions {
 /** Real timer-based sleep — the production default for `SenderOptions.sleep`. */
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * The greeting name for a send. The roster is preferred because it is already sanitised and
+ * available without a page read — but invitees are by definition NOT connections (measured:
+ * 0 of 79 pending invites had a roster row), so `undefined` here means "let the driver read
+ * it live", which is the normal path for invites.
+ */
+function rosterFirstName(repos: Repos, profileUrl: string): string | undefined {
+  return repos.connections.findByUrl(profileUrl)?.first_name ?? undefined;
+}
+
 /** min + floor(rng() * (max - min + 1)), the repo's existing randomized-wait idiom
  *  (see core/schedule.ts, worker/scheduler-service.ts). `Number(...)` coerces a
  *  numeric-string setting (POST /api/settings does no coercion) instead of letting
@@ -189,14 +199,15 @@ async function attemptInvite(
   // Pass the raw note template (with {firstName} intact); the driver substitutes the
   // real name it reads from the profile at send time.
   const note = selectNoteSource(p.custom_message, cohort.message_template);
-  let outcome = await driver.sendConnectionRequest(p.profile_url, note);
+  const firstName = rosterFirstName(repos, p.profile_url);
+  let outcome = await driver.sendConnectionRequest(p.profile_url, note, { firstName });
 
   if (outcome.firstName) repos.profiles.setStatus(p.id, 'sending', { first_name: outcome.firstName });
 
   if (outcome.result === 'note_quota') {
     repos.settings.update({ note_quota_exhausted: 1 });
     if (cohort.allow_no_note) {
-      outcome = await driver.sendConnectionRequest(p.profile_url, null);
+      outcome = await driver.sendConnectionRequest(p.profile_url, null, { firstName });
     } else {
       repos.profiles.setStatus(p.id, 'needs_attention', { last_error: 'note quota exhausted; no-note disabled' });
       logVerdict(p, 'needs attention: note quota exhausted, no-note disabled');
@@ -289,7 +300,9 @@ async function attemptMessage(
   repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
   log.debug('sender', 'attempting message', { profile: p.id, url: p.profile_url });
 
-  const outcome = await driver.sendMessage(p.profile_url, text);
+  const outcome = await driver.sendMessage(p.profile_url, text, {
+    firstName: rosterFirstName(repos, p.profile_url),
+  });
   if (outcome.firstName) repos.profiles.setStatus(p.id, 'sending', { first_name: outcome.firstName });
 
   switch (outcome.result) {

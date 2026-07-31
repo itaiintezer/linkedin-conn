@@ -797,19 +797,44 @@ Connections explaining that `{firstName}` uses the cleaned roster name and falls
 
 - [ ] `npm test` and `npm run typecheck` clean.
 - [ ] `firstNameFrom` is the **only** place a greeting name is derived — `grep -rn "split(/\\\\s+/)\[0\]" src/` returns nothing name-related.
-- [ ] `scripts/verify-first-names.ts` reports **404 changed, 4 null** on the live roster (validated 2026-07-31 against the exact code in Task 1; a materially different number means the function drifted from the spec).
+- [ ] `scripts/verify-first-names.ts` reports **399 changed, 8 null** on the live roster.
+      *Revised during implementation.* The Task 1 code as written reports exactly **404 / 4**,
+      confirming no drift — and then the roster audit (below) found twelve rows where that
+      output is wrong. Fixing them is what moves the number. If you are re-deriving this,
+      404/4 means "matches the original spec", 399/8 means "matches the spec plus the audit
+      fixes"; anything else is drift.
 - [ ] `data/app.db.pre-firstname-backup` exists after the first real start.
 - [ ] Backfill is idempotent: a second start reports 0 repaired.
 - [ ] `full_name` is byte-identical before and after the backfill.
 - [ ] A message send to a roster member uses the roster name; an invite to a non-member still
       greets correctly from the live read.
 
+## Implementation note — the roster audit (added 2026-07-31)
+
+`scripts/audit-first-names.ts` was added on top of this plan. It splits the roster into the
+rows `firstNameFrom` **changes** (risk: over-stripping) and the rows it **leaves alone**
+(risk: a bad name that now looks blessed — `verify-first-names.ts` is blind to these by
+construction), and optionally has Claude judge each row. Reviewing all 404 changed + 92
+flagged-unchanged rows found **no false negatives** and **twelve wrong greetings**:
+
+| Class | Rows | Example | Fix |
+|---|---|---|---|
+| Apostrophe stripped as a quote delimiter | 5 | `Ze'ev` → `"Ze"` | only strip an apostrophe not between two letters |
+| `Ts.` (Malaysian technologist) unknown | 2 | `Ts. Muhammad Haris Jafri` → `"Ts"` | added to `HONORIFICS` |
+| Lone token after initials is a surname | 4 | `M. K. Palmore` → `"Palmore"` | return null; two remaining tokens still yield the given name |
+| Leading initialism lost to `POST_NOMINALS` | 1 | `J.D. Miller` → `"Miller"` | an initialism in first position outranks the suffix list |
+
+Known residue, accepted: `"V Van Beek. 🛡"` → `"Van"` (Dutch surname particle after an
+initial — no rule separates it from a given name safely).
+
 ## Deliberately out of scope
 
-- **No AI dependency.** Measured: only 12 rows use non-Latin scripts and 9 of those are
-  bilingual with a clean Latin half; the deterministic residue is ~4 genuinely nameless rows
-  where `"there"` is correct. Adding an API key, cost and nondeterminism to the send path to
-  fix 4 rows is a bad trade for an app that currently has zero AI dependencies.
+- **No AI dependency in the app.** Measured: only 12 rows use non-Latin scripts and 9 of those
+  are bilingual with a clean Latin half; the deterministic residue is a handful of genuinely
+  nameless rows where `"there"` is correct. Adding an API key, cost and nondeterminism to the
+  send path is a bad trade for an app that has zero AI dependencies. The audit above is a
+  bench tool under `scripts/`, is never imported by `src/`, and runs offline unless explicitly
+  asked to call the API — the send path stays deterministic.
 - **No change to `full_name`,** which stays the verbatim display name — search, the UI and
   the reply matcher all depend on it rendering as LinkedIn renders it.
 - **Widening `ZERO_WIDTH` in `name-match.ts`.** It has the same bidi blind spot, so a name

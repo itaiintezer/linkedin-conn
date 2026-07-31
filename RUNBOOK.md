@@ -76,6 +76,15 @@ few weeks, raising **Batches / day (messages)** from 6 to 8 is the safe next ste
    Invite notes are capped at 300 characters, messages at 2000.
 5. Click **Enqueue**. A confirmation ("Added X of Y found.") appears right under the button.
 
+**What `{firstName}` turns into.** The person's given name, cleaned up first — so
+`Dr. Chidhanandham Arunachalam` is greeted as `Hi Chidhanandham,` and `🪐 Leonardo Pizarro`
+as `Hi Leonardo,`. Titles, letters after the name, emoji and nicknames-in-brackets are all
+dropped, and an apostrophe inside a name is kept (`Ze'ev`). Nothing to configure.
+
+Occasionally a LinkedIn profile has no real first name on it at all — just initials, like
+`M. G.` In that case the message reads `Hi there,` rather than guessing. That's deliberate,
+not a fault: about 8 people out of 7,000 land there.
+
 The Machine then schedules sends at random times inside your working hours, a few per batch,
 never exceeding your weekly cap.
 

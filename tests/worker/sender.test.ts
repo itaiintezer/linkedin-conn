@@ -478,3 +478,30 @@ test('default sleep is a real timer: runSenderOnce without a sleep option awaits
     vi.useRealTimers();
   }
 });
+
+/* ---------- the greeting name is resolved roster-first ---------- */
+
+test('a message send greets the person with the roster name, not the scraped one', async () => {
+  const c = repos.cohorts.create('M', 'Hi {firstName}', false, 'message');
+  seedScheduledMsg('https://www.linkedin.com/in/ada', '2026-06-29T09:00:00.000Z', c.id);
+  repos.connections.upsert(
+    { profile_url: 'https://www.linkedin.com/in/ada', first_name: 'Ada' },
+    'csv', '2026-06-29T00:00:00.000Z',
+  );
+  driver.firstName = 'WrongScraped';
+
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  expect(driver.msgLog[0].message).toBe('Hi Ada');
+});
+
+test('an invite falls back to the live read — invitees are not in the roster', async () => {
+  // Measured: 0 of 79 pending invites have a roster row. This path must keep working.
+  const c = repos.cohorts.create('I', 'Hi {firstName}', false, 'invite');
+  seedScheduled('https://www.linkedin.com/in/stranger', '2026-06-29T09:00:00.000Z', c.id);
+  driver.firstName = 'Scraped';
+
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  expect(driver.sentLog[0].message).toBe('Hi Scraped');
+});

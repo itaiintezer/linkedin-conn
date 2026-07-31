@@ -464,3 +464,32 @@ test('with no template to compare against, a You-prefixed row never becomes a re
   expect(res.replied).toBe(0);
   expect(repos.profiles.findById(p.id)!.status).toBe('sent');
 });
+
+/**
+ * The checker rebuilds what the sender sent, to tell our own outreach apart from a reply.
+ * If it derives the name differently than the sender did, the reconstruction drifts and a
+ * "You:" row stops looking like ours — marking the contact replied, which is irreversible
+ * and strands them.
+ *
+ * snippetIsOurOutreach has an after-the-comma fallback that papers over a greeting
+ * mismatch, so this uses a comma-less template: there, a drifting name is the whole
+ * difference between "ours" and "a human typed this".
+ */
+test('a sanitised-name outreach is still recognised as ours, not counted as a reply', async () => {
+  const c = repos.cohorts.getOrCreate('M2', 'Hi {firstName} — thanks for connecting', true, 'message');
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/chid', null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', {
+    sent_at: '2026-07-27T10:00:00.000Z', full_name: 'Dr. Chidhanandham Arunachalam',
+  });
+  driver.inboxRows = [{
+    name: 'Dr. Chidhanandham Arunachalam',
+    // What the sender actually put on the wire: the sanitised given name.
+    snippet: 'You: Hi Chidhanandham — thanks for connecting',
+    youSentLast: true,
+  }];
+
+  const res = await runReplyCheck(repos, driver, NOW);
+
+  expect(res.replied).toBe(0);
+  expect(repos.profiles.findById(p.id)!.status).toBe('sent');
+});

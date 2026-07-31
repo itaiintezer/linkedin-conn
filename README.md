@@ -149,6 +149,13 @@ Re-importing the same file is safe and cheap: it updates existing rows rather th
 duplicating them. **Sync now** on the Settings panel forces a read immediately and tells you
 what it found — or why it declined to run.
 
+**Names.** `{firstName}` in a note or message uses the *cleaned* roster name, not the raw one
+LinkedIn shows. Honorifics, credentials, emoji, invisible characters and nicknames-in-brackets
+are stripped when the row is written, so `"Dr. Chidhanandham Arunachalam"` is greeted as
+`Chidhanandham` and `"🪐 Leonardo Pizarro"` as `Leonardo` — while the name displayed in the UI
+stays exactly as LinkedIn renders it. When a name has nothing usable in it (`"M. G."`), the
+message falls back to `there` rather than guessing.
+
 ### Enrichment
 
 Once the roster exists, **Start enrichment** scrapes each person's profile through

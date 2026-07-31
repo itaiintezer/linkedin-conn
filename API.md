@@ -329,6 +329,27 @@ existing `POST /api/lists` with `kind: "message"` and a newline-joined `text`. T
 - Anyone already present as a `message` profile is a no-op (`UNIQUE(profile_url, kind)`), so
   the response's `added` vs `found` is your dedupe report.
 
+#### Name resolution
+
+Two name fields, and they are not interchangeable:
+
+| Field | What it is |
+|---|---|
+| `full_name` | The **verbatim** display name, exactly as LinkedIn renders it — emoji, credentials, honorifics and all. Search, the UI and the reply matcher all depend on it staying untouched. |
+| `first_name` | The **greeting name**: what `{firstName}` becomes in a note or message. Normalised at write time by `firstNameFrom` (`src/core/first-name.ts`), so it is safe to use directly. |
+
+`first_name` has honorifics (`Dr.`), post-nominals (`CISSP`), emoji, invisible and bidi
+characters, parentheticals and quoted nicknames removed, and multi-token fragments reduced to
+the given name — `"Dr. Chidhanandham"` → `Chidhanandham`, `"Darrell J."` → `Darrell`. An
+apostrophe *inside* a name is kept (`Ze'ev`), as is an initialism someone goes by (`K.C.`).
+
+It is **`null`** when nothing in the name can be trusted as a given name (`"M. G."`,
+`"M. K. Palmore"` — the tail there is a surname). Senders substitute the literal `there` in
+that case, so a null is a deliberate answer, not missing data.
+
+`npx tsx scripts/verify-first-names.ts` prints what the rule would change over the live
+roster and writes nothing.
+
 ### GET /api/connections/:slug
 
 Everything known about one person. `:slug` is the part after `/in/` in their profile URL.

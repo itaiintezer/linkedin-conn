@@ -55,6 +55,26 @@ export function openDatabase(path: string): DB {
   return db;
 }
 
+/**
+ * Copy the database file aside once, before something rewrites data in bulk.
+ *
+ * Unlike the two snapshots in `openDatabase`, this one cannot be triggered by inspecting the
+ * schema: the first-name backfill repairs *values*, and a database that needs repairing looks
+ * exactly like one that does not. So the caller decides, and calls this only when it is about
+ * to actually write — otherwise every new install would copy its whole database on the second
+ * start to guard a migration that will never run for it.
+ *
+ * Returns whether a file was written (false when one already exists, or on :memory:).
+ */
+export function snapshotOnce(db: DB, path: string, suffix: string): boolean {
+  if (path === ':memory:') return false;
+  const dest = `${path}.${suffix}`;
+  if (existsSync(dest)) return false;
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); // fold the WAL in — a bare file copy misses it
+  copyFileSync(path, dest);
+  return true;
+}
+
 /** Idempotent schema migrations for databases created before a column existed. */
 export function runMigrations(db: DB): void {
   const cols = (db.prepare('PRAGMA table_info(settings)').all() as { name: string }[]).map((c) => c.name);

@@ -95,6 +95,10 @@ export interface SendOutcome {
   evidence?: SendEvidence;
 }
 
+/** Optional overrides for a send. `firstName` lets the caller supply a name resolved from
+ *  the roster, so the driver does not have to derive one from the page title. */
+export interface SendOptions { firstName?: string | null }
+
 export interface BrowserDriver {
   /** No side effects: whether the browser context is currently open. */
   browserOpen(): boolean;
@@ -103,10 +107,11 @@ export interface BrowserDriver {
   readLoginState(): Promise<LoginSnapshot>;
   openLoginWindow(): Promise<void>;
   // message === null => send a bare request (no note)
-  sendConnectionRequest(url: string, message: string | null): Promise<SendOutcome>;
+  sendConnectionRequest(url: string, message: string | null, opts?: SendOptions): Promise<SendOutcome>;
   /** Send a plain message to an existing 1st-degree connection. `message` still
-   *  contains {firstName}; the driver substitutes the live name it reads. */
-  sendMessage(url: string, message: string): Promise<SendOutcome>;
+   *  contains {firstName}; the driver substitutes `opts.firstName` when the caller
+   *  resolved one, otherwise the live name it reads. */
+  sendMessage(url: string, message: string, opts?: SendOptions): Promise<SendOutcome>;
   /** One-page scan of the messaging inbox conversation list. */
   readInboxSnapshot(): Promise<InboxRow[]>;
   readPendingInvites(): Promise<string[]>;     // normalized profile URLs

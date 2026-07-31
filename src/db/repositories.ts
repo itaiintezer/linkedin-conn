@@ -3,6 +3,7 @@ import type {
   Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind,
   Connection, ConnectionInput, ConnectionSource, EnrichStatus, EnrichedProfile,
 } from '../types.js';
+import { firstNameFrom } from '../core/first-name.js';
 
 const PROFILE_COLUMNS = new Set([
   'first_name', 'full_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
@@ -241,6 +242,8 @@ export class ConnectionRepo {
    */
   upsert(input: ConnectionInput, source: ConnectionSource, nowIso: string): 'inserted' | 'updated' {
     const existing = this.findByUrl(input.profile_url);
+    // Same rule as enrichment: whatever the source, the stored greeting name is sanitised.
+    const cleanFirst = firstNameFrom(input.first_name) ?? firstNameFrom(input.full_name);
     if (!existing) {
       this.db.prepare(`
         INSERT INTO connections
@@ -249,7 +252,7 @@ export class ConnectionRepo {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.profile_url,
-        input.full_name ?? null, input.first_name ?? null, input.last_name ?? null,
+        input.full_name ?? null, cleanFirst, input.last_name ?? null,
         input.current_title ?? null, input.current_company ?? null,
         input.connected_on ?? null,
         source, nowIso, nowIso,
@@ -261,7 +264,9 @@ export class ConnectionRepo {
     const vals: unknown[] = [nowIso];
     const enriched = existing.enrich_status === 'enriched';
     for (const col of CONNECTION_INPUT_COLUMNS) {
-      const incoming = input[col];
+      // first_name is the derived, sanitised value — never the caller's raw fragment. The
+      // fill-NULLs / overwrite-while-un-enriched rule below is unchanged; only the value is.
+      const incoming = col === 'first_name' ? cleanFirst : input[col];
       if (incoming === undefined || incoming === null || incoming === '') continue;
       if (existing[col] !== null && enriched) continue; // Apify's value stands
       sets.push(`${col} = ?`); vals.push(incoming);
@@ -301,6 +306,46 @@ export class ConnectionRepo {
       throw e;
     }
     return { inserted, updated };
+  }
+
+  /**
+   * Rewrite every stored greeting name through firstNameFrom. One-time repair for rows
+   * written before sanitisation existed; safe to re-run (it only writes rows whose value
+   * would actually change, and re-sanitising a clean name is a no-op).
+   *
+   * Only `first_name` is touched — `full_name` stays verbatim as the display name, and is
+   * the input the repair derives from when the stored first name is unusable.
+   *
+   * The repair is decided in full BEFORE anything is written, so a run with nothing to do
+   * opens no transaction and — via `beforeWrite` — takes no backup. That is what keeps a
+   * fresh install from snapshotting its whole database to guard a migration it never needs:
+   * rows written after sanitisation existed are already correct. `beforeWrite` runs at most
+   * once, immediately before the first UPDATE.
+   *
+   * Returns how many rows changed.
+   */
+  backfillFirstNames(beforeWrite?: () => void): number {
+    const rows = this.db.prepare('SELECT id, first_name, full_name FROM connections')
+      .all() as unknown as { id: number; first_name: string | null; full_name: string | null }[];
+
+    const pending: { id: number; next: string | null }[] = [];
+    for (const r of rows) {
+      const next = firstNameFrom(r.first_name) ?? firstNameFrom(r.full_name);
+      if (next !== r.first_name) pending.push({ id: r.id, next });
+    }
+    if (pending.length === 0) return 0;
+
+    beforeWrite?.();
+    const upd = this.db.prepare('UPDATE connections SET first_name = ? WHERE id = ?');
+    this.db.exec('BEGIN');
+    try {
+      for (const p of pending) upd.run(p.next, p.id);
+      this.db.exec('COMMIT');
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+      throw e;
+    }
+    return pending.length;
   }
 
   count(): number {
