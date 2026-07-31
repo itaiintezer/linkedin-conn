@@ -115,3 +115,11 @@ test('extraction never throws on a malformed payload', () => {
   expect(() => extractProfile({ experience: null, currentPosition: null })).not.toThrow();
   expect(() => extractProfile({ location: { parsed: null } })).not.toThrow();
 });
+
+test('the stored payload keeps Apify\'s raw first/last name', () => {
+  // The backfill overwrites the first_name COLUMN. Without the raw here, Apify's original
+  // value is unrecoverable and the migration is one-way.
+  const p = extractProfile({ firstName: 'Dr. Chidhanandham', lastName: 'Arunachalam' });
+  expect(p.compact.firstNameRaw).toBe('Dr. Chidhanandham');
+  expect(p.compact.lastNameRaw).toBe('Arunachalam');
+});

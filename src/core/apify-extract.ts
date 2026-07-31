@@ -172,6 +172,9 @@ export function extractProfile(raw: ApifyProfile): EnrichedProfile {
 
   const compact: Record<string, unknown> = {
     name: fullName,
+    // Kept verbatim so the sanitised first_name column can always be recomputed or undone.
+    firstNameRaw: first,
+    lastNameRaw: last,
     headline: str(raw.headline),
     about: str(raw.about),
     location: loc.raw,
