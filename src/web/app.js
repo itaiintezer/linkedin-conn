@@ -1231,9 +1231,17 @@ function buildSearchQuery() {
   };
 }
 
+/* Selected profile URLs. Survives Load more (you build a selection across pages of ONE
+   result set) but is wiped by a new search — a selection made under a filter you've since
+   changed is exactly how the wrong people get queued. */
+const selected = new Set();
+
 function connRow(r) {
   const slug = slugFromUrl(r.profile_url);
-  const tr = el('tr', { class: 'search-row', 'data-slug': slug });
+  const tr = el('tr', { class: 'search-row', 'data-slug': slug, 'data-url': r.profile_url });
+  const box = el('input', { type: 'checkbox', class: 'row-select', 'aria-label': `Select ${r.full_name || slug}` });
+  box.checked = selected.has(r.profile_url);
+  tr.appendChild(el('td', { class: 'c-select' }, box));
   const name = el('td', {},
     el('span', { class: 'search-name', text: r.full_name || slug }),
     r.headline ? el('span', { class: 'search-headline', text: r.headline }) : null,
@@ -1257,7 +1265,30 @@ function renderCoverage(cov) {
   node.textContent = bits.join(' · ');
 }
 
+function renderSelection() {
+  const n = selected.size;
+  $('#selectionBar').hidden = n === 0;
+  $('#selectionCount').textContent = `${fmtInt(n)} selected`;
+
+  // The escape hatch only makes sense once the whole loaded page is taken AND more match.
+  const loaded = $$('#searchResults .row-select');
+  const pageAllChecked = loaded.length > 0 && loaded.every((b) => b.checked);
+  const more = searchState.total > loaded.length;
+  const hatch = $('#selectAllMatching');
+  hatch.hidden = !(pageAllChecked && more);
+  hatch.textContent = `Select all ${fmtInt(searchState.total)} connections matching this search`;
+  const head = $('#selectAllPage');
+  if (head) { head.checked = pageAllChecked; head.indeterminate = !pageAllChecked && n > 0; }
+}
+
+function clearSelection() {
+  selected.clear();
+  $$('#searchResults .row-select').forEach((b) => { b.checked = false; });
+  renderSelection();
+}
+
 async function runSearch(append = false) {
+  if (!append) selected.clear();
   const body = { ...searchState.query, limit: SEARCH_PAGE, offset: append ? searchState.offset : 0 };
   const res = await api('/api/connections/search', { method: 'POST', body });
 
@@ -1277,6 +1308,101 @@ async function runSearch(append = false) {
   $('#searchMeta').hidden = false;
   $('#searchMeta').textContent = `${fmtInt(res.total)} match${res.total === 1 ? '' : 'es'}`;
   $('#searchMore').hidden = searchState.offset >= res.total;
+  renderSelection();
+}
+
+/* ---------- selection -> message campaign ----------
+   No new backend: search hands back profile_url, /api/lists already takes a newline-joined
+   list plus a cohort and a kind. This is a checkbox column and a dialog. */
+
+/** Pull every matching URL, not just the loaded page, by walking the same search endpoint. */
+async function fetchAllMatchingUrls() {
+  const urls = [];
+  const PAGE = 200; // MAX_LIMIT server-side
+  for (let offset = 0; offset < searchState.total; offset += PAGE) {
+    const res = await api('/api/connections/search', {
+      method: 'POST', body: { ...searchState.query, limit: PAGE, offset },
+    });
+    urls.push(...res.results.map((r) => r.profile_url));
+    if (res.results.length === 0) break; // defensive: never loop forever on a shrinking set
+  }
+  return urls;
+}
+
+async function openCampaignDialog() {
+  const sel = $('#campCohort');
+  const result = $('#campResult');
+  result.hidden = true;
+
+  const [cohorts, settings] = await Promise.all([api('/api/cohorts'), api('/api/settings')]);
+  // Message cohorts only. Offering an invite cohort would earn a 409 from /api/lists, and
+  // everyone here is already a connection so an invite would just be skipped anyway.
+  const msgCohorts = cohorts.filter((c) => c.kind === 'message');
+  sel.replaceChildren(
+    ...msgCohorts.map((c) => el('option', { value: c.name, text: c.name, 'data-template': c.message_template || '' })),
+    el('option', { value: '__new__', text: '+ New campaign…' }),
+  );
+  if (msgCohorts.length === 0) sel.value = '__new__';
+
+  const cap = settings.msg_weekly_cap || 0;
+  const n = selected.size;
+  const weeks = cap > 0 ? Math.ceil(n / cap) : 0;
+  $('#campImpact').textContent = weeks > 1
+    ? `${fmtInt(n)} people · about ${weeks} weeks to send at ${fmtInt(cap)}/week`
+    : `${fmtInt(n)} people · under a week at ${fmtInt(cap)}/week`;
+
+  syncCampaignTemplate();
+  $('#campModal').hidden = false;
+}
+
+/** An existing cohort's template is shown but locked: /api/lists overwrites it, which would
+ *  rewrite the message for everyone already queued-but-unsent in that campaign. */
+function syncCampaignTemplate() {
+  const sel = $('#campCohort');
+  const isNew = sel.value === '__new__';
+  const ta = $('#campTemplate');
+  $('#campNameField').hidden = !isNew;
+  ta.readOnly = !isNew;
+  ta.classList.toggle('is-locked', !isNew);
+  $('#campTemplateHint').textContent = isNew
+    ? 'required — {firstName} is substituted at send time'
+    : "this campaign's existing message · edit it in the Cohorts tab";
+  const opt = sel.selectedOptions[0];
+  ta.value = isNew ? '' : (opt ? opt.dataset.template || '' : '');
+}
+
+function closeCampaignDialog() { $('#campModal').hidden = true; }
+
+async function submitCampaign() {
+  const result = $('#campResult');
+  const isNew = $('#campCohort').value === '__new__';
+  const name = isNew ? $('#campName').value.trim() : $('#campCohort').value;
+  const template = $('#campTemplate').value.trim();
+
+  if (isNew && !name) { toast(result, 'Name the new campaign first.', true); return; }
+  if (isNew && !template) { toast(result, 'A message campaign needs a message body.', true); return; }
+  if (selected.size === 0) { toast(result, 'Nothing selected.', true); return; }
+
+  const body = { cohort: name, kind: 'message', text: [...selected].join('\n') };
+  // Only send a template for a NEW cohort — see syncCampaignTemplate.
+  if (isNew) body.message_template = template;
+
+  const btn = $('#campConfirm');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/lists', { method: 'POST', body });
+    const dupes = r.found - r.added;
+    const bits = [`Added ${fmtInt(r.added)} to “${name}”`];
+    // /api/lists dedupes on (profile_url, kind), so anyone already in a message campaign is
+    // skipped. Say so — silence here reads as a partial failure.
+    if (dupes > 0) bits.push(`${fmtInt(dupes)} were already in a message campaign`);
+    toast(result, `${bits.join(' · ')}.`);
+    clearSelection();
+  } catch (err) {
+    toast(result, err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function openConnection(slug) {
@@ -1365,9 +1491,48 @@ function initSearch() {
   $('#searchMore')?.addEventListener('click', () => { void runSearch(true); });
 
   $('#searchResults')?.addEventListener('click', (ev) => {
+    // A click on the checkbox cell must not also open the drawer.
+    if (ev.target.closest('.c-select')) return;
     const row = ev.target.closest('.search-row');
     if (row) void openConnection(row.dataset.slug);
   });
+
+  $('#searchResults')?.addEventListener('change', (ev) => {
+    const box = ev.target.closest('.row-select');
+    if (!box) return;
+    const url = box.closest('.search-row').dataset.url;
+    if (box.checked) selected.add(url); else selected.delete(url);
+    renderSelection();
+  });
+
+  $('#selectAllPage')?.addEventListener('change', (ev) => {
+    const on = ev.target.checked;
+    for (const box of $$('#searchResults .row-select')) {
+      box.checked = on;
+      const url = box.closest('.search-row').dataset.url;
+      if (on) selected.add(url); else selected.delete(url);
+    }
+    renderSelection();
+  });
+
+  $('#selectAllMatching')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'Collecting…';
+    try {
+      for (const u of await fetchAllMatchingUrls()) selected.add(u);
+      renderSelection();
+      $('#selectAllMatching').hidden = true;   // the whole set is taken; nothing left to offer
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $('#selectionClear')?.addEventListener('click', clearSelection);
+  $('#selectionAdd')?.addEventListener('click', () => { void openCampaignDialog(); });
+  $('#campClose')?.addEventListener('click', closeCampaignDialog);
+  $('#campCohort')?.addEventListener('change', syncCampaignTemplate);
+  $('#campConfirm')?.addEventListener('click', () => { void submitCampaign(); });
 
   $('#connDrawerClose')?.addEventListener('click', closeConnDrawer);
   $('#drawerBackdrop')?.addEventListener('click', closeConnDrawer);

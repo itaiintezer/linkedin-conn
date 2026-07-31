@@ -65,10 +65,11 @@ test('renders a result row with its headline', async () => {
   stubFetchRoutes({ '/api/connections/search': { body: searchBody() } });
   await submit();
 
+  // cells[0] is the selection checkbox; name/role/company follow.
   const cells = byId('searchResults').querySelectorAll('tr td');
-  expect(cells[0].textContent).toContain('Ada Sec');
-  expect(cells[0].textContent).toContain('CISO @ Amazon');
-  expect(cells[2].textContent).toBe('Amazon');
+  expect(cells[1].textContent).toContain('Ada Sec');
+  expect(cells[1].textContent).toContain('CISO @ Amazon');
+  expect(cells[3].textContent).toBe('Amazon');
   expect(byId('searchMeta').textContent).toBe('1 match');
   expect(byId('searchResultsWrap').hidden).toBe(false);
 });

@@ -970,3 +970,71 @@ test('a paused engine still leaves an added list unscheduled', async () => {
   expect(repos.profiles.byStatus('scheduled')).toHaveLength(0);
   expect(repos.profiles.byStatus('queued')).toHaveLength(1);
 });
+
+// REGRESSION: allow_no_note is load-bearing (sender.ts) — on note-quota exhaustion, 1 means
+// "re-send with NO note", 0 means "route to needs_attention". /api/lists wrote it
+// unconditionally from deriveAllowNoNote(template), which is `true` for undefined — so
+// adding people to an existing templated invite cohort without restating its template
+// silently downgraded the whole campaign to bare requests.
+test('adding to an existing cohort without a template leaves its template and no-note policy alone', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Templated', text: 'https://www.linkedin.com/in/a', message_template: 'Hi {firstName}',
+  } });
+  const before = repos.cohorts.findByName('Templated')!;
+  expect(before.message_template).toBe('Hi {firstName}');
+  expect(before.allow_no_note).toBe(0);
+
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Templated', text: 'https://www.linkedin.com/in/b',
+  } });
+
+  const after = repos.cohorts.findByName('Templated')!;
+  expect(after.message_template).toBe('Hi {firstName}');
+  expect(after.allow_no_note).toBe(0);
+});
+
+test('a supplied template still updates the cohort', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Edit', text: 'https://www.linkedin.com/in/a', message_template: 'First',
+  } });
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Edit', text: 'https://www.linkedin.com/in/b', message_template: 'Second',
+  } });
+  expect(repos.cohorts.findByName('Edit')!.message_template).toBe('Second');
+});
+
+// Found live: /api/lists rejected a message add with no template even when the TARGET COHORT
+// already had one, so "add people to an existing campaign without rewriting its message" was
+// impossible. /api/profiles already allowed it; the two paths disagreed.
+test('a message add with no template is allowed when the cohort already has one', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Msgs', kind: 'message', text: 'https://www.linkedin.com/in/a',
+    message_template: 'Hi {firstName}',
+  } });
+
+  const res = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Msgs', kind: 'message', text: 'https://www.linkedin.com/in/b',
+  } });
+
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toMatchObject({ added: 1, found: 1 });
+  expect(repos.cohorts.findByName('Msgs')!.message_template).toBe('Hi {firstName}');
+});
+
+test('a message add with no template is still rejected when nothing can supply one', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Brand New', kind: 'message', text: 'https://www.linkedin.com/in/a',
+  } });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/template/i);
+  // And it must not have created a bodyless message cohort on the way out.
+  expect(repos.cohorts.findByName('Brand New')).toBeUndefined();
+});
+
+test('an existing INVITE cohort still rejects a message add', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: { cohort: 'Inv', text: 'https://www.linkedin.com/in/a' } });
+  const res = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Inv', kind: 'message', text: 'https://www.linkedin.com/in/b',
+  } });
+  expect(res.statusCode).toBe(409);
+});

@@ -119,26 +119,38 @@ export function buildServer(
       req.body as { cohort?: string; text: string; message_template?: string; kind?: string };
     const kind: CampaignKind = kindRaw === 'message' ? 'message' : 'invite';
     const template = message_template?.trim() || undefined;
-    // A message campaign has nothing to send without a body: an invite can go note-less,
-    // a DM cannot.
-    if (kind === 'message' && !template) {
+    const cohortName = (cohort && cohort.trim()) || defaultCohortName(new Date());
+    const existing = repos.cohorts.findByName(cohortName);
+
+    // Kind first. A cohort's kind is fixed at creation: the schedulers, caps and metrics all
+    // read it, so silently mixing kinds inside one cohort would mis-pace both engines.
+    // Checked BEFORE the template rule so a kind mismatch reports itself as one, rather than
+    // surfacing as a confusing "requires a template" 400.
+    if (existing && existing.kind !== kind) {
+      return reply.code(409).send({ error: `cohort "${cohortName}" is ${existing.kind === 'invite' ? 'an invite' : 'a message'} cohort` });
+    }
+    // A message campaign has nothing to send without a body: an invite can go note-less, a DM
+    // cannot. But the body may come from the cohort that already exists — that is the whole
+    // "add people to an existing campaign without rewriting its message" path, and rejecting
+    // it here made that impossible. Matches the rule /api/profiles has always applied.
+    if (kind === 'message' && !template && !existing?.message_template?.trim()) {
       return reply.code(400).send({ error: 'message campaigns require a message template' });
     }
     const max = kind === 'message' ? MAX_MESSAGE : MAX_NOTE;
     if (template && template.length > max) {
       return reply.code(400).send({ error: `template too long (max ${max} characters)` });
     }
-    const cohortName = (cohort && cohort.trim()) || defaultCohortName(new Date());
     const allowNoNote = deriveAllowNoNote(template);
-    // A cohort's kind is fixed at creation: the schedulers, caps, and metrics all read it,
-    // so silently mixing kinds inside one cohort would mis-pace both engines.
-    const existing = repos.cohorts.findByName(cohortName);
-    if (existing && existing.kind !== kind) {
-      return reply.code(409).send({ error: `cohort "${cohortName}" is ${existing.kind === 'invite' ? 'an invite' : 'a message'} cohort` });
-    }
     const c = repos.cohorts.getOrCreate(cohortName, template ?? null, allowNoNote, kind);
-    repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
-      .run(template ?? c.message_template, allowNoNote ? 1 : 0, c.id);
+    // Only touch the cohort's template when one was actually supplied. This used to run
+    // unconditionally, and deriveAllowNoNote(undefined) is `true` — so merely ADDING people
+    // to an existing templated invite cohort flipped allow_no_note 0 -> 1, which tells the
+    // sender to re-send with NO note once LinkedIn's note quota is exhausted (sender.ts).
+    // A personalized campaign silently degraded into bare connection requests.
+    if (template !== undefined) {
+      repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
+        .run(template, allowNoNote ? 1 : 0, c.id);
+    }
     const urls = extractProfileUrls(text ?? '');
     const before = repos.profiles.countAll();
     for (const u of urls) repos.profiles.add(c.id, u, null, kind);
