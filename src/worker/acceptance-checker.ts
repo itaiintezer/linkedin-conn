@@ -1,7 +1,8 @@
 import type { Repos } from '../db/repositories.js';
 import { computeAccepted, computeExpiredByAge } from '../core/acceptance.js';
 import { isTripped } from './guardrail.js';
-import { log } from '../core/log.js';
+import { log as defaultLog } from '../core/log.js';
+import type { Logger } from '../core/logger.js';
 
 /**
  * Outcome of a single acceptance pass. `ran` is true only when we actually read the
@@ -26,8 +27,9 @@ export interface AcceptanceRunResult {
 export async function runAcceptanceCheck(
   repos: Repos,
   now: Date,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; logger?: Logger } = {},
 ): Promise<AcceptanceRunResult> {
+  const log = opts.logger ?? defaultLog;
   // `force` (manual on-demand recheck) bypasses ONLY the paused gate.
   if (!opts.force && repos.settings.get().paused) return { ran: false, reason: 'paused', accepted: 0, expired: 0 };
   if (isTripped(repos)) return { ran: false, reason: 'guardrail', accepted: 0, expired: 0 };
@@ -81,6 +83,16 @@ export async function runAcceptanceCheck(
   repos.appState.setAcceptanceChecked(iso);
   // No recordSuccess here any more: this pass performs no network I/O, so it is not evidence
   // that LinkedIn is healthy and must not clear a failure streak the sender accumulated.
-  log.info('acceptance', 'checked', { accepted: accepted.length, expired: expired.length, connections: connections.size });
+  // Only a pass that CHANGED something earns a line. This runs every 60 seconds and almost
+  // always resolves nothing, so an unconditional summary buried everything else: 985 of the
+  // last 3,000 log entries were this line, every one reading accepted=0 expired=0.
+  //
+  // Nothing is lost by staying quiet. Liveness is already published as state — the stamp
+  // written just above is what the dashboard renders — and the per-verdict lines above name
+  // each person as it happens. Note that downgrading to debug would NOT have worked:
+  // createLogger has no level filter, so debug writes to the same file and echoes the same.
+  if (accepted.length > 0 || expired.length > 0) {
+    log.info('acceptance', 'checked', { accepted: accepted.length, expired: expired.length, connections: connections.size });
+  }
   return { ran: true, accepted: accepted.length, expired: expired.length, checkedAt: iso };
 }

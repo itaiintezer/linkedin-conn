@@ -15,6 +15,7 @@ import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { runAcceptanceCheck } from '../../src/worker/acceptance-checker.js';
+import type { Logger } from '../../src/core/logger.js';
 
 let repos: Repos;
 const NOW = new Date('2026-06-29T12:00:00.000Z');
@@ -165,4 +166,76 @@ test('a clean pass does NOT clear a failure streak', async () => {
   await runAcceptanceCheck(repos, NOW);
 
   expect(repos.appState.get().failure_streak).toBe(2);
+});
+
+/* ---------- log volume ----------
+   This pass runs every 60 seconds and almost always resolves nothing, so a per-pass summary
+   line drowned the log: 985 of the last 3,000 entries were this one line, every one of them
+   reading accepted=0 expired=0. Liveness is already observable without it — the pass stamps
+   `acceptance_checked_at`, and the dashboard renders that. So the summary is now earned by a
+   change, not by a tick. (There is no level filter in createLogger: debug writes to the file
+   and echoes exactly like info, so downgrading the level would relabel the noise, not
+   remove it.) */
+
+interface LoggedLine { level: string; message: string; data?: Record<string, unknown> }
+
+function recorder(): { lines: LoggedLine[]; logger: Logger } {
+  const lines: LoggedLine[] = [];
+  const push = (level: string) => (_c: string, message: string, data?: Record<string, unknown>) =>
+    { lines.push({ level, message, data }); };
+  return {
+    lines,
+    logger: { path: '', debug: push('debug'), info: push('info'), warn: push('warn'), error: push('error'), tail: () => [] },
+  };
+}
+
+test('a pass that resolves nothing writes no summary line', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedSent('https://www.linkedin.com/in/a', c.id);
+  roster('https://www.linkedin.com/in/somebody-else');   // nothing accepted, nothing expired
+  const { lines, logger } = recorder();
+
+  const r = await runAcceptanceCheck(repos, NOW, { logger });
+
+  expect(r).toMatchObject({ ran: true, accepted: 0, expired: 0 });
+  expect(lines).toHaveLength(0);
+  // The pass still ran: the stamp is what proves liveness, not the log.
+  expect(repos.appState.get().acceptance_checked_at).toBe(NOW.toISOString());
+});
+
+test('a pass that accepts someone still says so, with the full counts', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedSent('https://www.linkedin.com/in/a', c.id);
+  roster('https://www.linkedin.com/in/a');
+  const { lines, logger } = recorder();
+
+  await runAcceptanceCheck(repos, NOW, { logger });
+
+  const summary = lines.find((l) => l.message === 'checked');
+  expect(summary?.level).toBe('info');
+  expect(summary?.data).toMatchObject({ accepted: 1, expired: 0 });
+  // The per-verdict line is what names the person, and it must survive independently.
+  expect(lines.some((l) => l.message === 'verdict')).toBe(true);
+});
+
+test('an expiry alone is also worth a line', async () => {
+  repos.settings.update({ expiry_days: 5 });
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedSent('https://www.linkedin.com/in/old', c.id, '2026-06-01T00:00:00Z');
+  roster('https://www.linkedin.com/in/somebody-else');
+  const { lines, logger } = recorder();
+
+  await runAcceptanceCheck(repos, NOW, { logger });
+
+  expect(lines.find((l) => l.message === 'checked')?.data).toMatchObject({ accepted: 0, expired: 1 });
+});
+
+test('the empty-roster warning is untouched — that one means something is wrong', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedSent('https://www.linkedin.com/in/a', c.id);
+  const { lines, logger } = recorder();
+
+  await runAcceptanceCheck(repos, NOW, { logger });
+
+  expect(lines.map((l) => l.level)).toContain('warn');
 });
