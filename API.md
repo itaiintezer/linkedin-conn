@@ -38,8 +38,8 @@ that guard the row would be sent by the *invite* sender, which resolves its text
 DM template and truncates it to a 300-char connection note.
 
 When `kind` is `message`, there must be something to send: `400` unless the request carries
-a non-blank `message` **or** the target cohort already has a non-blank template. (This is
-looser than `POST /api/lists`, which has only the cohort template to work with.)
+a non-blank `message` **or** the target cohort already has a non-blank template.
+`POST /api/lists` applies the same rule.
 
 Response: `{ "id": 42, "profile_url": "https://www.linkedin.com/in/jane-doe", "kind": "invite" }`
 
@@ -78,10 +78,15 @@ Bulk-enqueue from pasted text. Request: `{ "cohort": "Security VPs", "text": "ur
 
 - `kind` (optional) — defaults to `invite`. Anything other than `"message"` is treated as
   `invite`.
-- `message_template` is **required** when `kind` is `message` (`400` without it) — a DM has
-  nothing to send without a body. Max length 2000 for messages, 300 for invite notes;
-  over that is `400`.
-- `409` if a cohort with that name already exists with the other kind.
+- `message_template` is required when `kind` is `message` **unless the target cohort already
+  has one** — a DM has nothing to send without a body, but that body may already live on the
+  cohort. `400` only when nothing can supply one. Max length 2000 for messages, 300 for
+  invite notes; over that is `400`.
+- **Omitting `message_template` leaves the cohort's template and its no-note policy alone.**
+  Supplying one overwrites both — which rewrites the message for everyone already queued in
+  that cohort, so omit it unless you mean to change it.
+- `409` if a cohort with that name already exists with the other kind. Checked before the
+  template rule, so a kind mismatch reports itself as one.
 - Both `POST /api/lists` and `POST /api/profiles` run a planning pass on the new backlog, so
   added work gets real slots immediately instead of waiting for the hourly scheduler tick.
   Planning still declines while paused, halted, outside working hours or on a non-sending

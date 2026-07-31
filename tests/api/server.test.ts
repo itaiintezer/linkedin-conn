@@ -1002,3 +1002,39 @@ test('a supplied template still updates the cohort', async () => {
   } });
   expect(repos.cohorts.findByName('Edit')!.message_template).toBe('Second');
 });
+
+// Found live: /api/lists rejected a message add with no template even when the TARGET COHORT
+// already had one, so "add people to an existing campaign without rewriting its message" was
+// impossible. /api/profiles already allowed it; the two paths disagreed.
+test('a message add with no template is allowed when the cohort already has one', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Msgs', kind: 'message', text: 'https://www.linkedin.com/in/a',
+    message_template: 'Hi {firstName}',
+  } });
+
+  const res = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Msgs', kind: 'message', text: 'https://www.linkedin.com/in/b',
+  } });
+
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toMatchObject({ added: 1, found: 1 });
+  expect(repos.cohorts.findByName('Msgs')!.message_template).toBe('Hi {firstName}');
+});
+
+test('a message add with no template is still rejected when nothing can supply one', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Brand New', kind: 'message', text: 'https://www.linkedin.com/in/a',
+  } });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/template/i);
+  // And it must not have created a bodyless message cohort on the way out.
+  expect(repos.cohorts.findByName('Brand New')).toBeUndefined();
+});
+
+test('an existing INVITE cohort still rejects a message add', async () => {
+  await app.inject({ method: 'POST', url: '/api/lists', payload: { cohort: 'Inv', text: 'https://www.linkedin.com/in/a' } });
+  const res = await app.inject({ method: 'POST', url: '/api/lists', payload: {
+    cohort: 'Inv', kind: 'message', text: 'https://www.linkedin.com/in/b',
+  } });
+  expect(res.statusCode).toBe(409);
+});
