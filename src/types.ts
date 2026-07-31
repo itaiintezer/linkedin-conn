@@ -126,6 +126,14 @@ export interface BrowserDriver {
 
 export type GuardrailReason = 'checkpoint' | 'login_lost' | 'repeated_failures';
 
+/**
+ * Why automatic enrichment stopped itself. Distinct from GuardrailReason: the guardrail
+ * protects the LinkedIn session, this one only ever means "Apify work cannot proceed".
+ * `no_api_key` is raised by the drain tick; the rest come from a run's circuit breaker.
+ */
+export type EnrichHaltReason =
+  | 'no_api_key' | 'auth' | 'billing' | 'rate_limit' | 'upstream' | 'repeated_errors';
+
 export interface AppState {
   id: 1;
   login_logged_in: number;        // 0 | 1
@@ -136,6 +144,10 @@ export interface AppState {
   guardrail_detail: string | null;
   guardrail_tripped_at: string | null; // ISO
   failure_streak: number;
+  enrich_halted: number;          // 0 | 1 — automatic enrichment stopped itself
+  enrich_halt_reason: EnrichHaltReason | null;
+  enrich_halt_detail: string | null;   // operator-facing message; never the API token
+  enrich_halted_at: string | null;     // ISO
   acceptance_checked_at: string | null; // ISO, last successful acceptance read
   replies_checked_at: string | null;    // ISO, last successful reply-check read
   roster_synced_at: string | null;      // ISO, last successful roster read
