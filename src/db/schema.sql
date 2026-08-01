@@ -81,7 +81,16 @@ CREATE TABLE IF NOT EXISTS settings (
   failure_threshold INTEGER NOT NULL DEFAULT 3,
   -- Age-based expiry backstop (days). 0 = disabled: invites are never expired by age.
   -- Expiry is NEVER inferred from list scrapes; only this deterministic age check.
-  expiry_days INTEGER NOT NULL DEFAULT 0
+  expiry_days INTEGER NOT NULL DEFAULT 0,
+  -- Event-invite pipeline. Its own caps: an event invite is a different LinkedIn quota
+  -- from a connection request, and 500 of them would instantly blow weekly_cap if pooled.
+  events_per_day INTEGER NOT NULL DEFAULT 1,
+  event_invite_cap INTEGER NOT NULL DEFAULT 500,
+  event_bucket_ceiling INTEGER NOT NULL DEFAULT 10,
+  event_run_budget_minutes INTEGER NOT NULL DEFAULT 20,
+  -- The picker hard-caps at 1000 rows in a stable order, so anything past it is
+  -- permanently invisible under that filter. Buckets at/over this get sub-sharded.
+  event_shard_threshold INTEGER NOT NULL DEFAULT 900
 );
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -150,6 +159,127 @@ CREATE TABLE IF NOT EXISTS connection_aliases (
   profile_url TEXT PRIMARY KEY,
   connection_id INTEGER NOT NULL REFERENCES connections(id)
 );
+
+-- ============================================================================
+-- Event invites (2026-08-01). The third pipeline: invite 1st-degree connections
+-- to a LinkedIn event, sharded by location.
+--
+-- Deliberately NOT modelled as a CampaignKind. The sender's per-profile model
+-- (batch_size, weekly_cap, one send per tick) does not describe a 500-person
+-- modal operation, and `profiles` has UNIQUE(profile_url, kind) — which would
+-- forbid inviting the same person to two different events. Separate tables;
+-- shared pause / guardrail / working-hours / browser-mutex rails.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_url TEXT NOT NULL UNIQUE,       -- canonical https://www.linkedin.com/events/<id>/
+  event_urn TEXT,                       -- the numeric id out of the URL
+  title TEXT,
+  -- Parsed from the event top card. LinkedIn renders it in the viewer's local time
+  -- ("Thu, Sep 10, 2026, 6:15 PM ... (your local time)") and offers no JSON-LD, no
+  -- <time> element and no meta tag, so this is scraped from prose. Once it is in the
+  -- past the campaign is closed: inviting people to a finished event is pointless.
+  starts_at TEXT,
+  status TEXT NOT NULL DEFAULT 'draft', -- draft|armed|running|done|stopped|failed
+  invite_cap INTEGER NOT NULL DEFAULT 500,     -- LIFETIME cap for this event
+  bucket_ceiling INTEGER NOT NULL DEFAULT 10,  -- max location buckets per run
+  bucket_cursor INTEGER NOT NULL DEFAULT 0,    -- rank to resume from on the next run
+  attended INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  armed_at TEXT,
+  closed_at TEXT,
+  close_reason TEXT
+);
+
+-- One row per location we will filter by, ranked by how many of THIS event's
+-- invitees fall in it. `roster_count` is the different number that decides sharding:
+-- the picker hard-caps at 1000 rows, so a bucket whose roster count exceeds the
+-- threshold is expanded into child geos plus the parent.
+CREATE TABLE IF NOT EXISTS event_buckets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id),
+  rank INTEGER NOT NULL,
+  label TEXT NOT NULL,          -- display: "California (US state)"
+  geo_label TEXT NOT NULL,      -- EXACT typeahead hit text: "California, United States"
+  -- JSON array of exact labels to try, in order. Our stored country names come from
+  -- Apify and do not always match LinkedIn's geo vocabulary ("Russian Federation" vs
+  -- "Russia"), and a name that never matches silently costs the whole bucket.
+  geo_candidates TEXT,
+  geo_urn TEXT,                 -- cached geoUrn-<id> value once resolved
+  kind TEXT NOT NULL,           -- country | us_state | region
+  target_count INTEGER NOT NULL DEFAULT 0,  -- invitees expected here (ranks the list)
+  roster_count INTEGER NOT NULL DEFAULT 0,  -- connections LinkedIn will list (caps at 1000)
+  parent_bucket_id INTEGER REFERENCES event_buckets(id),
+  status TEXT NOT NULL DEFAULT 'pending',   -- pending|done|skipped|failed
+  UNIQUE (event_id, geo_label)
+);
+CREATE INDEX IF NOT EXISTS idx_event_buckets_event ON event_buckets(event_id);
+
+CREATE TABLE IF NOT EXISTS event_invitees (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id),
+  connection_id INTEGER REFERENCES connections(id),
+  -- The join key that actually matters. The picker's checkbox id embeds this
+  -- (i18n_checkbox-invitee-suggestion-ACoAA...) and it equals connections.linkedin_id
+  -- exactly — verified 1000/1000. Never match on name: 37 roster names are duplicated.
+  member_urn TEXT,
+  profile_url TEXT NOT NULL,
+  full_name TEXT,
+  bucket_id INTEGER REFERENCES event_buckets(id),
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending|invited|unreachable|failed
+  invited_at TEXT,
+  -- Reserved: v1 does not scrape the attendee list, but adding that later should be a
+  -- worker plus a column read, not a migration.
+  responded_at TEXT,
+  note TEXT,
+  UNIQUE (event_id, profile_url)
+);
+CREATE INDEX IF NOT EXISTS idx_event_invitees_event ON event_invitees(event_id, status);
+CREATE INDEX IF NOT EXISTS idx_event_invitees_urn ON event_invitees(member_urn);
+
+CREATE TABLE IF NOT EXISTS event_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER NOT NULL REFERENCES events(id),
+  mode TEXT NOT NULL DEFAULT 'live',    -- dry | live
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at TEXT,
+  reserved_from TEXT,
+  reserved_to TEXT,
+  invited_count INTEGER NOT NULL DEFAULT 0,
+  outcome TEXT,                         -- completed|ceiling|cap|exhausted|halted|failed
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_event_runs_event ON event_runs(event_id, started_at);
+
+-- Live progress. Written as the run proceeds so the UI can show "Israel — 840 rows
+-- scanned, 3 of 4 matched" rather than 20 opaque minutes.
+CREATE TABLE IF NOT EXISTS event_run_buckets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES event_runs(id),
+  bucket_id INTEGER NOT NULL REFERENCES event_buckets(id),
+  rows_loaded INTEGER NOT NULL DEFAULT 0,
+  matched INTEGER NOT NULL DEFAULT 0,
+  ticked INTEGER NOT NULL DEFAULT 0,
+  submitted INTEGER NOT NULL DEFAULT 0,
+  outcome TEXT,                         -- done|early_exit|capped|no_geo|failed
+  error TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (run_id, bucket_id)
+);
+
+-- Generic held-open windows the planner must not schedule sends into. Kept generic
+-- rather than event-specific: anything that needs exclusive use of the single browser
+-- for a stretch can claim one.
+CREATE TABLE IF NOT EXISTS reservations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_ts TEXT NOT NULL,
+  to_ts TEXT NOT NULL,
+  purpose TEXT NOT NULL,                -- 'event_invite'
+  ref_id INTEGER,                       -- events.id for purpose='event_invite'
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_reservations_window ON reservations(from_ts, to_ts);
 
 -- Search index over the enriched corpus (phase 2 fills it; phase 3 queries it).
 -- A plain FTS5 table keyed by connection id, not contentless-external: external content

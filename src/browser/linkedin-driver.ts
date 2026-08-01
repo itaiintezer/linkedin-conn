@@ -1,5 +1,9 @@
 import type { Page } from 'playwright-core';
-import type { BrowserDriver, SendOutcome, SendOptions, LoginSnapshot, CheckpointScan, InboxRow, ConnectionCard } from '../types.js';
+import type {
+  BrowserDriver, SendOutcome, SendOptions, LoginSnapshot, CheckpointScan, InboxRow,
+  ConnectionCard, EventStepOutcome, BucketRunRequest, BucketRunResult,
+} from '../types.js';
+import { attendEvent, openEvent, runBucket } from './event-invite-driver.js';
 import { CloakSession } from './cloak-session.js';
 import { SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl } from './linkedin-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
@@ -629,6 +633,22 @@ export class LinkedInDriver implements BrowserDriver {
     const out = new Set<string>();
     for (const h of hrefs) { const n = normalizeProfileUrl(h); if (n) out.add(n); }
     return [...out];
+  }
+
+  // --- Event invites. Thin delegation: the operations live in event-invite-driver.ts as
+  // free functions over a Page, so they stay testable while this class keeps sole
+  // ownership of the single browser session.
+
+  async openEvent(eventUrl: string): Promise<EventStepOutcome> {
+    return openEvent(await this.session.page(), eventUrl);
+  }
+
+  async attendEvent(): Promise<EventStepOutcome> {
+    return attendEvent(await this.session.page());
+  }
+
+  async runEventBucket(req: BucketRunRequest): Promise<BucketRunResult> {
+    return runBucket(await this.session.page(), req);
   }
 
   async close(): Promise<void> { await this.session.close(); }

@@ -66,6 +66,7 @@
       <button class="tab" data-tab="add">Add List</button>
       <button class="tab" data-tab="cohorts">Cohorts</button>
       <button class="tab" data-tab="connections">Connections</button>
+      <button class="tab" data-tab="events">Events</button>
       <button class="tab" data-tab="docs">Docs</button>
       <button class="tab" data-tab="settings">Settings</button>
     </nav>
@@ -408,6 +409,43 @@
       </details>
     </section>
 
+    <!-- EVENTS -->
+    <section class="panel" id="tab-events" hidden>
+      <div class="panel-head">
+        <div class="panel-title">
+          <h2>Event invites</h2>
+          <p class="panel-sub">Invite connections to a LinkedIn event, one location at a time</p>
+        </div>
+        <button class="btn btn-primary" id="evNewBtn">New campaign</button>
+      </div>
+
+      <form class="ev-create" id="evCreateForm" hidden>
+        <div class="field">
+          <label for="evUrl">Event URL</label>
+          <input type="url" id="evUrl" placeholder="https://www.linkedin.com/events/7486088214579982336/" required>
+        </div>
+        <div class="field">
+          <label for="evProfiles">Who to invite</label>
+          <textarea id="evProfiles" rows="6"
+            placeholder="Paste LinkedIn profile URLs, one per line.&#10;Only 1st-degree connections already in your roster can be invited."></textarea>
+          <p class="hint">Everyone is matched against your connections roster first — anyone who
+            isn't there is listed back to you rather than failing silently mid-run.</p>
+        </div>
+        <div class="ev-create-actions">
+          <button type="submit" class="btn btn-primary" id="evCreateBtn">Build the plan</button>
+          <button type="button" class="btn btn-ghost" id="evCancelBtn">Cancel</button>
+          <span class="ev-create-msg" id="evCreateMsg"></span>
+        </div>
+      </form>
+
+      <div id="evList" class="ev-list"></div>
+      <div class="empty" id="evEmpty" hidden>
+        No event campaigns yet. Create one to see which of your connections it can reach.
+      </div>
+
+      <div class="ev-detail" id="evDetail" hidden></div>
+    </section>
+
     <!-- DOCS -->
     <section class="panel" id="tab-docs" hidden>
       <div class="panel-head">
@@ -527,6 +565,20 @@
         <div class="field"><label for="setMsgBatchSize">Batch size <span class="hint">messages</span></label><input id="setMsgBatchSize" type="number" min="1" /></div>
         <div class="field"><label for="setMsgBatchesPerDay">Batches / day <span class="hint">messages</span></label><input id="setMsgBatchesPerDay" type="number" min="0" /></div>
         <div class="field"><label for="setReplyChecks">Reply checks / day <span class="hint">1–24</span></label><input id="setReplyChecks" type="number" min="1" max="24" /></div>
+
+        <div class="section-divider span-all">
+          <span>
+            <span class="kind-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4" stroke-linecap="round"/></svg>
+            </span>
+            Event invites
+          </span>
+        </div>
+        <div class="field"><label for="setEventsPerDay">Events / day <span class="hint">runs</span></label><input id="setEventsPerDay" type="number" min="0" max="10" /></div>
+        <div class="field"><label for="setEventInviteCap">Invites / event <span class="hint">lifetime</span></label><input id="setEventInviteCap" type="number" min="1" /></div>
+        <div class="field"><label for="setEventBucketCeiling">Locations / run</label><input id="setEventBucketCeiling" type="number" min="1" max="50" /></div>
+        <div class="field"><label for="setEventBudget">Run budget <span class="hint">minutes</span></label><input id="setEventBudget" type="number" min="1" max="120" /></div>
+        <p class="hint span-all settings-note">An event run reserves this many minutes of the day for itself, and the send planner routes connection requests and messages around the window. Locations are worked densest-first; whoever is left over rolls into the next day&rsquo;s run.</p>
 
         <div class="section-divider span-all"><span>Both engines</span></div>
         <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" min="0" max="23" /></div>

@@ -24,6 +24,10 @@ import { runEnrichment, enrichmentProgress, isEnrichmentRunning, pauseEnrichment
 import { extractProfile, isEmptyProfile } from '../core/apify-extract.js';
 import { searchConnections } from '../core/connection-search.js';
 import { planAndAssignToday } from '../worker/scheduler-service.js';
+import {
+  armEventCampaign, createEventCampaign, ensureEventReservation,
+} from '../worker/event-campaign.js';
+import { runEventCampaign } from '../worker/event-runner.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE } from '../core/message.js';
 import { capsFor } from '../core/caps.js';
@@ -41,6 +45,8 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'msg_weekly_cap', 'msg_batch_size', 'msg_batches_per_day', 'reply_checks_per_day',
   'roster_sync_per_day',
   'apify_api_key', 'enrich_ttl_days', 'enrich_concurrency',
+  'events_per_day', 'event_invite_cap', 'event_bucket_ceiling',
+  'event_run_budget_minutes', 'event_shard_threshold',
 ]);
 
 /**
@@ -481,6 +487,136 @@ export function buildServer(
   app.post('/api/roster/sync-now', async () => {
     logger.info('api', 'roster sync now');
     return browserLock.run(() => runRosterSync(repos, driver, new Date(), { force: true }));
+  });
+
+  // --- Event invites -----------------------------------------------------------------
+
+  /** Everything the Events tab needs for one campaign. */
+  const eventDetail = (id: number) => {
+    const event = repos.eventCampaigns.findById(id);
+    if (!event) return null;
+    const runs = repos.eventRuns.listForEvent(id);
+    const held = repos.db.prepare(
+      'SELECT from_ts, to_ts FROM reservations WHERE purpose = ? AND ref_id = ? ORDER BY from_ts LIMIT 1',
+    ).get('event_invite', id) as unknown as { from_ts: string; to_ts: string } | undefined;
+    return {
+      event,
+      counts: repos.eventInvitees.countsByStatus(id),
+      buckets: repos.eventBuckets.list(id),
+      reservation: held ?? null,
+      runs: runs.slice(0, 10).map((r) => ({ ...r, buckets: repos.eventRuns.bucketProgress(r.id) })),
+    };
+  };
+
+  app.get('/api/events', async () => repos.eventCampaigns.list().map((e) => ({
+    ...e, counts: repos.eventInvitees.countsByStatus(e.id),
+  })));
+
+  app.get('/api/events/:id', async (req, reply) => {
+    const detail = eventDetail(Number((req.params as { id: string }).id));
+    if (detail === null) return reply.code(404).send({ error: 'no such event' });
+    return detail;
+  });
+
+  app.get('/api/events/:id/invitees', async (req) =>
+    repos.eventInvitees.list(Number((req.params as { id: string }).id)));
+
+  /**
+   * Create a campaign. Accepts `profile_urls` (an array — the API path) or `text` (a
+   * paste blob). Returns the rejected URLs by name: a URL with no roster row cannot be
+   * invited or even bucketed, and finding that out mid-run would be far too late.
+   */
+  app.post('/api/events', async (req, reply) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const eventUrl = typeof b.event_url === 'string' ? b.event_url : '';
+    const urls = Array.isArray(b.profile_urls)
+      ? (b.profile_urls.filter((x) => typeof x === 'string') as string[])
+      : typeof b.text === 'string' ? extractProfileUrls(b.text) : [];
+    if (eventUrl.trim() === '') return reply.code(400).send({ error: 'event_url is required' });
+    if (urls.length === 0) return reply.code(400).send({ error: 'no profile URLs supplied' });
+
+    const result = createEventCampaign(repos, eventUrl, urls);
+    if ('error' in result) return reply.code(400).send({ error: result.error });
+    defaultLog.info('api', 'event campaign created', {
+      event: result.event.id, added: result.added, rejected: result.rejected.length,
+    });
+    return reply.code(201).send({ ...result, ...eventDetail(result.event.id) });
+  });
+
+  /** Drop buckets before arming — the operator's edit of the plan. */
+  app.post('/api/events/:id/buckets/remove', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const event = repos.eventCampaigns.findById(id);
+    if (!event) return reply.code(404).send({ error: 'no such event' });
+    // The cursor indexes into this list once armed, so rewriting it later would silently
+    // re-point the cursor at different work.
+    if (event.status !== 'draft') return reply.code(409).send({ error: 'buckets are frozen once armed' });
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const ranks = Array.isArray(b.ranks)
+      ? b.ranks.filter((x): x is number => typeof x === 'number') : [];
+    repos.eventBuckets.removeRanks(id, ranks);
+    return eventDetail(id);
+  });
+
+  app.post('/api/events/:id/arm', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const now = new Date();
+    const r = armEventCampaign(repos, id, now);
+    if (!r.ok) return reply.code(400).send({ error: r.error });
+    // Claim a window immediately so the dashboard can show it, rather than waiting for
+    // the hourly tick.
+    ensureEventReservation(repos, now);
+    planAndAssignToday(repos, now);
+    defaultLog.info('api', 'event campaign armed', { event: id });
+    return eventDetail(id);
+  });
+
+  app.post('/api/events/:id/stop', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const event = repos.eventCampaigns.findById(id);
+    if (!event) return reply.code(404).send({ error: 'no such event' });
+    repos.eventCampaigns.close(id, 'stopped', 'stopped by the operator', new Date().toISOString());
+    repos.reservations.clearFor('event_invite', id);
+    defaultLog.info('api', 'event campaign stopped', { event: id });
+    return eventDetail(id);
+  });
+
+  /**
+   * Dry run: everything except the irreversible submit. Runs immediately rather than
+   * waiting for a reservation — it dispatches nothing, so it needs no window, only the
+   * browser lock.
+   */
+  app.post('/api/events/:id/dry-run', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const event = repos.eventCampaigns.findById(id);
+    if (!event) return reply.code(404).send({ error: 'no such event' });
+    if (repos.appState.get().login_logged_in !== 1) {
+      return reply.code(409).send({ error: 'not logged in' });
+    }
+    defaultLog.info('api', 'event dry run requested', { event: id });
+    void browserLock.run(() => runEventCampaign(repos, driver, event, {
+      mode: 'dry',
+      deadline: new Date(Date.now() + 60 * 60 * 1000),
+    })).catch((e: Error) => defaultLog.error('api', 'dry run failed', { error: e.message }));
+    return { ok: true, started: true };
+  });
+
+  /** Run the live campaign now, ignoring the reserved window. */
+  app.post('/api/events/:id/run-now', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const event = repos.eventCampaigns.findById(id);
+    if (!event) return reply.code(404).send({ error: 'no such event' });
+    if (event.status !== 'armed') return reply.code(409).send({ error: `campaign is ${event.status}` });
+    if (repos.appState.get().login_logged_in !== 1) {
+      return reply.code(409).send({ error: 'not logged in' });
+    }
+    const s = repos.settings.get();
+    defaultLog.info('api', 'event run-now requested', { event: id });
+    void browserLock.run(() => runEventCampaign(repos, driver, event, {
+      mode: 'live',
+      deadline: new Date(Date.now() + Math.max(1, s.event_run_budget_minutes) * 60 * 1000),
+    })).catch((e: Error) => defaultLog.error('api', 'event run failed', { error: e.message }));
+    return { ok: true, started: true };
   });
 
   app.get('/api/metrics', async () => {

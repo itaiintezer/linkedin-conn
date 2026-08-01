@@ -334,3 +334,78 @@ test('a capacity-exhausted kind does not affect scheduling of the other kind', (
   expect(repos.profiles.byStatusKind('scheduled', 'message')).toHaveLength(0);
   expect(repos.profiles.byStatusKind('queued', 'message')).toHaveLength(10);
 });
+
+// --- Reservations (event-invite pipeline) ------------------------------------------
+// An event run holds the single browser for ~20 minutes. Without these the sender would
+// collide: its tick uses browserLock.tryRun, so a colliding tick is DROPPED, the batch
+// misses its slot, and requeueOverdue re-plans it 10 minutes later. Nothing breaks, but
+// a batch silently slides — so the planner routes around the window instead.
+
+test('never assigns a slot inside a reservation', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 20; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  // Reserve the middle of the day. A cycling rng spreads candidate slots across the
+  // whole 8-20 window, so some fall inside the reservation and some outside — which is
+  // what makes "the inside ones were dropped, the outside ones survived" meaningful.
+  repos.reservations.create(
+    new Date('2026-06-29T11:00:00').toISOString(),
+    new Date('2026-06-29T15:00:00').toISOString(),
+    'event_invite', 1,
+  );
+  const seq = [0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95];
+  let i = 0;
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => seq[i++ % seq.length]!);
+  const scheduled = repos.profiles.byStatus('scheduled');
+  expect(scheduled.length).toBeGreaterThan(0);
+  for (const p of scheduled) {
+    const at = new Date(p.scheduled_for!).getTime();
+    const inside = at >= new Date('2026-06-29T11:00:00').getTime()
+      && at < new Date('2026-06-29T15:00:00').getTime();
+    expect(inside).toBe(false);
+  }
+});
+
+test('accounts for batch runtime, not just the start instant', () => {
+  // rng 0.5 puts the only slot at 14:00. A 5-send batch at max_delay 90s occupies
+  // 7.5 minutes, so it would run straight into a 14:05 reservation.
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 5; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  repos.settings.update({ batches_per_day: 1, batch_size: 5, max_delay_ms: 90000 });
+  repos.reservations.create(
+    new Date('2026-06-29T14:05:00').toISOString(),
+    new Date('2026-06-29T14:25:00').toISOString(),
+    'event_invite', 1,
+  );
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => 0.5);
+  for (const p of repos.profiles.byStatus('scheduled')) {
+    const start = new Date(p.scheduled_for!).getTime();
+    const end = start + 5 * 90000;
+    expect(start >= new Date('2026-06-29T14:25:00').getTime()
+      || end < new Date('2026-06-29T14:05:00').getTime()).toBe(true);
+  }
+});
+
+test('leaves the queue alone rather than scheduling into a fully reserved window', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  repos.profiles.add(c.id, 'https://www.linkedin.com/in/p', null);
+  repos.reservations.create(
+    new Date('2026-06-29T00:00:00').toISOString(),
+    new Date('2026-06-30T00:00:00').toISOString(),
+    'event_invite', 1,
+  );
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => 0.5);
+  expect(repos.profiles.byStatus('scheduled')).toHaveLength(0);
+  expect(repos.profiles.byStatus('queued')).toHaveLength(1);
+});
+
+test('a reservation on another day does not affect today', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (let i = 0; i < 5; i++) repos.profiles.add(c.id, `https://www.linkedin.com/in/p${i}`, null);
+  repos.reservations.create(
+    new Date('2026-07-06T08:00:00').toISOString(),
+    new Date('2026-07-06T20:00:00').toISOString(),
+    'event_invite', 1,
+  );
+  planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => 0.5);
+  expect(repos.profiles.byStatus('scheduled').length).toBe(5);
+});
