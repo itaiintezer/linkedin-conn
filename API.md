@@ -63,6 +63,12 @@ Response (abridged): `{ "paused": 0, "weekly_sent": 12, "weekly_cap": 100, "coun
   acceptance pass); `null` until one succeeds.
 - `paused`, `guardrail` and `sending` are shared: there is one pause and one halt for both
   kinds.
+- `event` is the third pipeline's summary, and it is paced in **runs**, not sends:
+  `{ "campaigns": 2, "open": 1, "listed": 214, "up_next": 96, "invited": 128, "unreachable": 31, "locations_next": 4, "locations_left": 6, "runs_today": 0, "events_per_day": 1, "next_run": { "event_id": 3, "title": "…", "from": "…", "to": null }, "running": null }`.
+  `listed` counts open campaigns only; `invited` and `unreachable` are lifetime, across
+  every campaign. `up_next` / `locations_next` describe the slice **one** run reaches, and
+  `next_run.from` is `null` for a campaign that is armed but has not been given a window
+  yet — never render a clock time for it.
 - A `next_batch` / `msg_next_batch` is one of four shapes: `null` (nothing queued),
   `{ blocked, reason }`, `{ estimated: false, at, count }` for a materialized slot, or
   `{ estimated: true, count, … }` for a prediction. A prediction carries **either** `at`
@@ -518,6 +524,17 @@ Responds `201` with the campaign, its ranked buckets, and — importantly — `r
 (URLs that are not connections) and `unreachable` (connections with no usable location),
 each listed by URL so nothing fails silently mid-run.
 
+### POST /api/events/:id/invitees
+Add more people to a **draft**: `{ "profile_urls": [...] }`, or `text` to paste a blob.
+This is what the Connections screen's "Invite to event" posts when you pick an existing
+draft, so a list can be assembled from several searches.
+
+The whole location plan is **re-ranked** from the full list, not appended to — one extra
+person can make a location worth working ahead of another. Every invitee's reachability is
+recomputed too, so someone who was `unreachable` at creation and has since been enriched
+comes back onto the list. `409` once the campaign is armed, because the resume cursor
+indexes into that bucket list. Responds like `POST /api/events`.
+
 ### GET /api/events · GET /api/events/:id · GET /api/events/:id/invitees
 The list, one campaign in full (buckets, counts, reserved window, recent runs with live
 per-bucket progress), and the invitee ledger.
@@ -568,10 +585,18 @@ Statuses are `queued` → `scheduled` → `sending` → `sent`, then `accepted` 
 Flat upcoming work, both kinds interleaved: `{ "upcoming": [{ "id", "profile_url", "kind", "status", "scheduled_for", "cohort_name", "note" }], "total_remaining": N }`.
 
 ### GET /api/queue/grouped
-Queue grouped by cohort in send-priority order: `{ "cohorts": [{ "id", "name", "count", "profiles": [{ "id", "profile_url", "kind", "status", "scheduled_for", "note" }] }] }`.
+Queue grouped by cohort in send-priority order: `{ "cohorts": [{ "id", "name", "count", "profiles": [{ "id", "profile_url", "kind", "status", "scheduled_for", "note" }] }], "events": [...] }`.
 Every profile in a cohort has the cohort's kind, so the first row identifies the group. That
 invariant is enforced at every write path: `POST /api/lists`, `POST /api/cohorts` and
 `POST /api/profiles` all `409` on a cross-kind add, and a cohort's kind is fixed at creation.
+
+`events` holds at most the ONE armed campaign that will run next — the same one
+`status.event.next_run` names — because a run books the browser for a reserved block and
+competes with the cohorts below it for the day. Its rows are locations, not profiles:
+`[{ "id", "title", "event_url", "status", "pending", "reserved_from", "reserved_to", "locations_left", "buckets": [{ "rank", "label", "target_count", "roster_count" }] }]`.
+`reserved_from` is `null` when the day has not yet given it a window. Drafts never appear:
+they will not run until somebody arms them. None of the reordering endpoints below apply —
+an event run's place in the day belongs to the planner.
 
 ### Reordering & removal
 - `POST /api/queue/profile/:id/move` — body `{ "to": "top" | "bottom" }`.

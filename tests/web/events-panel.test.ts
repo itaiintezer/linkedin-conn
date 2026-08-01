@@ -10,7 +10,7 @@
  * bucket as if it were fully reachable would be worse than no ladder.
  */
 import { test, expect, beforeEach, afterEach } from 'vitest';
-import { loadApp, byId, type AppInternals } from './helpers/load-app.js';
+import { loadApp, byId, stubFetchRoutes, type AppInternals } from './helpers/load-app.js';
 
 let app: AppInternals;
 const realFetch = globalThis.fetch;
@@ -142,4 +142,21 @@ test('the tab exists and its panel is present', () => {
     .find((t) => (t as HTMLElement).dataset.tab === 'events');
   expect(tab).toBeDefined();
   expect(byId('tab-events')).not.toBeNull();
+});
+
+test('opening a campaign marks its card, and does not report a failure that did not happen', async () => {
+  // `$('.ev-card').forEach` — querySelector, not querySelectorAll — threw a TypeError on
+  // every open. The catch turned it into "Could not load the campaign: …" over a campaign
+  // that had just rendered fine.
+  const list = [
+    { id: 1, title: 'NYC Forum', event_url: 'https://www.linkedin.com/events/1/', status: 'draft', counts: {} },
+    { id: 2, title: 'AppSec', event_url: 'https://www.linkedin.com/events/2/', status: 'draft', counts: {} },
+  ];
+  stubFetchRoutes({ '/api/events/1': { body: detail() }, '/api/events': { body: list } });
+  await app.evLoadList();
+  await app.evOpen(1);
+
+  const cards = Array.from(byId('evList').querySelectorAll('.ev-card'));
+  expect(cards.map((c) => c.classList.contains('is-open'))).toEqual([true, false]);
+  expect(byId('evDetail').hidden).toBe(false);
 });

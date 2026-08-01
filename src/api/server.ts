@@ -25,7 +25,8 @@ import { extractProfile, isEmptyProfile } from '../core/apify-extract.js';
 import { searchConnections } from '../core/connection-search.js';
 import { planAndAssignToday } from '../worker/scheduler-service.js';
 import {
-  armEventCampaign, createEventCampaign, ensureEventReservation,
+  addEventInvitees, armEventCampaign, createEventCampaign, ensureEventReservation,
+  eventPipelineSummary, nextEventRun,
 } from '../worker/event-campaign.js';
 import { runEventCampaign } from '../worker/event-runner.js';
 import { defaultCohortName } from '../core/cohort-name.js';
@@ -252,6 +253,10 @@ export function buildServer(
           settings: { ...s, weekly_cap: s.msg_weekly_cap, batch_size: s.msg_batch_size, batches_per_day: s.msg_batches_per_day },
         }, now),
       },
+      // The third conveyor. Everything the Events engine on the dashboard draws, on the
+      // same poll as the other two — it is a handful of indexed counts over a table that
+      // holds one row per campaign.
+      event: eventPipelineSummary(repos, now),
       // Automatic enrichment stopped itself. Carried on the dashboard poll so the banner
       // renders without a second request, and null (not a half-filled object) when fine.
       enrich_halt: a.enrich_halted === 1
@@ -541,6 +546,27 @@ export function buildServer(
       event: result.event.id, added: result.added, rejected: result.rejected.length,
     });
     return reply.code(201).send({ ...result, ...eventDetail(result.event.id) });
+  });
+
+  /**
+   * Add more people to a draft. The Connections screen's "Invite to event" sends here
+   * when the operator picks an existing draft, so a list can be assembled from several
+   * searches instead of one paste.
+   */
+  app.post('/api/events/:id/invitees', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const urls = Array.isArray(b.profile_urls)
+      ? (b.profile_urls.filter((x) => typeof x === 'string') as string[])
+      : typeof b.text === 'string' ? extractProfileUrls(b.text) : [];
+    if (urls.length === 0) return reply.code(400).send({ error: 'no profile URLs supplied' });
+
+    const result = addEventInvitees(repos, id, urls);
+    if ('error' in result) {
+      return reply.code(result.error === 'no such event' ? 404 : 409).send({ error: result.error });
+    }
+    defaultLog.info('api', 'event invitees added', { event: id, added: result.added });
+    return { ...result, ...eventDetail(id) };
   });
 
   /** Drop buckets before arming — the operator's edit of the plan. */
@@ -879,7 +905,24 @@ export function buildServer(
           scheduled_for: p.scheduled_for, note: p.note,
         })),
       }));
-    return { cohorts };
+
+    // An event run occupies the browser for a reserved 20 minutes and sends invitations
+    // to real people — it belongs in "Up next" alongside the cohorts, not only behind the
+    // Events tab. Rows are locations rather than profiles, because that is the unit the
+    // run actually works through.
+    const next = nextEventRun(repos, new Date());
+    const events = next === null ? [] : [{
+      id: next.event.id,
+      title: next.event.title,
+      event_url: next.event.event_url,
+      status: next.event.status,
+      pending: next.pending,
+      reserved_from: next.reservation?.from ?? null,
+      reserved_to: next.reservation?.to ?? null,
+      locations_left: next.locationsLeft,
+      buckets: next.buckets,
+    }];
+    return { cohorts, events };
   });
 
   app.post('/api/queue/profile/:id/move', async (req, reply) => {

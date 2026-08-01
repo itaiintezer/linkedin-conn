@@ -2,7 +2,8 @@ import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import {
-  armEventCampaign, createEventCampaign, dueEventRun, ensureEventReservation,
+  addEventInvitees, armEventCampaign, createEventCampaign, dueEventRun, ensureEventReservation,
+  eventPipelineSummary, nextEventRun,
 } from '../../src/worker/event-campaign.js';
 
 let repos: Repos;
@@ -168,4 +169,109 @@ test('a reserved window is not handed to a campaign that is no longer armed', ()
   const held = repos.reservations.between(now.toISOString(), new Date('2026-08-04T00:00:00').toISOString())[0]!;
   repos.eventCampaigns.close(r.event.id, 'stopped', 'operator', now.toISOString());
   expect(dueEventRun(repos, new Date(held.from_ts))).toBeNull();
+});
+
+/* ---------- what the dashboard reads ---------- */
+
+test('nextEventRun picks the campaign the planner will actually run', () => {
+  // Two armed campaigns. `ensureEventReservation` reserves for the FIRST by id, but once a
+  // window is held the reservation is the source of truth — the dashboard must name the
+  // same campaign the run will pick up, not the lowest id.
+  const a = createEventCampaign(repos, EVENT, [conn('a0')]) as { event: { id: number } };
+  const b = createEventCampaign(
+    repos, 'https://www.linkedin.com/events/7486088214579982337/', [conn('b0')],
+  ) as { event: { id: number } };
+  const now = new Date('2026-08-03T09:00:00');
+  armEventCampaign(repos, a.event.id, now);
+  armEventCampaign(repos, b.event.id, now);
+
+  expect(nextEventRun(repos, now)?.event.id).toBe(a.event.id);   // no window yet: first armed
+
+  repos.reservations.create(
+    new Date('2026-08-03T14:00:00').toISOString(),
+    new Date('2026-08-03T14:20:00').toISOString(), 'event_invite', b.event.id);
+  const next = nextEventRun(repos, now)!;
+  expect(next.event.id).toBe(b.event.id);
+  expect(next.reservation).not.toBeNull();
+});
+
+test('nextEventRun reports the slice one run works, not the whole ladder', () => {
+  repos.settings.update({ event_bucket_ceiling: 1 });
+  const r = createEventCampaign(repos, EVENT, [
+    conn('il0'), conn('il1'),
+    conn('uk0', { country: 'United Kingdom', cc: 'GB' }),
+  ]) as { event: { id: number } };
+  const now = new Date('2026-08-03T09:00:00');
+  armEventCampaign(repos, r.event.id, now);
+
+  const next = nextEventRun(repos, now)!;
+  expect(next.buckets.map((b) => b.label)).toEqual(['Israel']);
+  expect(next.locationsLeft).toBe(1);
+  expect(next.pending).toBe(3);          // everyone is still on the list
+});
+
+test('the cursor advances the slice rather than repeating it', () => {
+  repos.settings.update({ event_bucket_ceiling: 1 });
+  const r = createEventCampaign(repos, EVENT, [
+    conn('il0'), conn('uk0', { country: 'United Kingdom', cc: 'GB' }),
+  ]) as { event: { id: number } };
+  const now = new Date('2026-08-03T09:00:00');
+  armEventCampaign(repos, r.event.id, now);
+  repos.eventCampaigns.update(r.event.id, { bucket_cursor: 1 });
+
+  const next = nextEventRun(repos, now)!;
+  expect(next.buckets.map((b) => b.label)).toEqual(['United Kingdom']);
+  expect(next.locationsLeft).toBe(0);
+});
+
+test('the summary separates lifetime totals from what is still open', () => {
+  const open = createEventCampaign(repos, EVENT, [conn('il0'), conn('il1')]) as { event: { id: number } };
+  const done = createEventCampaign(
+    repos, 'https://www.linkedin.com/events/7486088214579982337/', [conn('uk0', { country: 'United Kingdom', cc: 'GB' })],
+  ) as { event: { id: number } };
+  const now = new Date('2026-08-03T09:00:00');
+
+  // The finished campaign invited its one person; the open one is armed and waiting.
+  const invitee = repos.eventInvitees.list(done.event.id)[0]!;
+  repos.eventInvitees.markInvited([invitee.id], 1, now.toISOString());
+  repos.eventCampaigns.close(done.event.id, 'done', 'all invited', now.toISOString());
+  armEventCampaign(repos, open.event.id, now);
+
+  const s = eventPipelineSummary(repos, now);
+  expect(s.campaigns).toBe(2);
+  expect(s.open).toBe(1);
+  expect(s.listed).toBe(2);              // open campaigns only
+  expect(s.invited).toBe(1);             // every campaign, including the closed one
+  expect(s.next_run?.event_id).toBe(open.event.id);
+  expect(s.running).toBeNull();
+});
+
+test('the summary counts unreachable people no run will ever pick up', () => {
+  createEventCampaign(repos, EVENT, [conn('il0'), conn('nowhere', { country: null, cc: null })]);
+  const s = eventPipelineSummary(repos, new Date('2026-08-03T09:00:00'));
+  expect(s.unreachable).toBe(1);
+  expect(s.listed).toBe(1);
+});
+
+test('a live run surfaces on the summary', () => {
+  const r = createEventCampaign(repos, EVENT, [conn('il0')]) as { event: { id: number } };
+  const now = new Date('2026-08-03T09:00:00');
+  armEventCampaign(repos, r.event.id, now);
+  repos.eventCampaigns.update(r.event.id, { status: 'running', title: 'AppSec Tel Aviv' });
+
+  const s = eventPipelineSummary(repos, now);
+  expect(s.running).toEqual({ event_id: r.event.id, title: 'AppSec Tel Aviv' });
+});
+
+test('adding to a draft re-ranks the ladder; an armed campaign refuses', () => {
+  const r = createEventCampaign(repos, EVENT, [conn('il0')]) as { event: { id: number } };
+  const uk = ['uk0', 'uk1'].map((s) => conn(s, { country: 'United Kingdom', cc: 'GB' }));
+
+  const added = addEventInvitees(repos, r.event.id, uk) as { added: number };
+  expect(added.added).toBe(2);
+  expect(repos.eventBuckets.list(r.event.id).map((b) => b.label))
+    .toEqual(['United Kingdom', 'Israel']);
+
+  armEventCampaign(repos, r.event.id, new Date('2026-08-03T09:00:00'));
+  expect(addEventInvitees(repos, r.event.id, [conn('il1')])).toHaveProperty('error');
 });

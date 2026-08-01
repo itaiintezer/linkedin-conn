@@ -150,6 +150,130 @@ test('exposes the event settings and accepts updates', async () => {
   expect(updated.event_bucket_ceiling).toBe(6);
 });
 
+/* ---------- adding people to a draft (the Connections screen's "Invite to event") ------- */
+
+test('adds people to a draft and re-ranks the whole plan', async () => {
+  // One Israeli, so Israel leads. Then three Brits arrive and the ladder must reorder —
+  // slotting newcomers into the existing buckets would leave the run working the wrong
+  // location first for the rest of the campaign's life.
+  const created = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('il0')] })).json();
+  const id = created.event.id;
+  expect(created.buckets.map((b: { label: string }) => b.label)).toEqual(['Israel']);
+
+  const uk = ['uk0', 'uk1', 'uk2'].map((s) => conn(s, { country: 'United Kingdom', cc: 'GB' }));
+  const r = await post(`/api/events/${id}/invitees`, { profile_urls: uk });
+  expect(r.statusCode).toBe(200);
+  expect(r.json().added).toBe(3);
+  expect(r.json().buckets.map((b: { label: string }) => b.label))
+    .toEqual(['United Kingdom', 'Israel']);
+  expect(r.json().counts.pending).toBe(4);
+});
+
+test('adding accepts a pasted blob and re-reports who is not a connection', async () => {
+  const created = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('il0')] })).json();
+  const r = await post(`/api/events/${created.event.id}/invitees`, {
+    text: 'https://www.linkedin.com/in/uk0 and https://www.linkedin.com/in/stranger',
+  });
+  conn('uk0', { country: 'United Kingdom', cc: 'GB' }); // added AFTER the call, so it is a stranger too
+  expect(r.json().rejected.map((x: { url: string }) => x.url)).toEqual([
+    'https://www.linkedin.com/in/uk0', 'https://www.linkedin.com/in/stranger',
+  ]);
+  expect(r.json().added).toBe(0);
+});
+
+test('adding re-scores a previously unreachable person who is now bucketable', async () => {
+  // No country on record -> unreachable at creation. Enriching them later and re-adding
+  // must put them back on the list, not leave them parked forever.
+  const url = 'https://www.linkedin.com/in/nowhere';
+  const iso = '2026-08-03T00:00:00.000Z';
+  repos.db.prepare(`
+    INSERT INTO connections (profile_url, linkedin_id, full_name, source,
+      first_seen_at, last_seen_at, enrich_status)
+    VALUES (?, 'ACoAAnowhere', 'nowhere', 'scrape', ?, ?, 'enriched')
+  `).run(url, iso, iso);
+  const created = (await post('/api/events', { event_url: EVENT, profile_urls: [url, conn('il0')] })).json();
+  expect(created.counts.unreachable).toBe(1);
+
+  repos.db.prepare('UPDATE connections SET location_country = ?, location_country_code = ? WHERE profile_url = ?')
+    .run('United Kingdom', 'GB', url);
+  const r = await post(`/api/events/${created.event.id}/invitees`, { profile_urls: [url] });
+  expect(r.json().added).toBe(0);                    // already on the list
+  expect(r.json().counts.unreachable).toBeUndefined();
+  expect(r.json().counts.pending).toBe(2);
+});
+
+test('adding is refused once the campaign is armed', async () => {
+  const created = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('il0')] })).json();
+  await post(`/api/events/${created.event.id}/arm`, {});
+  const r = await post(`/api/events/${created.event.id}/invitees`, { profile_urls: [conn('il1')] });
+  expect(r.statusCode).toBe(409);
+  expect(r.json().error).toMatch(/draft/);
+});
+
+test('adding 404s for an unknown campaign and 400s for an empty list', async () => {
+  expect((await post('/api/events/999/invitees', { profile_urls: ['x'] })).statusCode).toBe(404);
+  const created = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('il0')] })).json();
+  expect((await post(`/api/events/${created.event.id}/invitees`, { profile_urls: [] })).statusCode).toBe(400);
+});
+
+/* ---------- what the dashboard and the queue read ---------- */
+
+test('/api/status carries an event summary, and it is quiet when unused', async () => {
+  const fresh = (await app.inject({ method: 'GET', url: '/api/status' })).json().event;
+  expect(fresh.campaigns).toBe(0);       // 0 is what collapses the dashboard conveyor
+  expect(fresh.next_run).toBeNull();
+  expect(fresh.events_per_day).toBe(1);
+
+  const created = (await post('/api/events', {
+    event_url: EVENT,
+    profile_urls: [conn('il0'), conn('il1'), conn('uk0', { country: 'United Kingdom', cc: 'GB' })],
+  })).json();
+  await post(`/api/events/${created.event.id}/arm`, {});
+
+  const s = (await app.inject({ method: 'GET', url: '/api/status' })).json().event;
+  expect(s.campaigns).toBe(1);
+  expect(s.open).toBe(1);
+  expect(s.listed).toBe(3);
+  expect(s.up_next).toBe(3);             // both buckets fit under the default ceiling of 10
+  expect(s.locations_next).toBe(2);
+  expect(s.locations_left).toBe(0);
+  expect(s.next_run.event_id).toBe(created.event.id);
+  expect(s.running).toBeNull();
+});
+
+test('the next run only counts the locations one run will reach', async () => {
+  await post('/api/settings', { event_bucket_ceiling: 1 });
+  const created = (await post('/api/events', {
+    event_url: EVENT,
+    profile_urls: [conn('il0'), conn('il1'), conn('uk0', { country: 'United Kingdom', cc: 'GB' })],
+  })).json();
+  await post(`/api/events/${created.event.id}/arm`, {});
+
+  const s = (await app.inject({ method: 'GET', url: '/api/status' })).json().event;
+  expect(s.listed).toBe(3);              // everyone is still on the list...
+  expect(s.up_next).toBe(2);             // ...but one run reaches Israel only
+  expect(s.locations_next).toBe(1);
+  expect(s.locations_left).toBe(1);
+});
+
+test('an armed campaign appears in the queue as locations, not profiles', async () => {
+  const created = (await post('/api/events', {
+    event_url: EVENT,
+    profile_urls: [conn('il0'), conn('uk0', { country: 'United Kingdom', cc: 'GB' })],
+  })).json();
+
+  // A draft is not queued work: it will never run until somebody arms it.
+  expect((await app.inject({ method: 'GET', url: '/api/queue/grouped' })).json().events).toEqual([]);
+
+  await post(`/api/events/${created.event.id}/arm`, {});
+  const events = (await app.inject({ method: 'GET', url: '/api/queue/grouped' })).json().events;
+  expect(events).toHaveLength(1);
+  expect(events[0].id).toBe(created.event.id);
+  expect(events[0].pending).toBe(2);
+  expect(events[0].buckets.map((b: { label: string }) => b.label)).toEqual(['Israel', 'United Kingdom']);
+  expect(events[0].locations_left).toBe(0);
+});
+
 test('a new campaign inherits the current caps from settings', async () => {
   await post('/api/settings', { event_invite_cap: 42, event_bucket_ceiling: 3 });
   const created = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('keren')] })).json();

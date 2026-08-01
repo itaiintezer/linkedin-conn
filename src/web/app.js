@@ -137,6 +137,10 @@ function fmtEta(eta) {
   return { value: `~${d}d`, foot: `by ${by}` };
 }
 
+/* "1 location" / "3 locations", with an escape hatch for the irregulars ("person",
+   "people"). English-only, like every other string in this file. */
+function plural(n, one, many = `${one}s`) { return `${n} ${n === 1 ? one : many}`; }
+
 function setText(id, value) {
   const node = document.getElementById(id);
   if (node) node.textContent = String(value);
@@ -248,6 +252,68 @@ function renderEngine(status) {
     if (idle) idle.hidden = msgTotal !== 0;
   }
 
+  // --- Event invites: the third conveyor ---
+  // Paced in RUNS, not sends: one run books the browser for a reserved block of the day,
+  // so the fuel gauge counts today's runs against events_per_day rather than invitations.
+  const ev = status.event || {};
+  const evCap = Math.max(1, ev.events_per_day || 1);
+  const evRuns = ev.runs_today || 0;
+  setText('evFuelSent', evRuns);
+  setText('evFuelCap', evCap);
+  const evFuelBar = document.getElementById('evFuelBar');
+  if (evFuelBar) evFuelBar.style.width = `${Math.min(100, Math.round((evRuns / evCap) * 100))}%`;
+
+  // Three states, and "armed but unscheduled" is a real one: arming does not place the
+  // window — the hourly planner does, once the day has 20 free minutes. Saying "next run
+  // 42" with a clock time we do not have would be the same lie the invite pill used to tell.
+  const nr = ev.next_run;
+  if (!nr) fillPill('evNextTxt', null, null, ev.campaigns ? 'nothing armed' : 'no campaigns');
+  else if (nr.from) fillPill('evNextTxt', 'next run', ev.up_next || 0, `${fmtRelDay(nr.from)} ~${fmtClock(nr.from)}`);
+  else fillPill('evNextTxt', 'next run', ev.up_next || 0, 'awaiting a free window');
+
+  setText('evListed', ev.listed || 0);
+  setText('evUpNext', ev.up_next || 0);
+  setText('evInvited', ev.invited || 0);
+  const locNext = ev.locations_next || 0;
+  setText('evUpNextFoot', locNext ? plural(locNext, 'location') : 'no run planned');
+
+  // The locations that will NOT fit today, and the people no filter can reach. Neither has
+  // a station to live in — rounding them away is how "best effort" quietly becomes "some
+  // of these people were never going to be invited and nobody said so".
+  const locLeft = ev.locations_left || 0;
+  const evUnreachable = ev.unreachable || 0;
+  const evFootLeft = $('#evFootLeft');
+  if (evFootLeft) {
+    evFootLeft.hidden = locLeft === 0;
+    if (locLeft) fillPill('evFootLeft', null, locLeft, `more ${locLeft === 1 ? 'location' : 'locations'} after that run`);
+  }
+  const evFootUn = $('#evFootUnreachable');
+  if (evFootUn) {
+    evFootUn.hidden = evUnreachable === 0;
+    if (evUnreachable) fillPill('evFootUnreachable', null, evUnreachable, 'unreachable by location');
+  }
+  const evFoot = $('#evEngineFoot');
+  if (evFoot) evFoot.hidden = locLeft === 0 && evUnreachable === 0;
+
+  const evRunning = $('#evRunningPill');
+  if (evRunning) {
+    evRunning.hidden = !ev.running;
+    if (ev.running) {
+      const who = ev.running.title || `campaign #${ev.running.event_id}`;
+      $('#evRunningTxt').textContent = `inviting · ${who}`;
+      evRunning.title = `An event run is working through its locations: ${who}`;
+    }
+  }
+
+  // Never used the pipeline -> stay collapsed, exactly like the messages engine.
+  const evEngine = document.getElementById('evEngine');
+  if (evEngine) {
+    const none = !ev.campaigns;
+    evEngine.classList.toggle('is-idle', none);
+    const idle = document.getElementById('evEngineIdle');
+    if (idle) idle.hidden = !none;
+  }
+
   // --- Now processing ---
   const pill = $('#sendingPill');
   if (pill) {
@@ -270,6 +336,7 @@ function applyEngineState(status) {
   for (const [engine, badge, txt] of [
     [$('#engine'), $('#engineState'), $('#engineStateTxt')],
     [$('#msgEngine'), $('#msgEngineState'), $('#msgEngineStateTxt')],
+    [$('#evEngine'), $('#evEngineState'), $('#evEngineStateTxt')],
   ]) {
     if (!engine) continue;
     engine.classList.toggle('is-paused', paused || tripped);
@@ -388,15 +455,20 @@ const ICON_NONOTE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"
 const ICON_KIND_INVITE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M15.5 20v-1.6a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20" stroke-linecap="round"/><circle cx="8.75" cy="7.5" r="3.5"/><path d="M18.5 7.5h4M20.5 5.5v4" stroke-linecap="round"/></svg>';
 const ICON_KIND_MESSAGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="m3.9 7 8.1 5.8L20.1 7" stroke-linecap="round"/></svg>';
 
+const ICON_KIND_EVENT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4" stroke-linecap="round"/></svg>';
+
+const KIND_MARKS = {
+  message: { icon: ICON_KIND_MESSAGE, cls: ' message', label: 'Message', title: 'Message to an existing connection' },
+  event: { icon: ICON_KIND_EVENT, cls: ' event', label: 'Event invite', title: 'Invitation to a LinkedIn event' },
+  invite: { icon: ICON_KIND_INVITE, cls: '', label: 'Connection request', title: 'Connection request' },
+};
+
 function kindMark(kind) {
-  const isMsg = kind === 'message';
+  const mark = KIND_MARKS[kind] || KIND_MARKS.invite;
   const node = el('span', {
-    class: 'kind-mark' + (isMsg ? ' message' : ''),
-    role: 'img',
-    'aria-label': isMsg ? 'Message' : 'Connection request',
-    title: isMsg ? 'Message to an existing connection' : 'Connection request',
+    class: `kind-mark${mark.cls}`, role: 'img', 'aria-label': mark.label, title: mark.title,
   });
-  node.innerHTML = isMsg ? ICON_KIND_MESSAGE : ICON_KIND_INVITE;
+  node.innerHTML = mark.icon;
   return node;
 }
 
@@ -465,13 +537,61 @@ async function refreshQueue() {
   if (queueDragging) return; // don't clobber an in-progress drag / action
   const container = $('#queueGroups'), empty = $('#queueEmpty'), count = $('#queueCount');
   try {
-    const { cohorts } = await api('/api/queue/grouped');
+    const { cohorts, events = [] } = await api('/api/queue/grouped');
     const total = cohorts.reduce((n, c) => n + c.count, 0);
-    count.textContent = `${total} up for processing`;
-    if (!cohorts.length) { container.replaceChildren(); empty.hidden = false; return; }
+    const evTotal = events.reduce((n, e) => n + (e.pending || 0), 0);
+    count.textContent = evTotal
+      ? `${total} up for processing · ${plural(evTotal, 'event invite')}`
+      : `${total} up for processing`;
+    if (!cohorts.length && !events.length) { container.replaceChildren(); empty.hidden = false; return; }
     empty.hidden = true;
-    container.replaceChildren(...cohorts.map(renderCohortGroup));
+    // Event runs lead: one holds a reserved block of the day, and the send planner routes
+    // the cohorts below it around that block rather than the other way round.
+    container.replaceChildren(...events.map(renderEventGroup), ...cohorts.map(renderCohortGroup));
   } catch (_) { /* transient */ }
+}
+
+/**
+ * An armed event campaign, as a queue group.
+ *
+ * Rows are LOCATIONS, not people — that is the unit a run actually works through, and the
+ * unit that decides whether someone gets reached at all. No drag handle and no remove
+ * button: the run's place in the day is the planner's to give, and the only edits that are
+ * safe (dropping a location, stopping the campaign) live on the Events tab where the full
+ * ladder is visible.
+ */
+function renderEventGroup(e) {
+  const when = e.reserved_from
+    ? el('span', { class: 'qg-when', text: `${fmtRelDay(e.reserved_from)} ~${fmtClock(e.reserved_from)}` })
+    : el('span', { class: 'qg-when is-unscheduled', text: 'awaiting a free window' });
+
+  const header = el('div', { class: 'qg-head' },
+    kindMark('event'),
+    el('span', { class: 'qg-name', text: e.title || e.event_url.replace(/^https?:\/\/(www\.)?/, '') }),
+    el('span', { class: 'qg-count', text: `${plural(e.pending || 0, 'person', 'people')} to invite` }),
+    when,
+    el('span', { class: 'qg-actions' },
+      el('button', {
+        class: 'qg-ico', title: 'Open this campaign', 'aria-label': 'Open this campaign',
+        onclick: () => { switchTab('events'); void evOpen(e.id); },
+      }, '↗'),
+    ),
+  );
+
+  const rows = (e.buckets || []).map((b) => el('div', { class: 'qg-row' },
+    el('span', { class: 'qg-loc-rank', text: String(b.rank + 1) }),
+    el('span', { class: 'qg-loc' }, b.label,
+      el('small', { text: `${fmtInt(b.roster_count)} connections to page through` })),
+    el('span', { class: 'qg-loc-n', text: `${b.target_count} to invite` }),
+  ));
+  const body = el('div', { class: 'qg-body' }, ...rows);
+  if (e.locations_left > 0) {
+    body.appendChild(el('div', {
+      class: 'qg-foot',
+      text: `${plural(e.locations_left, 'location')} roll into a later run.`,
+    }));
+  }
+  return el('div', { class: 'qg qg-event' }, header, body);
 }
 
 function renderCohortGroup(c) {
@@ -771,6 +891,8 @@ function initDashboard() {
 
   const idleCta = $('#msgEngineIdleCta');
   if (idleCta) idleCta.addEventListener('click', () => switchTab('add'));
+  const evIdleCta = $('#evEngineIdleCta');
+  if (evIdleCta) evIdleCta.addEventListener('click', () => switchTab('events'));
 
   $('#runNow').addEventListener('click', async () => {
     const btn = $('#runNow');
@@ -1465,6 +1587,87 @@ async function submitCampaign() {
   }
 }
 
+/* ---------- selection -> event campaign ----------
+   The other half of what a search result is for. Everyone here is already a 1st-degree
+   connection, which is exactly the precondition an event invitation has — so the same
+   checkboxes that feed a message campaign feed this.
+
+   It builds a DRAFT and stops. Nothing is armed, nothing is sent: the value of this
+   pipeline is the bucket ladder on the Events tab, which says how much of the list a run
+   can actually reach before an irreversible invitation goes anywhere. */
+
+/** Draft campaigns can still take people; armed ones have a frozen location plan. */
+async function openEventDialog() {
+  const sel = $('#evtCampaign');
+  $('#evtResult').hidden = true;
+  $('#evtConfirm').hidden = false;
+  $('#evtOpen').hidden = true;
+
+  const drafts = (await api('/api/events')).filter((e) => e.status === 'draft');
+  sel.replaceChildren(
+    ...drafts.map((e) => el('option', {
+      value: String(e.id),
+      text: e.title || e.event_url.replace(/^https?:\/\/(www\.)?/, ''),
+    })),
+    el('option', { value: '__new__', text: '+ New event campaign…' }),
+  );
+  sel.value = drafts.length ? String(drafts[0].id) : '__new__';
+
+  const n = selected.size;
+  $('#evtImpact').textContent =
+    `${fmtInt(n)} ${n === 1 ? 'person' : 'people'} · matched against your roster, then ranked by location`;
+  syncEventDialog();
+  $('#evtModal').hidden = false;
+}
+
+function syncEventDialog() {
+  const isNew = $('#evtCampaign').value === '__new__';
+  $('#evtUrlField').hidden = !isNew;
+  $('#evtConfirm').textContent = isNew ? 'Build the plan' : 'Add to campaign';
+  $('#evtCampaignHint').textContent = isNew
+    ? 'A new draft. Nothing is sent until you review the locations and arm it.'
+    : 'Adding re-ranks the whole location plan — only drafts allow it.';
+}
+
+function closeEventDialog() { $('#evtModal').hidden = true; }
+
+async function submitEventInvite() {
+  const result = $('#evtResult');
+  const sel = $('#evtCampaign');
+  const isNew = sel.value === '__new__';
+  const url = $('#evtUrl').value.trim();
+
+  if (selected.size === 0) { toast(result, 'Nothing selected.', true); return; }
+  if (isNew && !url) { toast(result, 'Paste the LinkedIn event URL first.', true); return; }
+
+  const btn = $('#evtConfirm');
+  btn.disabled = true;
+  try {
+    const body = { profile_urls: [...selected] };
+    const r = isNew
+      ? await api('/api/events', { method: 'POST', body: { ...body, event_url: url } })
+      : await api(`/api/events/${sel.value}/invitees`, { method: 'POST', body });
+
+    // Say what did NOT make it, here, while the selection that produced it is still on
+    // screen. "Best effort" is only honest if the effort's edges are stated up front.
+    const bits = [`${fmtInt(r.added)} on the list`];
+    if (r.rejected.length) bits.push(`${fmtInt(r.rejected.length)} not in your roster`);
+    if (r.unreachable.length) bits.push(`${fmtInt(r.unreachable.length)} with no location we can filter on`);
+    toast(result, `${bits.join(' · ')}.`);
+    clearSelection();
+
+    const id = r.event.id;
+    btn.hidden = true;
+    const open = $('#evtOpen');
+    open.hidden = false;
+    open.onclick = () => { closeEventDialog(); switchTab('events'); void evOpen(id); };
+  } catch (err) {
+    toast(result, err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function openConnection(slug) {
   const drawer = $('#connDrawer'); const backdrop = $('#drawerBackdrop');
   const body = $('#connDrawerBody');
@@ -1590,6 +1793,10 @@ function initSearch() {
 
   $('#selectionClear')?.addEventListener('click', clearSelection);
   $('#selectionAdd')?.addEventListener('click', () => { void openCampaignDialog(); });
+  $('#selectionEvent')?.addEventListener('click', () => { void openEventDialog(); });
+  $('#evtClose')?.addEventListener('click', closeEventDialog);
+  $('#evtCampaign')?.addEventListener('change', syncEventDialog);
+  $('#evtConfirm')?.addEventListener('click', () => { void submitEventInvite(); });
   $('#campClose')?.addEventListener('click', closeCampaignDialog);
   $('#campCohort')?.addEventListener('change', syncCampaignTemplate);
   $('#campConfirm')?.addEventListener('click', () => { void submitCampaign(); });
@@ -2165,7 +2372,10 @@ async function evOpen(id, quiet = false) {
   try {
     const detail = await api(`/api/events/${id}`);
     evRenderDetail(detail);
-    $('.ev-card').forEach((c) => c.classList.toggle('is-open', Number(c.dataset.id) === id));
+    // $$ (querySelectorAll), not $ — `$('.ev-card').forEach` threw a TypeError on every
+    // open, and the catch below turned it into "Could not load the campaign: …" beside a
+    // campaign that had in fact just loaded.
+    $$('.ev-card').forEach((c) => c.classList.toggle('is-open', Number(c.dataset.id) === id));
   } catch (e) {
     if (!quiet) alert(`Could not load the campaign: ${e.message}`);
   }

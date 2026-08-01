@@ -49,6 +49,17 @@
   --teal-50:    #e4f4f1;
   --teal-glow:  rgba(13, 148, 136, 0.20);
 
+  /* --- campaign-kind identity (wine = event invites) ---
+     The third pipeline needs a mark of its own, and every cool hue was already spoken
+     for: slate/blue/violet carry queue status, emerald means terminal success, teal means
+     messages, amber means paused, red means broken. A deep wine is the one direction left
+     that reads as deliberate on warm paper and cannot be mistaken for a status. */
+  --wine:       #b53a6d;
+  --wine-700:   #932c58;
+  --wine-100:   #f2ccdd;
+  --wine-50:    #fbebf2;
+  --wine-glow:  rgba(181, 58, 109, 0.20);
+
   /* --- type --- */
   --display: "Fraunces", "Iowan Old Style", Georgia, serif;
   --sans:    "Hanken Grotesk", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
@@ -443,6 +454,42 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .engine-msg .recheck-btn:focus-visible,
 .engine-msg .station.is-drill:focus-visible .puck { outline-color: var(--teal); }
 
+/* ---------- Event-invite engine (the third conveyor) ----------
+   Same make again, tinted wine. Two honest departures from the other two:
+
+   THREE stations, not four. The others end on a reply the machine can observe —
+   accepted, replied. An event invitation has no such signal: LinkedIn tells us nothing
+   about who accepted. A fourth puck would be a number we cannot fill.
+
+   A foot line under the track. The conveyor shows people; the run works LOCATIONS, and
+   the ones that do not fit today's reserved window roll into tomorrow. That backlog has
+   no station to live in, so it sits beneath as a chip rather than being rounded away. */
+.engine-ev { margin-top: 16px; }
+.engine-ev .kind-ico { color: var(--wine); }
+.engine-ev .flowline { background: repeating-linear-gradient(90deg, var(--wine-100) 0 9px, transparent 9px 20px); }
+.engine-ev .dotflow i { background: var(--wine); box-shadow: 0 0 0 4px var(--wine-glow); }
+.engine-ev .fuelbar > i { background: linear-gradient(90deg, var(--wine), #d4638f); }
+.engine-ev .engine-idle-mark { background: var(--wine-50); color: var(--wine-700); }
+.engine-ev .station.is-drill:focus-visible .puck { outline-color: var(--wine); }
+
+/* Terminal success, same emerald as `accepted` and `replied` — one meaning per colour. */
+.station.invited .puck { border-color: var(--brand-100); background: var(--brand-50); }
+.station.invited .n { color: var(--brand-700); }
+
+.engine-foot {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-top: 22px; padding-top: 16px; border-top: 1px dashed var(--line);
+}
+.foot-chip {
+  font-size: 12px; font-weight: 500; color: var(--ink-2);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 100px; padding: 5px 12px;
+}
+.foot-chip b { font-family: var(--mono); font-weight: 600; color: var(--ink); }
+.foot-chip.is-warn { background: var(--amber-bg); border-color: #eccf9b; color: #8a5408; }
+.foot-chip.is-warn b { color: #7a4a06; }
+.engine.is-idle .engine-foot { display: none; }
+
 /* ---------- Campaign-kind markers ----------
    Invites are the default and stay neutral; message rows/cohorts carry the teal
    identity so a mixed list is scannable without reading a word. */
@@ -453,6 +500,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 }
 .kind-mark svg { width: 12px; height: 12px; }
 .kind-mark.message { background: var(--teal-50); color: var(--teal-700); }
+.kind-mark.event { background: var(--wine-50); color: var(--wine-700); }
 .qg-head .kind-mark { width: 22px; height: 22px; }
 .tag.kind-tag { text-transform: none; letter-spacing: 0.1px; }
 .tag.kind-tag.message { background: var(--teal-50); color: var(--teal-700); }
@@ -564,7 +612,17 @@ body > .note-pop {
 .hint { font-size: 12.5px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--ink-3); }
 .hint code { font-family: var(--mono); font-size: 12px; color: var(--brand-700); background: var(--brand-50); padding: 1px 6px; border-radius: 5px; }
 
-input[type=text], input[type=number], textarea, select {
+/* Every text-entry control, by exclusion rather than by enumeration. The old rule listed
+   `text` and `number` only, so the Events tab's `type=url` box and the Apify `type=password`
+   box silently fell out of the design system and rendered as raw UA controls — wrong font,
+   wrong padding, wrong border — beside fields that looked right. Excluding the three types
+   that must keep native rendering is the version that cannot rot.
+
+   The `:where()` matters as much as the `:not()`. It drops the whole selector to a bare
+   element (0,0,1), the same weight `textarea` and `select` already carry here, so a later
+   single-class rule wins — which is what `.log-filter` and `.key-mask` always intended and
+   never got, having silently lost to the old `input[type=text]` at (0,1,1). */
+input:where(:not([type=checkbox], [type=radio], [type=file])), textarea, select {
   font-family: var(--sans); font-size: 15px; color: var(--ink);
   background: var(--bg-wash); border: 1px solid var(--line);
   border-radius: var(--radius-sm); padding: 12px 14px; width: 100%;
@@ -669,6 +727,12 @@ select:disabled { opacity: 1; } /* Safari/Chrome dim disabled selects on their o
 
 .btn-ghost { background: transparent; color: var(--ink-2); border-color: var(--line); box-shadow: none; }
 .btn-ghost:hover { border-color: var(--brand); color: var(--brand-700); background: var(--brand-50); }
+
+/* Wears the event-invite identity so the Connections selection bar offers two visibly
+   different destinations rather than two green buttons a millimetre apart. */
+.btn-event { background: var(--panel); color: var(--wine-700); border-color: var(--wine-100); }
+.btn-event:hover { background: var(--wine-50); color: var(--wine-700); border-color: var(--wine); }
+.btn-event:focus-visible { outline: 2px solid var(--wine); outline-offset: 2px; }
 
 /* ---------- Toast / result ---------- */
 .toast {
@@ -907,6 +971,28 @@ body > .modal-overlay {
 .qg-chevron.is-collapsed { transform: rotate(-90deg); }
 .qg.is-collapsed .qg-body { display:none; }
 .qg.is-collapsed .qg-head { border-bottom:none; }
+
+/* An event run in the queue. It sits with the cohorts because it competes for the same
+   browser and the same day, but it is NOT one of them: it cannot be reordered or dropped
+   from here (the planner owns its window), and its rows are LOCATIONS rather than people.
+   The wine edge and the plain cursor say both of those before a word is read. */
+.qg-event { border-left:3px solid var(--wine); }
+.qg-event .qg-head { cursor:default; background:var(--wine-50); border-bottom-color:var(--wine-100); }
+.qg-event .qg-when {
+  font-family:var(--mono); font-size:11.5px; color:var(--wine-700);
+  background:var(--panel); border:1px solid var(--wine-100); border-radius:100px; padding:2px 9px;
+}
+.qg-event .qg-when.is-unscheduled { color:var(--ink-3); border-color:var(--line); }
+.qg-event .qg-ico:hover { background:var(--wine-50); color:var(--wine-700); }
+.qg-loc { flex:1; font-size:12.5px; color:var(--ink); min-width:0; }
+.qg-loc small { display:block; font-size:11px; color:var(--ink-faint); }
+.qg-loc-rank {
+  width:20px; height:20px; flex:none; display:grid; place-items:center;
+  border-radius:6px; background:var(--line-soft); color:var(--ink-3);
+  font-family:var(--mono); font-size:11px; font-weight:600;
+}
+.qg-loc-n { font-family:var(--mono); font-size:11.5px; color:var(--ink-2); white-space:nowrap; }
+.qg-foot { padding:7px 12px; font-size:11.5px; color:var(--ink-3); background:var(--panel-2); }
 
 /* ---------- Status drill-down drawer ----------
    `body > .drawer` (like .note-pop above): position:fixed must beat the global
@@ -1247,7 +1333,14 @@ body > .drawer {
 .ev-card.is-open { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-glow), var(--shadow); }
 .ev-card-title { font-family: var(--display); font-size: 17px; letter-spacing: -0.01em; color: var(--ink); }
 .ev-card-sub { grid-column: 1; font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.ev-card-right { grid-row: 1 / span 2; display: flex; align-items: center; gap: 10px; }
+/* `grid-column` is load-bearing, not decoration. With only a definite ROW, auto-placement
+   resolves this cell before the auto-placed title (row-locked items are positioned first),
+   so it took column 1 and pushed the title to the right-hand edge — badge left, name right,
+   and the subtitle bumped to a third row. */
+.ev-card-right {
+  grid-column: 2; grid-row: 1 / span 2;
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+}
 
 .ev-badge {
   font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
