@@ -1,5 +1,6 @@
 import type { Repos } from '../db/repositories.js';
 import type { CampaignKind, Settings } from '../types.js';
+import { CAMPAIGN_KINDS } from '../core/campaign-kind.js';
 import { planDailyBatches, assignSchedule } from '../core/schedule.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
@@ -42,7 +43,9 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   windowEnd.setHours(s.workday_end_hour, 0, 0, 0);
   if (now.getTime() >= windowEnd.getTime()) return;
 
-  for (const kind of ['invite', 'message'] as CampaignKind[]) {
+  // Iterate the shared kind list, not a local literal: a kind added to CAMPAIGN_KINDS but
+  // missed here would never be scheduled at all — silently, with nothing to notice.
+  for (const kind of CAMPAIGN_KINDS) {
     planKind(repos, s, now, kind, windowEnd, rng);
   }
 }

@@ -7,6 +7,7 @@ import { INCIDENTS_DIR } from '../config.js';
 import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver, CampaignKind, ProfileStatus, Settings } from '../types.js';
+import { isCampaignKind, parseKind } from '../core/campaign-kind.js';
 import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
 import { estimateQueueCompletion, nextBatchForecast, orderUpcoming } from '../core/forecast.js';
@@ -108,7 +109,9 @@ export function buildServer(
       req.body as { url: string; cohort?: string; message?: string; kind?: string };
     const normalized = normalizeProfileUrl(url ?? '');
     if (!normalized) return reply.code(400).send({ error: 'invalid linkedin profile url' });
-    const kind: CampaignKind = kindRaw === 'message' ? 'message' : 'invite';
+    const parsedKind = parseKind(kindRaw);
+    if (!parsedKind.ok) return reply.code(400).send({ error: parsedKind.error });
+    const kind: CampaignKind = parsedKind.kind ?? 'invite';
     const cohortName = (cohort && cohort.trim()) || defaultCohortName(new Date());
     // Same fixed-kind rule as /api/lists, and for the same reason: an invite row inside a
     // message cohort would be picked up by the INVITE sender, which resolves its text from
@@ -138,7 +141,9 @@ export function buildServer(
   app.post('/api/lists', async (req, reply) => {
     const { cohort, text, message_template, kind: kindRaw } =
       req.body as { cohort?: string; text: string; message_template?: string; kind?: string };
-    const kind: CampaignKind = kindRaw === 'message' ? 'message' : 'invite';
+    const parsedKind = parseKind(kindRaw);
+    if (!parsedKind.ok) return reply.code(400).send({ error: parsedKind.error });
+    const kind: CampaignKind = parsedKind.kind ?? 'invite';
     const template = message_template?.trim() || undefined;
     const cohortName = (cohort && cohort.trim()) || defaultCohortName(new Date());
     const existing = repos.cohorts.findByName(cohortName);
@@ -281,17 +286,21 @@ export function buildServer(
   app.post('/api/cohorts', async (req, reply) => {
     const { name, message_template, kind: kindRaw } =
       req.body as { name: string; message_template?: string; kind?: string };
-    const kind: CampaignKind = kindRaw === 'message' ? 'message' : 'invite';
+    const parsedKind = parseKind(kindRaw);
+    if (!parsedKind.ok) return reply.code(400).send({ error: parsedKind.error });
+    const kind: CampaignKind = parsedKind.kind ?? 'invite';
     // Only a caller that explicitly asked for a kind can be told it conflicts; an
     // existing-cohort edit that omits `kind` must not be rejected by the 'invite' default.
+    // `parsedKind.kind === undefined` is exactly "the caller omitted it" — parseKind
+    // reports absence rather than defaulting, precisely to keep this distinction.
     const existing = repos.cohorts.findByName(name);
-    if (existing && existing.kind !== kind && kindRaw !== undefined) {
+    if (existing && existing.kind !== kind && parsedKind.kind !== undefined) {
       return reply.code(409).send({ error: `cohort "${name}" is ${existing.kind === 'invite' ? 'an invite' : 'a message'} cohort` });
     }
     // Same template rules as /api/lists — a message cohort with no text would queue
     // profiles the sender can only route to needs_attention, and the UI's client-side
     // guard doesn't protect direct API callers (agents, scripts).
-    const effectiveKind = existing && kindRaw === undefined ? existing.kind : kind;
+    const effectiveKind = existing && parsedKind.kind === undefined ? existing.kind : kind;
     const template = message_template?.trim() || undefined;
     if (effectiveKind === 'message' && !template) {
       return reply.code(400).send({ error: 'message cohorts require a message template' });
@@ -483,13 +492,19 @@ export function buildServer(
     return computeCohortMetrics(rows);
   });
 
-  app.get('/api/profiles', async (req): Promise<unknown[]> => {
+  app.get('/api/profiles', async (req, reply): Promise<unknown> => {
     const { status, kind } = req.query as { status?: string; kind?: string };
+    // A kind the engine doesn't know is a 400, not a silently-dropped filter: the old
+    // `kind === 'invite' || kind === 'message'` test let a typo'd ?kind= fall through to
+    // "no filter", so the drawer showed every kind while looking like a filtered view.
+    if (kind !== undefined && !isCampaignKind(kind)) {
+      return reply.code(400).send({ error: `unknown kind: ${kind}` });
+    }
     // string[] (not unknown[]): both filters bind text, and node:sqlite's SQLInputValue
     // won't accept unknown.
     const conds: string[] = []; const args: string[] = [];
     if (status) { conds.push('p.status = ?'); args.push(status); }
-    if (kind === 'invite' || kind === 'message') { conds.push('p.kind = ?'); args.push(kind); }
+    if (kind !== undefined) { conds.push('p.kind = ?'); args.push(kind); }
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const stmt = repos.db.prepare(`
       SELECT p.id, p.profile_url, p.kind, p.status, p.skip_reason, p.scheduled_for, p.sent_at,

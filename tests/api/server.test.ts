@@ -1038,3 +1038,79 @@ test('an existing INVITE cohort still rejects a message add', async () => {
   } });
   expect(res.statusCode).toBe(409);
 });
+
+/* ---------- unknown campaign kinds are rejected, not coerced ----------
+   Every endpoint used to parse `kind` with `kindRaw === 'message' ? 'message' : 'invite'`,
+   so an unrecognized value became an INVITE. Because 'invite' is a valid CampaignKind,
+   adding a kind to the union raised no compile error at those sites — a request meant to
+   like a post would have sent a real, unsendable connection request.
+
+   Each test asserts BOTH the 400 and that nothing was written: a status-code-only
+   assertion would still pass if the row were created before the check. */
+
+test('POST /api/profiles rejects an unknown kind without creating a row', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/not-a-kind', cohort: 'Whatever', kind: 'like' },
+  });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toContain('unknown kind: like');
+  expect(repos.profiles.all()).toHaveLength(0);
+  expect(repos.cohorts.findByName('Whatever')).toBeUndefined();
+});
+
+test('POST /api/lists rejects an unknown kind without creating a cohort or rows', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Likes', kind: 'like', text: 'https://www.linkedin.com/in/a' },
+  });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toContain('unknown kind: like');
+  expect(repos.cohorts.findByName('Likes')).toBeUndefined();
+  expect(repos.profiles.all()).toHaveLength(0);
+});
+
+test('POST /api/cohorts rejects an unknown kind without creating the cohort', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'Engage', kind: 'like', message_template: 'nice post' },
+  });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toContain('unknown kind: like');
+  expect(repos.cohorts.findByName('Engage')).toBeUndefined();
+});
+
+/* The read-only filter had the milder version of the same bug: an unrecognized ?kind=
+   failed the `kind === 'invite' || kind === 'message'` test and fell through to "no
+   filter", so a typo'd drill-down showed every kind while looking filtered. */
+test('GET /api/profiles rejects an unknown kind filter instead of ignoring it', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Inv', text: 'https://www.linkedin.com/in/filter-me' },
+  });
+  const res = await app.inject({ method: 'GET', url: '/api/profiles?kind=nonsense' });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toContain('unknown kind: nonsense');
+  // Sanity: a valid filter still works, so the guard didn't break the happy path.
+  const ok = await app.inject({ method: 'GET', url: '/api/profiles?kind=invite' });
+  expect(ok.statusCode).toBe(200);
+  expect(ok.json()).toHaveLength(1);
+});
+
+/* An explicit null is a value the caller chose to send, so it is an error — unlike an
+   omitted field, which must keep defaulting to 'invite' for backward compatibility. */
+test('POST /api/profiles treats an explicit null kind as invalid but an omitted one as invite', async () => {
+  const bad = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/null-kind', cohort: 'NullC', kind: null },
+  });
+  expect(bad.statusCode).toBe(400);
+  expect(repos.profiles.all()).toHaveLength(0);
+
+  const omitted = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/no-kind', cohort: 'NullC' },
+  });
+  expect(omitted.statusCode).toBe(200);
+  expect(omitted.json().kind).toBe('invite');
+});

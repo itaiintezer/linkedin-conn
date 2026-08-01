@@ -1,7 +1,12 @@
 import type { CheckpointScan } from './core/checkpoint.js';
 export type { CheckpointScan };
 
-export type CampaignKind = 'invite' | 'message';
+// Derived from the CAMPAIGN_KINDS list so the runtime validator and this type can never
+// drift. Imported as well as re-exported: `export type { X } from` alone would not bring
+// the name into this file's scope, and the interfaces below use it.
+// Re-exported here because ~15 modules already import CampaignKind from types.js.
+import type { CampaignKind } from './core/campaign-kind.js';
+export type { CampaignKind };
 
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
