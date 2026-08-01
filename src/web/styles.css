@@ -49,16 +49,20 @@
   --teal-50:    #e4f4f1;
   --teal-glow:  rgba(13, 148, 136, 0.20);
 
-  /* --- campaign-kind identity (wine = event invites) ---
-     The third pipeline needs a mark of its own, and every cool hue was already spoken
-     for: slate/blue/violet carry queue status, emerald means terminal success, teal means
-     messages, amber means paused, red means broken. A deep wine is the one direction left
-     that reads as deliberate on warm paper and cannot be mistaken for a status. */
-  --wine:       #b53a6d;
-  --wine-700:   #932c58;
-  --wine-100:   #f2ccdd;
-  --wine-50:    #fbebf2;
-  --wine-glow:  rgba(181, 58, 109, 0.20);
+  /* --- campaign-kind identity (indigo = event invites) ---
+     The third pipeline needs a mark of its own, and the palette is crowded: slate/blue/
+     violet carry queue status, emerald means terminal success, teal means messages, amber
+     means paused, red means broken. Indigo is deliberately COOL — anything in the red half
+     of the wheel reads as an alert next to the halt banner, however dark it is made.
+
+     It sits between the blue and violet of the status ramp, which is survivable only
+     because a kind colour never lands on a station puck: it marks the conveyor line, the
+     icons and the chrome. Keep it that way. */
+  --indigo:      #4b46b5;
+  --indigo-700:  #3b3794;
+  --indigo-100:  #d3d1f0;
+  --indigo-50:   #ecebfa;
+  --indigo-glow: rgba(75, 70, 181, 0.20);
 
   /* --- type --- */
   --display: "Fraunces", "Iowan Old Style", Georgia, serif;
@@ -455,7 +459,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .engine-msg .station.is-drill:focus-visible .puck { outline-color: var(--teal); }
 
 /* ---------- Event-invite engine (the third conveyor) ----------
-   Same make again, tinted wine. Two honest departures from the other two:
+   Same make again, tinted indigo. Two honest departures from the other two:
 
    THREE stations, not four. The others end on a reply the machine can observe —
    accepted, replied. An event invitation has no such signal: LinkedIn tells us nothing
@@ -465,12 +469,12 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
    the ones that do not fit today's reserved window roll into tomorrow. That backlog has
    no station to live in, so it sits beneath as a chip rather than being rounded away. */
 .engine-ev { margin-top: 16px; }
-.engine-ev .kind-ico { color: var(--wine); }
-.engine-ev .flowline { background: repeating-linear-gradient(90deg, var(--wine-100) 0 9px, transparent 9px 20px); }
-.engine-ev .dotflow i { background: var(--wine); box-shadow: 0 0 0 4px var(--wine-glow); }
-.engine-ev .fuelbar > i { background: linear-gradient(90deg, var(--wine), #d4638f); }
-.engine-ev .engine-idle-mark { background: var(--wine-50); color: var(--wine-700); }
-.engine-ev .station.is-drill:focus-visible .puck { outline-color: var(--wine); }
+.engine-ev .kind-ico { color: var(--indigo); }
+.engine-ev .flowline { background: repeating-linear-gradient(90deg, var(--indigo-100) 0 9px, transparent 9px 20px); }
+.engine-ev .dotflow i { background: var(--indigo); box-shadow: 0 0 0 4px var(--indigo-glow); }
+.engine-ev .fuelbar > i { background: linear-gradient(90deg, var(--indigo), #7a75d6); }
+.engine-ev .engine-idle-mark { background: var(--indigo-50); color: var(--indigo-700); }
+.engine-ev .station.is-drill:focus-visible .puck { outline-color: var(--indigo); }
 
 /* Terminal success, same emerald as `accepted` and `replied` — one meaning per colour. */
 .station.invited .puck { border-color: var(--brand-100); background: var(--brand-50); }
@@ -500,7 +504,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 }
 .kind-mark svg { width: 12px; height: 12px; }
 .kind-mark.message { background: var(--teal-50); color: var(--teal-700); }
-.kind-mark.event { background: var(--wine-50); color: var(--wine-700); }
+.kind-mark.event { background: var(--indigo-50); color: var(--indigo-700); }
 .qg-head .kind-mark { width: 22px; height: 22px; }
 .tag.kind-tag { text-transform: none; letter-spacing: 0.1px; }
 .tag.kind-tag.message { background: var(--teal-50); color: var(--teal-700); }
@@ -730,9 +734,9 @@ select:disabled { opacity: 1; } /* Safari/Chrome dim disabled selects on their o
 
 /* Wears the event-invite identity so the Connections selection bar offers two visibly
    different destinations rather than two green buttons a millimetre apart. */
-.btn-event { background: var(--panel); color: var(--wine-700); border-color: var(--wine-100); }
-.btn-event:hover { background: var(--wine-50); color: var(--wine-700); border-color: var(--wine); }
-.btn-event:focus-visible { outline: 2px solid var(--wine); outline-offset: 2px; }
+.btn-event { background: var(--panel); color: var(--indigo-700); border-color: var(--indigo-100); }
+.btn-event:hover { background: var(--indigo-50); color: var(--indigo-700); border-color: var(--indigo); }
+.btn-event:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
 
 /* ---------- Toast / result ---------- */
 .toast {
@@ -975,15 +979,15 @@ body > .modal-overlay {
 /* An event run in the queue. It sits with the cohorts because it competes for the same
    browser and the same day, but it is NOT one of them: it cannot be reordered or dropped
    from here (the planner owns its window), and its rows are LOCATIONS rather than people.
-   The wine edge and the plain cursor say both of those before a word is read. */
-.qg-event { border-left:3px solid var(--wine); }
-.qg-event .qg-head { cursor:default; background:var(--wine-50); border-bottom-color:var(--wine-100); }
+   The indigo edge and the plain cursor say both of those before a word is read. */
+.qg-event { border-left:3px solid var(--indigo); }
+.qg-event .qg-head { cursor:default; background:var(--indigo-50); border-bottom-color:var(--indigo-100); }
 .qg-event .qg-when {
-  font-family:var(--mono); font-size:11.5px; color:var(--wine-700);
-  background:var(--panel); border:1px solid var(--wine-100); border-radius:100px; padding:2px 9px;
+  font-family:var(--mono); font-size:11.5px; color:var(--indigo-700);
+  background:var(--panel); border:1px solid var(--indigo-100); border-radius:100px; padding:2px 9px;
 }
 .qg-event .qg-when.is-unscheduled { color:var(--ink-3); border-color:var(--line); }
-.qg-event .qg-ico:hover { background:var(--wine-50); color:var(--wine-700); }
+.qg-event .qg-ico:hover { background:var(--indigo-50); color:var(--indigo-700); }
 .qg-loc { flex:1; font-size:12.5px; color:var(--ink); min-width:0; }
 .qg-loc small { display:block; font-size:11px; color:var(--ink-faint); }
 .qg-loc-rank {
