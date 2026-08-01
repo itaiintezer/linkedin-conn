@@ -5,6 +5,9 @@ import { planDailyBatches, assignSchedule } from '../core/schedule.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
 import { capsFor } from '../core/caps.js';
+import {
+  conflictsWithReservation, filterReservedSlots, type ReservationWindow,
+} from '../core/reservations.js';
 import { log } from '../core/log.js';
 
 /** How long a scheduled profile may sit past its slot before it's re-queued. */
@@ -43,14 +46,33 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   windowEnd.setHours(s.workday_end_hour, 0, 0, 0);
   if (now.getTime() >= windowEnd.getTime()) return;
 
+  // Windows something else has claimed the browser for (currently only event-invite
+  // runs). Read once and shared across kinds — it is the same day for both.
+  const reserved = repos.reservations.between(now.toISOString(), windowEnd.toISOString());
+
   // Iterate the shared kind list, not a local literal: a kind added to CAMPAIGN_KINDS but
   // missed here would never be scheduled at all — silently, with nothing to notice.
   for (const kind of CAMPAIGN_KINDS) {
-    planKind(repos, s, now, kind, windowEnd, rng);
+    planKind(repos, s, now, kind, windowEnd, rng, reserved);
   }
 }
 
-function planKind(repos: Repos, s: Settings, now: Date, kind: CampaignKind, windowEnd: Date, rng: () => number): void {
+/**
+ * How long a batch of `batchSize` sends occupies the browser, worst case: the sender waits
+ * a randomized min..max between consecutive sends. Deliberately pessimistic — the cost of
+ * overestimating is a slightly smaller usable gap, the cost of underestimating is a batch
+ * running into a reservation, which is the thing reservations exist to prevent.
+ */
+export function estimatedBatchRuntimeMs(s: Settings, batchSize: number): number {
+  const perSend = Number(s.max_delay_ms);
+  const gap = Number.isFinite(perSend) && perSend > 0 ? perSend : 0;
+  return Math.max(1, batchSize) * gap;
+}
+
+function planKind(
+  repos: Repos, s: Settings, now: Date, kind: CampaignKind, windowEnd: Date,
+  rng: () => number, reserved: ReservationWindow[] = [],
+): void {
   const caps = capsFor(s, kind);
   const sentInWindow = repos.events.countSentSince(windowStartIso(now), kind);
   const weeklyRemaining = remainingCapacity(caps.weeklyCap, sentInWindow);
@@ -71,12 +93,25 @@ function planKind(repos: Repos, s: Settings, now: Date, kind: CampaignKind, wind
   const allTimes = planDailyBatches(now, {
     startHour: s.workday_start_hour, endHour: s.workday_end_hour, count: caps.batchesPerDay,
   }, rng);
-  let times = allTimes.filter((t) => t.getTime() > now.getTime());
+  // Route around held windows BEFORE the empty-times fallback, so the fallback cannot
+  // reintroduce a collision the filter just removed.
+  const runtimeMs = estimatedBatchRuntimeMs(s, batchSize);
+  let times = filterReservedSlots(
+    allTimes.filter((t) => t.getTime() > now.getTime()), reserved, runtimeMs);
   if (times.length === 0) {
-    // Inside the window but every random slot fell before now: pick a random time in the
-    // remaining window [now, end) so the send still lands within working hours (not the
-    // old "now + 60s", which could fire after hours).
-    const at = new Date(now.getTime() + Math.floor(rng() * Math.max(1, windowEnd.getTime() - now.getTime())));
+    // Inside the window but every random slot fell before now (or every one collided with
+    // a reservation): pick a random time in the remaining window [now, end) so the send
+    // still lands within working hours (not the old "now + 60s", which could fire after
+    // hours). Retry a bounded number of times to dodge reservations; if the window is so
+    // congested that we cannot find a free instant, leave the queue alone rather than
+    // scheduling into a reservation — the next hourly tick tries again.
+    let at: Date | null = null;
+    for (let i = 0; i < 12; i++) {
+      const candidate = new Date(
+        now.getTime() + Math.floor(rng() * Math.max(1, windowEnd.getTime() - now.getTime())));
+      if (!conflictsWithReservation(candidate, reserved, runtimeMs)) { at = candidate; break; }
+    }
+    if (at === null) return;
     times = [at];
   }
 

@@ -324,3 +324,57 @@ test('drops acceptance_checks_per_day, a setting nothing reads since the cutover
   expect(cols).toContain('weekly_cap');   // the rest of the row survives
   expect(() => runMigrations(db)).not.toThrow();
 });
+
+// --- Event invites ---------------------------------------------------------------
+// CREATE TABLE IF NOT EXISTS back-fills a whole missing table but is a no-op once the
+// table exists — so a column declared on an event table AFTER that table shipped is
+// silently absent, and every read of it quietly returns undefined instead of failing.
+// geo_candidates is the first such column; these pin the guard that covers it.
+
+test('runMigrations adds event_buckets.geo_candidates to a table that predates it', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE event_buckets (
+    id INTEGER PRIMARY KEY, event_id INTEGER, rank INTEGER, label TEXT,
+    geo_label TEXT, geo_urn TEXT, kind TEXT, target_count INTEGER,
+    roster_count INTEGER, parent_bucket_id INTEGER, status TEXT);`);
+  runMigrations(db);
+  const cols = (db.prepare('PRAGMA table_info(event_buckets)').all() as { name: string }[]).map((c) => c.name);
+  expect(cols).toContain('geo_candidates');
+});
+
+test('runMigrations leaves an already-current event_buckets untouched', () => {
+  const db = openDatabase(':memory:');
+  const before = (db.prepare('PRAGMA table_info(event_buckets)').all() as { name: string }[]).map((c) => c.name);
+  runMigrations(db); // idempotent — a second pass must not throw or duplicate
+  const after = (db.prepare('PRAGMA table_info(event_buckets)').all() as { name: string }[]).map((c) => c.name);
+  expect(after).toEqual(before);
+  expect(after.filter((c) => c === 'geo_candidates')).toHaveLength(1);
+});
+
+test('runMigrations skips the event guard entirely when the table is absent', () => {
+  // Isolated migration tests operate on partial databases; table_info returns [] then.
+  const db = new DatabaseSync(':memory:');
+  expect(() => runMigrations(db)).not.toThrow();
+});
+
+test('a fresh db gets every event settings column', () => {
+  const db = openDatabase(':memory:');
+  const cols = (db.prepare('PRAGMA table_info(settings)').all() as { name: string }[]).map((c) => c.name);
+  for (const c of ['events_per_day', 'event_invite_cap', 'event_bucket_ceiling',
+    'event_run_budget_minutes', 'event_shard_threshold']) {
+    expect(cols).toContain(c);
+  }
+});
+
+test('runMigrations adds the event settings columns to a legacy settings table', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), weekly_cap INTEGER NOT NULL DEFAULT 100);');
+  db.exec('INSERT INTO settings (id) VALUES (1);');
+  runMigrations(db);
+  const row = db.prepare('SELECT * FROM settings WHERE id = 1').get() as Record<string, unknown>;
+  expect(row.events_per_day).toBe(1);
+  expect(row.event_invite_cap).toBe(500);
+  expect(row.event_bucket_ceiling).toBe(10);
+  expect(row.event_run_budget_minutes).toBe(20);
+  expect(row.event_shard_threshold).toBe(900);
+});

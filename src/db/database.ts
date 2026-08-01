@@ -196,6 +196,41 @@ export function runMigrations(db: DB): void {
     db.exec('ALTER TABLE app_state ADD COLUMN enrich_halt_detail TEXT');
     db.exec('ALTER TABLE app_state ADD COLUMN enrich_halted_at TEXT');
   }
+  // --- Event invites (2026-08-01) ---
+  // The events/event_buckets/event_invitees/event_runs/event_run_buckets/reservations
+  // tables are back-filled by schema.sql's CREATE TABLE IF NOT EXISTS on every
+  // openDatabase.
+  //
+  // CAREFUL: that covers whole tables, NOT columns added to them afterwards. Once a table
+  // exists, CREATE TABLE IF NOT EXISTS is a no-op and a newly-declared column is silently
+  // absent — every read of it then returns undefined rather than failing loudly. Any
+  // column added to these tables later needs its own guarded ALTER below, exactly like a
+  // column on a pre-existing table. `geo_candidates` is the first such case.
+  const bucketCols = (db.prepare('PRAGMA table_info(event_buckets)').all() as { name: string }[]).map((c) => c.name);
+  if (bucketCols.length > 0 && !bucketCols.includes('geo_candidates')) {
+    db.exec('ALTER TABLE event_buckets ADD COLUMN geo_candidates TEXT');
+  }
+  // Settings columns need an ALTER each, one guard apiece so an interruption between them
+  // cannot permanently skip whichever did not run yet.
+  if (cols.length > 0 && !cols.includes('events_per_day')) {
+    db.exec('ALTER TABLE settings ADD COLUMN events_per_day INTEGER NOT NULL DEFAULT 1');
+  }
+  if (cols.length > 0 && !cols.includes('event_invite_cap')) {
+    db.exec('ALTER TABLE settings ADD COLUMN event_invite_cap INTEGER NOT NULL DEFAULT 500');
+  }
+  if (cols.length > 0 && !cols.includes('event_bucket_ceiling')) {
+    db.exec('ALTER TABLE settings ADD COLUMN event_bucket_ceiling INTEGER NOT NULL DEFAULT 10');
+  }
+  if (cols.length > 0 && !cols.includes('event_run_budget_minutes')) {
+    db.exec('ALTER TABLE settings ADD COLUMN event_run_budget_minutes INTEGER NOT NULL DEFAULT 20');
+  }
+  // The picker hard-caps at 1000 rows in a STABLE order, so rows past the cap are
+  // permanently invisible under that filter. Any bucket whose roster count approaches it
+  // gets sub-sharded into child geos. 900 leaves headroom for roster/LinkedIn drift.
+  if (cols.length > 0 && !cols.includes('event_shard_threshold')) {
+    db.exec('ALTER TABLE settings ADD COLUMN event_shard_threshold INTEGER NOT NULL DEFAULT 900');
+  }
+
   // profiles: kind/full_name/thread_url/replied_at + UNIQUE(profile_url) -> UNIQUE(profile_url, kind).
   // SQLite cannot alter a column-level UNIQUE, so rebuild the table once. Detection: the
   // kind column is absent exactly on pre-messaging databases. IDs are preserved, so

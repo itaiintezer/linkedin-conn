@@ -10,7 +10,9 @@ function settings(over: Partial<Settings> = {}): Settings {
     roster_sync_per_day: 2,
     apify_api_key: null, enrich_ttl_days: 180, enrich_concurrency: 8,
     note_quota_exhausted: 0, min_delay_ms: 20000, max_delay_ms: 90000,
-    paused: 0, pause_reason: null, onboarded: 1, failure_threshold: 3, expiry_days: 0, ...over,
+    paused: 0, pause_reason: null, onboarded: 1, failure_threshold: 3, expiry_days: 0,
+    events_per_day: 1, event_invite_cap: 500, event_bucket_ceiling: 10,
+    event_run_budget_minutes: 20, event_shard_threshold: 900, ...over,
   };
 }
 

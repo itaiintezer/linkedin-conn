@@ -74,6 +74,7 @@ function initTabs() {
       $$('main > .panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
       if (name === 'add') loadCohortOptions();
       if (name === 'cohorts') loadCohortsScreen();
+      if (name === 'events') loadEventsScreen();
       if (name === 'docs') loadDocs();
       if (name === 'settings') { loadSettings(); scrollLogToEnd(); }
     });
@@ -1199,6 +1200,10 @@ async function loadSettings() {
     $('#setStart').value = s.workday_start_hour ?? '';
     $('#setEnd').value = s.workday_end_hour ?? '';
     $('#setRosterSync').value = s.roster_sync_per_day ?? '';
+    $('#setEventsPerDay').value = s.events_per_day ?? '';
+    $('#setEventInviteCap').value = s.event_invite_cap ?? '';
+    $('#setEventBucketCeiling').value = s.event_bucket_ceiling ?? '';
+    $('#setEventBudget').value = s.event_run_budget_minutes ?? '';
     renderApifyKey(s);
     refreshConnections();
     loadLogs();
@@ -1880,6 +1885,10 @@ function initSettings() {
       workday_start_hour: num('#setStart'),
       workday_end_hour: num('#setEnd'),
       roster_sync_per_day: num('#setRosterSync'),
+      events_per_day: num('#setEventsPerDay'),
+      event_invite_cap: num('#setEventInviteCap'),
+      event_bucket_ceiling: num('#setEventBucketCeiling'),
+      event_run_budget_minutes: num('#setEventBudget'),
     };
     Object.keys(patch).forEach((k) => patch[k] === undefined && delete patch[k]);
     try {
@@ -1929,6 +1938,333 @@ function initWizard() {
   }).catch(() => { /* if settings unreachable, don't block the app */ });
 }
 
+
+/* ============================================================
+   EVENT INVITES
+   ============================================================ */
+
+/* The picker's hard row cap. The ladder is drawn against this fixed scale rather
+   than against the largest bucket, so the ceiling line sits at the same x on
+   every rung and "this one overflows" is visible without reading a number. */
+const PICKER_ROW_CAP = 1000;
+
+let evOpenId = null;
+let evPollTimer = null;
+
+const EV_UNREACHABLE_COPY = {
+  no_country: 'no country on their roster record',
+  us_without_state: 'in the US with no state on record',
+};
+
+function evBadge(status) {
+  return el('span', { class: `ev-badge ${status}`, text: status });
+}
+
+/**
+ * One rung.
+ *
+ * `scale` is the number of rows the full track width represents, and it is shared by
+ * every rung so the bars stay comparable. It is the largest bucket when any bucket
+ * overflows the picker's 1000-row cap, otherwise the cap itself — which is what puts the
+ * ceiling line at a position that means something. Scaling each rung to the cap instead
+ * would paint a 2,000-connection bucket as a full bar with the ceiling pinned uselessly
+ * to the right edge, hiding the very overflow the line exists to show.
+ */
+function evRung(bucket, opts = {}) {
+  const { editable = false, live = null, onDrop = null, scale = PICKER_ROW_CAP } = opts;
+  const roster = Math.max(0, bucket.roster_count || 0);
+  const listable = Math.min(roster, PICKER_ROW_CAP);
+  const pct = (n) => `${Math.max(0, Math.min(100, (n / scale) * 100))}%`;
+
+  const track = el('div', { class: 'rung-track' },
+    el('div', { class: 'rung-cost', style: `width:${pct(listable)}` }),
+  );
+  // The slice LinkedIn will never render, drawn only when it actually exists.
+  if (roster > PICKER_ROW_CAP) {
+    track.appendChild(el('div', {
+      class: 'rung-over',
+      style: `left:${pct(PICKER_ROW_CAP)};width:${pct(roster - PICKER_ROW_CAP)};right:auto`,
+    }));
+    track.appendChild(el('div', { class: 'rung-cap', style: `left:${pct(PICKER_ROW_CAP)}` }));
+  }
+  if (live && live.rows_loaded > 0) {
+    track.appendChild(el('div', { class: 'rung-fill', style: `width:${pct(live.rows_loaded)}` }));
+  }
+  const inked = live
+    ? `${live.matched} of ${bucket.target_count} found`
+    : `${bucket.target_count} to invite`;
+  track.appendChild(el('div', { class: 'rung-targets', text: inked }));
+
+  const label = el('div', { class: 'rung-label' },
+    el('span', { text: bucket.label }),
+    el('span', {
+      class: 'rung-sub',
+      text: roster > PICKER_ROW_CAP
+        ? `${roster.toLocaleString()} connections — only the first 1,000 are listable`
+        : `${roster.toLocaleString()} connections to page through`,
+    }),
+  );
+
+  const rung = el('div', {
+    class: 'rung'
+      + (bucket.status === 'skipped' || bucket.status === 'failed' ? ' is-skipped' : '')
+      + (live && !live.outcome ? ' is-live' : ''),
+  },
+  el('div', { class: 'rung-rank', text: String(bucket.rank + 1) }),
+  label,
+  track,
+  el('div', { class: 'rung-num', text: bucket.status === 'pending' ? '—' : bucket.status }),
+  editable
+    ? el('button', {
+      class: 'rung-drop', title: `Drop ${bucket.label}`, 'aria-label': `Drop ${bucket.label}`,
+      onclick: (e) => { e.stopPropagation(); onDrop(bucket.rank); },
+    }, '×')
+    : el('span'),
+  );
+  return rung;
+}
+
+function evStat(n, label, tone = '') {
+  return el('div', { class: `ev-stat ${tone}` },
+    el('div', { class: 'ev-stat-n', text: String(n) }),
+    el('div', { class: 'ev-stat-l', text: label }),
+  );
+}
+
+function evRunBlock(run) {
+  const head = el('div', { class: 'ev-run-head' },
+    el('span', { class: `mode ${run.mode}`, text: run.mode }),
+    el('span', { text: fmtTime(run.started_at) }),
+    el('span', { text: run.ended_at ? `${run.outcome || 'done'} — ${run.invited_count} invited` : 'running…' }),
+  );
+  const block = el('div', { class: 'ev-run' }, head);
+  if (run.error) block.appendChild(el('div', { class: 'rung-sub', text: run.error }));
+  return block;
+}
+
+function evRenderDetail(detail) {
+  const host = $('#evDetail');
+  host.innerHTML = '';
+  host.hidden = false;
+  const { event, counts, buckets, reservation, runs } = detail;
+  const pending = counts.pending || 0;
+  const invited = counts.invited || 0;
+  const unreachable = counts.unreachable || 0;
+  const total = pending + invited + unreachable + (counts.failed || 0);
+  const editable = event.status === 'draft';
+  const liveRun = runs.find((r) => !r.ended_at) || null;
+  const liveByBucket = new Map((liveRun ? liveRun.buckets : []).map((b) => [b.bucket_id, b]));
+
+  const actions = el('div', { class: 'ev-detail-actions' });
+  if (event.status === 'draft') {
+    actions.appendChild(el('button', {
+      class: 'btn btn-primary', text: 'Arm campaign',
+      onclick: () => evAction(event.id, 'arm'),
+    }));
+  }
+  if (event.status === 'draft' || event.status === 'armed') {
+    actions.appendChild(el('button', {
+      class: 'btn btn-ghost', text: 'Dry run',
+      title: 'Does everything except send — selects people, then discards the selection',
+      onclick: () => evAction(event.id, 'dry-run'),
+    }));
+  }
+  if (event.status === 'armed') {
+    actions.appendChild(el('button', {
+      class: 'btn btn-ghost', text: 'Run now',
+      onclick: () => evAction(event.id, 'run-now'),
+    }));
+  }
+  if (event.status !== 'done' && event.status !== 'stopped') {
+    actions.appendChild(el('button', {
+      class: 'btn btn-ghost', text: 'Stop', onclick: () => evAction(event.id, 'stop'),
+    }));
+  }
+
+  host.appendChild(el('div', { class: 'ev-detail-head' },
+    el('div', {},
+      el('h3', { text: event.title || 'Untitled event' }),
+      el('div', { class: 'rung-sub' },
+        el('a', { href: event.event_url, target: '_blank', rel: 'noopener', text: event.event_url })),
+      event.starts_at
+        ? el('div', { class: 'rung-sub', text: `Starts ${fmtTime(event.starts_at)}` })
+        : null,
+      reservation
+        ? el('div', { class: 'rung-sub', text: `Window reserved ${fmtTime(reservation.from_ts)} – ${fmtTime(reservation.to_ts)}` })
+        : null,
+      event.close_reason ? el('div', { class: 'rung-sub', text: event.close_reason }) : null,
+    ),
+    actions,
+  ));
+
+  host.appendChild(el('div', { class: 'ev-stats' },
+    evStat(total, 'on the list'),
+    evStat(invited, 'invited', 'good'),
+    evStat(pending, 'still to reach'),
+    evStat(unreachable, 'unreachable', unreachable > 0 ? 'warn' : 'muted'),
+    evStat(`${event.bucket_cursor}/${buckets.length}`, 'buckets worked', 'muted'),
+  ));
+
+  // Say the quiet part out loud, before arming rather than after running.
+  const reachable = buckets.reduce((n, b) => n + b.target_count, 0);
+  if (unreachable > 0 || reachable < pending + invited) {
+    host.appendChild(el('div', { class: 'ev-reach' },
+      el('strong', { text: `Best effort: ${reachable} of ${total} are reachable by location.` }),
+      el('span', {
+        text: unreachable > 0
+          ? `${unreachable} have no location we can filter on and will never be invited.`
+          : 'The rest are not in any bucket we can filter on.',
+      }),
+    ));
+  }
+
+  const perDay = Math.max(1, event.bucket_ceiling);
+  host.appendChild(el('div', { class: 'section-divider' },
+    el('span', { text: `Location buckets — ${perDay} per run, densest first` })));
+
+  if (buckets.length === 0) {
+    host.appendChild(el('div', { class: 'empty', text: 'No location buckets — nothing on this list can be reached.' }));
+  } else {
+    const ladder = el('div', { class: 'ladder' },
+      el('div', { class: 'ladder-head' },
+        el('span', { text: '#' }),
+        el('span', { text: 'Location' }),
+        el('span', { class: 'col-track', text: 'Rows to page through' }),
+        el('span', { class: 'num', text: 'State' }),
+        el('span'),
+      ));
+    // One shared scale, so a long bar always means more paging than a short one.
+    const scale = Math.max(PICKER_ROW_CAP, ...buckets.map((b) => b.roster_count || 0));
+    for (const b of buckets) {
+      ladder.appendChild(evRung(b, {
+        editable,
+        scale,
+        live: liveByBucket.get(b.id) || null,
+        onDrop: (rank) => evDropBucket(event.id, rank),
+      }));
+    }
+    host.appendChild(ladder);
+  }
+
+  if (runs.length > 0) {
+    const wrap = el('div', { class: 'ev-runs' },
+      el('div', { class: 'section-divider' }, el('span', { text: 'Runs' })));
+    runs.forEach((r) => wrap.appendChild(evRunBlock(r)));
+    host.appendChild(wrap);
+  }
+
+  // Poll only while something is actually moving.
+  clearTimeout(evPollTimer);
+  if (liveRun || event.status === 'running') {
+    evPollTimer = setTimeout(() => evOpen(event.id, true), 4000);
+  }
+}
+
+async function evOpen(id, quiet = false) {
+  evOpenId = id;
+  try {
+    const detail = await api(`/api/events/${id}`);
+    evRenderDetail(detail);
+    $('.ev-card').forEach((c) => c.classList.toggle('is-open', Number(c.dataset.id) === id));
+  } catch (e) {
+    if (!quiet) alert(`Could not load the campaign: ${e.message}`);
+  }
+}
+
+async function evAction(id, action) {
+  const verb = { arm: 'Arm', 'run-now': 'Run', 'dry-run': 'Dry run', stop: 'Stop' }[action];
+  // Arming and running are the two that can lead to real invitations going out.
+  if ((action === 'arm' || action === 'run-now')
+      && !confirm(`${verb} this campaign? Invitations sent to LinkedIn cannot be recalled.`)) return;
+  try {
+    await api(`/api/events/${id}/${action}`, { method: 'POST', body: {} });
+    await evLoadList();
+    await evOpen(id);
+  } catch (e) {
+    alert(`${verb} failed: ${e.message}`);
+  }
+}
+
+async function evDropBucket(id, rank) {
+  try {
+    const detail = await api(`/api/events/${id}/buckets/remove`, { method: 'POST', body: { ranks: [rank] } });
+    evRenderDetail(detail);
+  } catch (e) {
+    alert(`Could not drop that bucket: ${e.message}`);
+  }
+}
+
+async function evLoadList() {
+  const list = $('#evList');
+  const events = await api('/api/events');
+  list.innerHTML = '';
+  $('#evEmpty').hidden = events.length > 0;
+  for (const e of events) {
+    const counts = e.counts || {};
+    const invited = counts.invited || 0;
+    const pending = counts.pending || 0;
+    const card = el('div', { class: 'ev-card', 'data-id': String(e.id) },
+      el('div', { class: 'ev-card-title', text: e.title || e.event_url.replace(/^https?:\/\/(www\.)?/, '') }),
+      el('div', { class: 'ev-card-sub', text: `${invited} invited · ${pending} to go${e.starts_at ? ` · starts ${fmtTime(e.starts_at)}` : ''}` }),
+      el('div', { class: 'ev-card-right' }, evBadge(e.status)),
+    );
+    card.addEventListener('click', () => evOpen(e.id));
+    list.appendChild(card);
+  }
+  if (evOpenId !== null && !events.some((e) => e.id === evOpenId)) {
+    evOpenId = null;
+    $('#evDetail').hidden = true;
+  }
+}
+
+async function loadEventsScreen() {
+  await evLoadList();
+  if (evOpenId !== null) await evOpen(evOpenId, true);
+}
+
+function initEvents() {
+  const form = $('#evCreateForm');
+  const msg = $('#evCreateMsg');
+
+  $('#evNewBtn').addEventListener('click', () => {
+    form.hidden = !form.hidden;
+    if (!form.hidden) $('#evUrl').focus();
+  });
+  $('#evCancelBtn').addEventListener('click', () => { form.hidden = true; msg.textContent = ''; });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('#evCreateBtn');
+    btn.disabled = true;
+    msg.className = 'ev-create-msg';
+    msg.textContent = 'Matching against your roster…';
+    try {
+      const body = { event_url: $('#evUrl').value.trim(), text: $('#evProfiles').value };
+      const created = await api('/api/events', { method: 'POST', body });
+      const parts = [`${created.added} on the list`];
+      if (created.rejected.length) parts.push(`${created.rejected.length} not connections`);
+      if (created.unreachable.length) {
+        const why = created.unreachable
+          .map((u) => EV_UNREACHABLE_COPY[u.reason] || u.reason)
+          .filter((v, i, a) => a.indexOf(v) === i)
+          .join('; ');
+        parts.push(`${created.unreachable.length} unreachable (${why})`);
+      }
+      msg.textContent = parts.join(' · ');
+      form.hidden = true;
+      $('#evProfiles').value = '';
+      $('#evUrl').value = '';
+      await evLoadList();
+      await evOpen(created.event.id);
+    } catch (err) {
+      msg.className = 'ev-create-msg is-error';
+      msg.textContent = err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 /* ---------- boot ---------- */
 function tick() { refreshStatus(); refreshQueue(); }
 
@@ -1944,6 +2280,7 @@ function init() {
   initEnrichment();
   initSearch();
   initAttention();
+  initEvents();
   initLogViewer();
   initWizard();
 

@@ -76,6 +76,119 @@ export interface Settings {
   onboarded: number;
   failure_threshold: number;
   expiry_days: number;
+  events_per_day: number;
+  event_invite_cap: number;
+  event_bucket_ceiling: number;
+  event_run_budget_minutes: number;
+  event_shard_threshold: number;
+}
+
+// --- Event invites -----------------------------------------------------------------
+
+export type EventStatus = 'draft' | 'armed' | 'running' | 'done' | 'stopped' | 'failed';
+export type EventInviteeStatus = 'pending' | 'invited' | 'unreachable' | 'failed';
+export type EventBucketKind = 'country' | 'us_state' | 'region';
+
+export interface LinkedInEvent {
+  id: number;
+  event_url: string;
+  event_urn: string | null;
+  title: string | null;
+  starts_at: string | null;
+  status: EventStatus;
+  invite_cap: number;
+  bucket_ceiling: number;
+  bucket_cursor: number;
+  attended: number;
+  created_at: string;
+  armed_at: string | null;
+  closed_at: string | null;
+  close_reason: string | null;
+}
+
+export interface EventBucket {
+  id: number;
+  event_id: number;
+  rank: number;
+  /** Display label, e.g. "California (US state)". */
+  label: string;
+  /** EXACT `.search-typeahead-v2__hit-text` to match, e.g. "California, United States".
+   *  Never fuzzy: querying "Georgia" ranks the COUNTRY Georgia first. */
+  geo_label: string;
+  geo_urn: string | null;
+  kind: EventBucketKind;
+  /** Invitees expected here. Ranks the bucket list — this is what maximises yield. */
+  target_count: number;
+  /** Connections LinkedIn will list here. Decides sharding — this is what the
+   *  1000-row cap acts on, and it is a different number from target_count. */
+  roster_count: number;
+  parent_bucket_id: number | null;
+  status: 'pending' | 'done' | 'skipped' | 'failed';
+}
+
+/** What the event top card says when we arrive. */
+export interface EventPageInfo {
+  title: string | null;
+  /** Raw prose, e.g. "Thu, Sep 10, 2026, 6:15 PM - 10:30 PM (your local time)". */
+  startsAtText: string | null;
+  attending: boolean;
+  /** Whether an Attend control is present to click. */
+  canAttend: boolean;
+}
+
+export type EventStepStatus = 'ok' | 'checkpoint' | 'unavailable' | 'error';
+
+export interface EventStepOutcome {
+  status: EventStepStatus;
+  error?: string;
+  evidence?: SendEvidence;
+  info?: EventPageInfo;
+}
+
+export interface BucketRunRequest {
+  /** Exact typeahead labels to try, in order. */
+  geoCandidates: string[];
+  /** URNs still awaiting an invite. Any of these that appears gets ticked — bucket
+   *  membership ranks the work, it does not restrict who may be selected. */
+  pending: string[];
+  /** Most rows this bucket may tick (what is left of the lifetime cap). */
+  limit: number;
+  /** Stop paginating once past this instant. */
+  deadline: Date;
+  /** Do everything except the irreversible submit. */
+  dryRun: boolean;
+  onProgress?: (p: { rowsLoaded: number; matched: number }) => void;
+}
+
+export type BucketOutcome =
+  | 'done' | 'early_exit' | 'row_cap' | 'deadline'
+  | 'no_geo' | 'checkpoint' | 'failed';
+
+export interface BucketRunResult {
+  outcome: BucketOutcome;
+  /** The candidate that actually resolved. */
+  geoLabel: string | null;
+  geoUrn: string | null;
+  rowsLoaded: number;
+  matchedUrns: string[];
+  tickedUrns: string[];
+  submitted: boolean;
+  error?: string;
+  evidence?: SendEvidence;
+}
+
+export interface EventInvitee {
+  id: number;
+  event_id: number;
+  connection_id: number | null;
+  member_urn: string | null;
+  profile_url: string;
+  full_name: string | null;
+  bucket_id: number | null;
+  status: EventInviteeStatus;
+  invited_at: string | null;
+  responded_at: string | null;
+  note: string | null;
 }
 
 export type SendResult =
@@ -126,6 +239,17 @@ export interface BrowserDriver {
   readConnectionCards(): Promise<ConnectionCard[]>;
   /** Scan the currently-loaded page for a checkpoint/captcha (url + what matched). */
   checkpointScan(): Promise<CheckpointScan>;
+
+  // --- Event invites ---
+  /** Navigate to an event and read its top card. */
+  openEvent(eventUrl: string): Promise<EventStepOutcome>;
+  /** RSVP. A hard prerequisite: the Share menu has no Invite item until you attend. */
+  attendEvent(): Promise<EventStepOutcome>;
+  /** Filter to one location, exhaust the list, tick pending matches, and submit unless
+   *  `dryRun`. Opens AND closes its own picker, so buckets share no modal state and the
+   *  caller needs no teardown call. */
+  runEventBucket(req: BucketRunRequest): Promise<BucketRunResult>;
+
   close(): Promise<void>;
 }
 

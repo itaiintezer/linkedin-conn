@@ -485,6 +485,72 @@ Set it with `POST /api/settings` `{ "apify_api_key": "…" }`. It is **write-onl
 `GET /api/settings` returns `apify_key_set: true|false` and never the key itself — and
 neither does the `POST` response, which echoes the same sanitized shape.
 
+## Event invites
+
+The third pipeline: invite 1st-degree connections to a LinkedIn event, filtered by
+location. It does **not** use cohorts, profiles or campaign kinds — an event invite is a
+different LinkedIn quota from a connection request, with its own caps.
+
+**How it works.** Your list is matched against the connections roster, then bucketed by
+location (US by state, everything else by country) and ranked by how many of *your list*
+each bucket holds. A run works `event_bucket_ceiling` buckets, filtering to one location
+at a time, paging the invitee list, ticking every match by member URN, and submitting per
+bucket. Whoever is left rolls into the next day's run, until the list is exhausted or the
+event starts.
+
+**It is best effort, by design.** LinkedIn hard-caps the invitee list at 1000 rows in a
+stable order, so a bucket bigger than that is only partly listable (oversized buckets are
+sub-sharded by child geo to claw some of it back). People with no country, or in the US
+with no state on record, can never be reached at all. The draft screen states projected
+reach before you arm anything.
+
+Only URNs on your list are ever ticked, so a mis-resolved location can lose coverage but
+can never invite the wrong person.
+
+### POST /api/events
+Create a campaign as a **draft**. Nothing is sent until you arm it.
+```json
+{ "event_url": "https://www.linkedin.com/events/7486088214579982336/",
+  "profile_urls": ["https://www.linkedin.com/in/some-slug"] }
+```
+`text` may be sent instead of `profile_urls` to paste a blob and have URLs extracted.
+Responds `201` with the campaign, its ranked buckets, and — importantly — `rejected`
+(URLs that are not connections) and `unreachable` (connections with no usable location),
+each listed by URL so nothing fails silently mid-run.
+
+### GET /api/events · GET /api/events/:id · GET /api/events/:id/invitees
+The list, one campaign in full (buckets, counts, reserved window, recent runs with live
+per-bucket progress), and the invitee ledger.
+
+### POST /api/events/:id/buckets/remove
+`{ "ranks": [3, 7] }` — drop buckets before arming; remaining ranks close up. Rejected
+with `409` once armed, because the resume cursor indexes into that list.
+
+### POST /api/events/:id/arm
+Draft → armed, and claims a run window. Refused if the event has already started or
+nothing on the list is reachable.
+
+### POST /api/events/:id/dry-run
+Everything except the submit: resolves the geo, pages the list, ticks the matches, asserts
+the counter, then discards the selection. Sends nothing, records no invites, does not
+advance the cursor. Use it to see real reach before arming.
+
+### POST /api/events/:id/run-now · POST /api/events/:id/stop
+Run immediately rather than waiting for the reserved window; or close the campaign and
+release its window.
+
+### Scheduling
+An armed campaign reserves `event_run_budget_minutes` (default 20) in the largest free gap
+of the working day, and the send planner routes invite/message batches around that window
+rather than colliding with it. `events_per_day` (default 1) caps live runs per day. The
+time budget gates *starting* another bucket — a bucket in flight always finishes, so the
+worst-case overrun is one bucket.
+
+### Settings
+`events_per_day`, `event_invite_cap` (lifetime per event, default 500),
+`event_bucket_ceiling` (locations per run, default 10), `event_run_budget_minutes`,
+`event_shard_threshold` (roster size above which a bucket is sub-sharded, default 900).
+
 ## Queue
 
 ### GET /api/profiles?status=X&kind=Y

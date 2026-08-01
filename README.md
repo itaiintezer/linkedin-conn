@@ -124,6 +124,49 @@ invites. 6 batches × 5 is ~30 messages a day; there's headroom to raise
 If a profile turns out not to be a 1st-degree connection at send time, The Machine skips it
 (**Skipped**, reason `not_connected`) rather than send an InMail.
 
+## Event invites
+
+The third pipeline, and the one that works differently from the other two: instead of one
+action per person, a single browser session invites many people at once through LinkedIn's
+invitee picker. It uses its own tables and its own caps — an event invite is a different
+LinkedIn quota from a connection request, and 500 of them would swallow five weeks of
+`weekly_cap` if they were pooled.
+
+Give it an event URL and a list of 1st-degree connections. It buckets them by location
+(US by state, everything else by country), ranks the buckets by how many of *your list*
+each holds, and shows you that plan as a **draft**. You review it and arm it; nothing
+irreversible happens before that. A run then works up to `event_bucket_ceiling` (10)
+buckets, filtering to one location at a time, paging the invitee list, ticking every match
+by member URN, and submitting per bucket. Whoever is left rolls into the next day's run,
+until the list is exhausted or the event starts.
+
+**It is best effort, and the UI says so before you arm.** LinkedIn hard-caps the invitee
+list at 1000 rows in a stable order, so a bucket larger than that is only partly listable
+(oversized buckets get sub-sharded by child geo to claw some of it back). Anyone with no
+country on record — or in the US with no state — can never be reached at all.
+
+Matching is on the member URN embedded in each row, which equals `connections.linkedin_id`
+exactly. Only URNs on your list are ever ticked, so a mis-resolved location can lose
+coverage but can never invite the wrong person.
+
+A run needs the browser to itself for a while, so an armed campaign reserves
+`event_run_budget_minutes` (20) in the largest free gap of the working day, and the send
+planner routes invite and message batches around that window instead of colliding with it.
+`events_per_day` (1) caps live runs per day; the time budget gates *starting* another
+bucket, so a bucket already in flight always finishes.
+
+**Dry run** does everything except the submit — resolves the geo, pages the list, ticks the
+matches, checks the counter, then throws the selection away. Use it to see real reach
+before committing.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `events_per_day` | 1 | Live runs started per day |
+| `event_invite_cap` | 500 | Lifetime invites per event |
+| `event_bucket_ceiling` | 10 | Locations worked per run |
+| `event_run_budget_minutes` | 20 | Window reserved per run |
+| `event_shard_threshold` | 900 | Roster size above which a bucket is sub-sharded |
+
 ## Connections
 
 Separate from the campaigns, The Machine keeps a **roster** of the people you're actually
@@ -279,6 +322,8 @@ card forces a pass immediately.
 - `GET /api/status` — queue + weekly counts, per kind.
 - `POST /api/connections/import` `{ text }` — ingest a `Connections.csv` export or a URL list.
 - `GET /api/connections/stats` — roster size and enrichment breakdown.
+- `POST /api/events` `{ event_url, profile_urls }` — plan an event-invite campaign as a
+  draft; `POST /api/events/:id/arm` to commit it, `/dry-run` to rehearse it.
 
 Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 

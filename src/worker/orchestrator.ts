@@ -8,6 +8,8 @@ import { runSenderOnce, type SenderOptions } from './sender.js';
 import { runAcceptanceCheck } from './acceptance-checker.js';
 import { runReplyCheck } from './reply-checker.js';
 import { runRosterSync } from './roster-sync.js';
+import { dueEventRun, ensureEventReservation } from './event-campaign.js';
+import { runEventCampaign } from './event-runner.js';
 import { log } from '../core/log.js';
 
 /**
@@ -228,6 +230,32 @@ export class Orchestrator {
     }).catch((e: Error) => log.error('enrich', 'auto-drain failed', { error: e.message }));
   }
 
+  /**
+   * Run an event campaign whose reserved window is open.
+   *
+   * Uses the blocking `run` rather than `tryRun`: the window was reserved precisely so
+   * this could have the browser, and dropping the run would waste the whole window and
+   * push the campaign to tomorrow. A sender tick that collides is the one that gets
+   * dropped — which is the trade the reservation exists to make.
+   */
+  async runEventTick(now: Date = new Date()): Promise<void> {
+    const s = this.repos.settings.get();
+    if (s.paused || this.repos.appState.get().guardrail_tripped === 1) return;
+    if (this.repos.appState.get().login_logged_in !== 1) return;
+    const due = dueEventRun(this.repos, now);
+    if (due === null) return;
+    try {
+      await this.browserLock.run(() => runEventCampaign(this.repos, this.driver, due.event, {
+        mode: 'live',
+        reserved: { from: due.from, to: due.to },
+        deadline: new Date(due.to),
+        clock: () => new Date(),
+      }));
+    } catch (err) {
+      this.handleTickError('events', err);
+    }
+  }
+
   start(): void {
     // Recover rows stranded in 'sending' by a mid-send crash BEFORE re-sorting: a fresh
     // process has nothing genuinely in flight (the browser is in-process), so any 'sending'
@@ -242,8 +270,25 @@ export class Orchestrator {
     if (stranded > 0) log.info('enrich', 'recovered stranded rows from a previous run', { count: stranded });
     // Startup re-sort: rebuild the whole backlog to policy so a pile of past-due slots
     // (after downtime) is re-flowed into correctly-sized batches, not fired as a burst.
+    // An event run interrupted by a hard kill left a run row open forever. Close it —
+    // the campaign itself is restartable from its cursor, which is the durable state.
+    for (const r of this.repos.eventRuns.unfinished()) {
+      this.repos.eventRuns.finish(r.id, 'failed', r.invited_count, new Date().toISOString(),
+        'interrupted by a restart');
+      if (this.repos.eventCampaigns.findById(r.event_id)?.status === 'running') {
+        this.repos.eventCampaigns.update(r.event_id, { status: 'armed' });
+      }
+    }
     resortSchedule(this.repos, new Date());
-    this.timers.push(setInterval(() => planAndAssignToday(this.repos, new Date()), 60 * 60 * 1000));
+    // Reserve BEFORE planning, on every planning pass: planKind reads reservations to
+    // route around them, so a window claimed after the plan would be claimed too late.
+    this.timers.push(setInterval(() => {
+      const now = new Date();
+      ensureEventReservation(this.repos, now);
+      planAndAssignToday(this.repos, now);
+    }, 60 * 60 * 1000));
+    // Fire the event run when its window opens.
+    this.timers.push(setInterval(() => { void this.runEventTick(); }, 60 * 1000));
     this.timers.push(setInterval(() => { void this.runSenderTick(); }, 60 * 1000));
 
     // Keep the dashboard login indicator fresh without ever opening the browser.

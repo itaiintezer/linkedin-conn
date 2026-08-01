@@ -4,6 +4,10 @@ import type {
   Connection, ConnectionInput, ConnectionSource, EnrichStatus, EnrichedProfile, EnrichHaltReason,
 } from '../types.js';
 import { firstNameFrom } from '../core/first-name.js';
+import type { ReservationWindow } from '../core/reservations.js';
+import {
+  EventCampaignRepo, EventBucketRepo, EventInviteeRepo, EventRunRepo,
+} from './event-repos.js';
 
 const PROFILE_COLUMNS = new Set([
   'first_name', 'full_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
@@ -19,6 +23,8 @@ const SETTINGS_COLUMNS = new Set([
   'onboarded',
   'failure_threshold',
   'expiry_days',
+  'events_per_day', 'event_invite_cap', 'event_bucket_ceiling',
+  'event_run_budget_minutes', 'event_shard_threshold',
 ]);
 
 export class CohortRepo {
@@ -248,6 +254,54 @@ export class ConnectionRepo {
   findByUrl(profileUrl: string): Connection | undefined {
     return this.db.prepare('SELECT * FROM connections WHERE profile_url = ?')
       .get(profileUrl) as unknown as Connection | undefined;
+  }
+
+  /** Roster rows for a batch of normalized URLs. Missing URLs simply do not come back —
+   *  the caller reports them as "not a connection". Chunked to stay under SQLite's
+   *  999-parameter limit, which a 500-person invitee list would otherwise blow. */
+  findManyByUrls(profileUrls: string[]): Connection[] {
+    const out: Connection[] = [];
+    for (let i = 0; i < profileUrls.length; i += 500) {
+      const chunk = profileUrls.slice(i, i + 500);
+      if (chunk.length === 0) continue;
+      const holes = chunk.map(() => '?').join(',');
+      out.push(...this.db.prepare(`SELECT * FROM connections WHERE profile_url IN (${holes})`)
+        .all(...chunk) as unknown as Connection[]);
+    }
+    return out;
+  }
+
+  /**
+   * How many connections sit in each location bucket, keyed exactly like
+   * `event-buckets.keyId()` so the two can be joined without a translation layer.
+   *
+   * This is the number the 1000-row picker cap acts on, so it decides SHARDING — never
+   * ranking. Rows that bucketing would call unreachable (no country; US with no state)
+   * are excluded here too, so the two agree.
+   */
+  locationHistogram(): Map<string, number> {
+    const rows = this.db.prepare(`
+      SELECT CASE WHEN location_country_code = 'US'
+                  THEN 'us_state:' || location_region
+                  ELSE 'country:' || location_country END AS k,
+             COUNT(*) AS c
+      FROM connections
+      WHERE location_country IS NOT NULL AND TRIM(location_country) <> ''
+        AND NOT (location_country_code = 'US'
+                 AND (location_region IS NULL OR TRIM(location_region) = ''))
+      GROUP BY k
+    `).all() as unknown as { k: string; c: number }[];
+    return new Map(rows.map((r) => [r.k, r.c]));
+  }
+
+  /** Child regions of a country, biggest first — the shards for an oversized bucket. */
+  childRegions(country: string): { region: string; count: number }[] {
+    return this.db.prepare(`
+      SELECT location_region AS region, COUNT(*) AS count
+      FROM connections
+      WHERE location_country = ? AND location_region IS NOT NULL AND TRIM(location_region) <> ''
+      GROUP BY location_region ORDER BY count DESC
+    `).all(country) as unknown as { region: string; count: number }[];
   }
 
   /**
@@ -536,6 +590,42 @@ export class ConnectionRepo {
   }
 }
 
+/**
+ * Windows the send planner must route around. Generic on purpose — the event-invite run
+ * is the first user, but anything needing the single browser to itself for a stretch can
+ * claim one.
+ *
+ * Note the name: `EventRepo` above is the send_log/profile_events repo and predates the
+ * event-invite pipeline entirely. These are unrelated.
+ */
+export class ReservationRepo {
+  constructor(private db: DB) {}
+
+  /** Reservations overlapping [from, to). */
+  between(fromIso: string, toIso: string): ReservationWindow[] {
+    return this.db.prepare(
+      'SELECT from_ts, to_ts FROM reservations WHERE to_ts > ? AND from_ts < ? ORDER BY from_ts',
+    ).all(fromIso, toIso) as unknown as ReservationWindow[];
+  }
+
+  create(fromIso: string, toIso: string, purpose: string, refId: number | null): number {
+    const r = this.db.prepare(
+      'INSERT INTO reservations (from_ts, to_ts, purpose, ref_id) VALUES (?, ?, ?, ?)',
+    ).run(fromIso, toIso, purpose, refId);
+    return Number(r.lastInsertRowid);
+  }
+
+  /** Drop every reservation held for one ref — used when a campaign is disarmed or done. */
+  clearFor(purpose: string, refId: number): void {
+    this.db.prepare('DELETE FROM reservations WHERE purpose = ? AND ref_id = ?').run(purpose, refId);
+  }
+
+  /** Housekeeping: reservations whose window has fully passed are dead weight. */
+  purgeBefore(iso: string): number {
+    return this.db.prepare('DELETE FROM reservations WHERE to_ts < ?').run(iso).changes as number;
+  }
+}
+
 export class Repos {
   cohorts: CohortRepo;
   profiles: ProfileRepo;
@@ -543,6 +633,12 @@ export class Repos {
   settings: SettingsRepo;
   appState: AppStateRepo;
   connections: ConnectionRepo;
+  reservations: ReservationRepo;
+  /** Event-invite pipeline. Note `events` above is the send_log repo — unrelated. */
+  eventCampaigns: EventCampaignRepo;
+  eventBuckets: EventBucketRepo;
+  eventInvitees: EventInviteeRepo;
+  eventRuns: EventRunRepo;
   constructor(public db: DB) {
     this.cohorts = new CohortRepo(db);
     this.profiles = new ProfileRepo(db);
@@ -550,5 +646,10 @@ export class Repos {
     this.settings = new SettingsRepo(db);
     this.appState = new AppStateRepo(db);
     this.connections = new ConnectionRepo(db);
+    this.reservations = new ReservationRepo(db);
+    this.eventCampaigns = new EventCampaignRepo(db);
+    this.eventBuckets = new EventBucketRepo(db);
+    this.eventInvitees = new EventInviteeRepo(db);
+    this.eventRuns = new EventRunRepo(db);
   }
 }

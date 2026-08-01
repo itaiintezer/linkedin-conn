@@ -1,4 +1,8 @@
-import type { BrowserDriver, SendOutcome, SendResult, SendEvidence, SendOptions, LoginSnapshot, CheckpointScan, InboxRow, ConnectionCard } from '../types.js';
+import type {
+  BrowserDriver, SendOutcome, SendResult, SendEvidence, SendOptions, LoginSnapshot,
+  CheckpointScan, InboxRow, ConnectionCard, EventPageInfo, EventStepOutcome,
+  EventStepStatus, BucketRunRequest, BucketRunResult,
+} from '../types.js';
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 export type { BrowserDriver };
 
@@ -85,5 +89,66 @@ export class FakeDriver implements BrowserDriver {
       ? { hit: true, via: 'url', matched: 'linkedin.com/checkpoint/', url: 'https://www.linkedin.com/checkpoint/challenge/fake', title: '' }
       : { hit: false, via: null, matched: null, url: 'https://www.linkedin.com/feed/', title: '' };
   }
+
+  // --- Event invites ---
+  /** Top-card info returned by openEvent. */
+  eventInfo: EventPageInfo = {
+    title: 'Fake Event', startsAtText: null, attending: false, canAttend: true,
+  };
+  /** When set, openEvent reports this status instead of 'ok'. */
+  openEventStatus: EventStepStatus = 'ok';
+  /** When set, attendEvent reports this status instead of 'ok'. */
+  attendStatus: EventStepStatus = 'ok';
+  /** Which URNs the picker will "see", per exact geo label. Anything not listed for a
+   *  geo is simply absent from that filter — the normal way coverage is lost. */
+  eventRowsByGeo = new Map<string, string[]>();
+  /** How many rows the picker "loaded" for a geo; defaults to the row count. */
+  eventRowsLoaded = new Map<string, number>();
+  /** Per-geo scripted outcome override. */
+  bucketOutcome = new Map<string, BucketRunResult['outcome']>();
+  /** Every runEventBucket call, in order. */
+  bucketCalls: BucketRunRequest[] = [];
+  /** URNs actually submitted, in submit order. */
+  invited: string[] = [];
+
+  async openEvent(_eventUrl: string): Promise<EventStepOutcome> {
+    this.open = true;
+    if (this.openEventStatus !== 'ok') return { status: this.openEventStatus, error: 'scripted' };
+    return { status: 'ok', info: this.eventInfo };
+  }
+
+  async attendEvent(): Promise<EventStepOutcome> {
+    this.open = true;
+    if (this.attendStatus !== 'ok') return { status: this.attendStatus, error: 'scripted' };
+    this.eventInfo = { ...this.eventInfo, attending: true, canAttend: false };
+    return { status: 'ok' };
+  }
+
+  async runEventBucket(req: BucketRunRequest): Promise<BucketRunResult> {
+    this.open = true;
+    this.bucketCalls.push(req);
+    const geo = req.geoCandidates.find((c) => this.eventRowsByGeo.has(c));
+    if (geo === undefined) {
+      return {
+        outcome: 'no_geo', geoLabel: null, geoUrn: null, rowsLoaded: 0,
+        matchedUrns: [], tickedUrns: [], submitted: false,
+      };
+    }
+    const scripted = this.bucketOutcome.get(geo);
+    const visible = this.eventRowsByGeo.get(geo)!;
+    const matched = visible.filter((u) => req.pending.includes(u));
+    const ticked = matched.slice(0, Math.max(0, req.limit));
+    if (!req.dryRun) this.invited.push(...ticked);
+    return {
+      outcome: scripted ?? (matched.length >= req.pending.length ? 'early_exit' : 'done'),
+      geoLabel: geo,
+      geoUrn: `geo-${geo}`,
+      rowsLoaded: this.eventRowsLoaded.get(geo) ?? visible.length,
+      matchedUrns: matched,
+      tickedUrns: ticked,
+      submitted: !req.dryRun && ticked.length > 0,
+    };
+  }
+
   async close() { this.open = false; }
 }
