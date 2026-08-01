@@ -38,21 +38,13 @@ export interface CreateEventResult {
 }
 
 /**
- * Validate a list of profile URLs against the roster and plan the buckets.
+ * Normalize a pasted list and split it into roster rows and rejects.
  *
  * Only 1st-degree connections can be invited to an event, and only an enriched roster row
  * carries the location the bucketing needs — so a URL with no roster row is rejected up
  * front, by name, rather than failing invisibly mid-run.
  */
-export function createEventCampaign(
-  repos: Repos, eventUrlRaw: string, profileUrlsRaw: string[],
-): CreateEventResult | { error: string } {
-  const eventUrl = normalizeEventUrl(eventUrlRaw);
-  if (eventUrl === null) return { error: `not a LinkedIn event URL: ${eventUrlRaw}` };
-
-  const existing = repos.eventCampaigns.findByUrl(eventUrl);
-  if (existing) return { error: `event already has a campaign (#${existing.id})` };
-
+function resolveAgainstRoster(repos: Repos, profileUrlsRaw: string[]) {
   const rejected: RejectedUrl[] = [];
   const normalized: string[] = [];
   const seen = new Set<string>();
@@ -69,14 +61,11 @@ export function createEventCampaign(
   for (const url of normalized) {
     if (!byUrl.has(url)) rejected.push({ url, reason: 'not_a_connection' });
   }
+  return { connections, rejected };
+}
 
-  const located: LocatedRow[] = connections.map((c) => ({
-    profile_url: c.profile_url,
-    location_country: c.location_country,
-    location_country_code: c.location_country_code,
-    location_region: c.location_region,
-  }));
-
+/** Rank the locations a set of roster rows falls into, sharding the oversized ones. */
+function planBuckets(repos: Repos, located: LocatedRow[]) {
   const s = repos.settings.get();
   const rosterCounts = repos.connections.locationHistogram();
   // Child regions only for the countries that could actually need sharding — one query
@@ -89,10 +78,37 @@ export function createEventCampaign(
     if ((rosterCounts.get(keyId(key)) ?? 0) < s.event_shard_threshold) continue;
     childRegions.set(key.country, repos.connections.childRegions(key.country));
   }
-
-  const plan = buildBuckets(located, {
+  return buildBuckets(located, {
     rosterCounts, childRegions, shardThreshold: s.event_shard_threshold,
   });
+}
+
+const locatedFrom = (rows: {
+  profile_url: string; location_country: string | null;
+  location_country_code: string | null; location_region: string | null;
+}[]): LocatedRow[] => rows.map((c) => ({
+  profile_url: c.profile_url,
+  location_country: c.location_country,
+  location_country_code: c.location_country_code,
+  location_region: c.location_region,
+}));
+
+/**
+ * Validate a list of profile URLs against the roster and plan the buckets.
+ */
+export function createEventCampaign(
+  repos: Repos, eventUrlRaw: string, profileUrlsRaw: string[],
+): CreateEventResult | { error: string } {
+  const eventUrl = normalizeEventUrl(eventUrlRaw);
+  if (eventUrl === null) return { error: `not a LinkedIn event URL: ${eventUrlRaw}` };
+
+  const existing = repos.eventCampaigns.findByUrl(eventUrl);
+  if (existing) return { error: `event already has a campaign (#${existing.id})` };
+
+  const { connections, rejected } = resolveAgainstRoster(repos, profileUrlsRaw);
+  const located = locatedFrom(connections);
+  const plan = planBuckets(repos, located);
+  const s = repos.settings.get();
 
   const event = repos.eventCampaigns.create(eventUrl, {
     eventUrn: eventUrnFrom(eventUrl),
@@ -124,6 +140,62 @@ export function createEventCampaign(
 
   return {
     event,
+    added,
+    rejected,
+    unreachable: plan.unreachable.map((u) => ({ url: u.profile_url, reason: u.reason })),
+    bucketCount: plan.buckets.length,
+  };
+}
+
+/**
+ * Add more people to a DRAFT campaign, then re-plan its buckets from scratch.
+ *
+ * Drafts only, and for the same reason `/buckets/remove` is drafts-only: once armed,
+ * `bucket_cursor` indexes into the bucket list, so re-ranking it would silently re-point
+ * the cursor at work that has already been done. Re-planning wholesale (rather than
+ * slotting the newcomers into existing buckets) is what keeps the ladder honest — one
+ * extra person in Ohio can make Ohio worth working ahead of Israel.
+ *
+ * A row that WAS unreachable can become reachable here and vice versa, so every invitee's
+ * status is recomputed. Nobody is invited yet in a draft, so nothing is lost.
+ */
+export function addEventInvitees(
+  repos: Repos, eventId: number, profileUrlsRaw: string[],
+): CreateEventResult | { error: string } {
+  const event = repos.eventCampaigns.findById(eventId);
+  if (!event) return { error: 'no such event' };
+  if (event.status !== 'draft') {
+    return { error: `campaign is ${event.status} — people can only be added while it is a draft` };
+  }
+
+  const { connections, rejected } = resolveAgainstRoster(repos, profileUrlsRaw);
+  const added = repos.eventInvitees.addMany(eventId, connections.map((c) => ({
+    profile_url: c.profile_url,
+    connection_id: c.id,
+    member_urn: c.linkedin_id,
+    full_name: c.full_name,
+  })));
+
+  // Re-plan over EVERYONE on the list, not just the newcomers.
+  const all = repos.eventInvitees.list(eventId);
+  const rows = repos.connections.findManyByUrls(all.map((i) => i.profile_url));
+  const plan = planBuckets(repos, locatedFrom(rows));
+  const unreachable = new Map(plan.unreachable.map((u) => [u.profile_url, u.reason]));
+  for (const invitee of all) {
+    const reason = unreachable.get(invitee.profile_url);
+    const status = reason === undefined ? 'pending' : 'unreachable';
+    if (invitee.status === status && invitee.note === (reason ?? null)) continue;
+    repos.eventInvitees.setStatus(invitee.id, status, reason ?? null);
+  }
+  repos.eventBuckets.replaceAll(eventId, plan.buckets);
+
+  log.info('events', 'invitees added', {
+    event: eventId, added, rejected: rejected.length,
+    unreachable: plan.unreachable.length, buckets: plan.buckets.length,
+  });
+
+  return {
+    event: repos.eventCampaigns.findById(eventId)!,
     added,
     rejected,
     unreachable: plan.unreachable.map((u) => ({ url: u.profile_url, reason: u.reason })),
@@ -240,4 +312,121 @@ export function dueEventRun(
   const event = repos.eventCampaigns.findById(row.ref_id);
   if (!event || event.status !== 'armed') return null;
   return { event, from: row.from_ts, to: row.to_ts };
+}
+
+/** Campaigns that can still do work. Anything else is history. */
+const OPEN_STATUSES: ReadonlySet<string> = new Set(['draft', 'armed', 'running']);
+
+/** One campaign's next slice of work, as the dashboard and the queue both describe it. */
+export interface UpcomingEventRun {
+  event: LinkedInEvent;
+  /** Reserved window, or null when the day had no room (or the campaign is a draft). */
+  reservation: { from: string; to: string } | null;
+  /** The buckets THIS run would work: `bucket_ceiling` of them, from the cursor. */
+  buckets: { rank: number; label: string; target_count: number; roster_count: number }[];
+  /** Buckets past that slice — the work that rolls into later days. */
+  locationsLeft: number;
+  pending: number;
+}
+
+/**
+ * The campaign that will run next, and what it will do.
+ *
+ * Mirrors `ensureEventReservation`'s own choice so the UI never promises a different
+ * campaign than the planner will pick: whoever holds a reservation, else the first armed
+ * campaign whose event has not started (`byStatus` returns them id-ascending).
+ */
+export function nextEventRun(repos: Repos, now: Date): UpcomingEventRun | null {
+  const held = repos.db.prepare(`
+    SELECT from_ts, to_ts, ref_id FROM reservations
+    WHERE purpose = ? AND to_ts > ? AND ref_id IS NOT NULL
+    ORDER BY from_ts LIMIT 1
+  `).get(RESERVATION_PURPOSE, now.toISOString()) as unknown as
+    { from_ts: string; to_ts: string; ref_id: number } | undefined;
+
+  const reserved = held ? repos.eventCampaigns.findById(held.ref_id) : undefined;
+  const event = reserved && OPEN_STATUSES.has(reserved.status)
+    ? reserved
+    : repos.eventCampaigns.byStatus('armed').filter((e) => !hasStarted(e.starts_at, now))[0];
+  if (!event) return null;
+
+  const all = repos.eventBuckets.list(event.id);
+  const slice = all.filter((b) => b.rank >= event.bucket_cursor)
+    .slice(0, Math.max(1, event.bucket_ceiling));
+  return {
+    event,
+    reservation: held && held.ref_id === event.id ? { from: held.from_ts, to: held.to_ts } : null,
+    buckets: slice.map((b) => ({
+      rank: b.rank, label: b.label, target_count: b.target_count, roster_count: b.roster_count,
+    })),
+    locationsLeft: Math.max(0, all.length - event.bucket_cursor - slice.length),
+    pending: repos.eventInvitees.countsByStatus(event.id).pending ?? 0,
+  };
+}
+
+/** What the dashboard's third conveyor shows. Cheap enough for the 15s status poll. */
+export interface EventPipelineSummary {
+  /** Campaigns that have ever existed — 0 means "never used this pipeline". */
+  campaigns: number;
+  open: number;
+  /** Still awaiting an invite, across open campaigns only. */
+  listed: number;
+  /** Of those, the ones the next run would reach. */
+  up_next: number;
+  /** Lifetime, across every campaign — this is what the machine has actually done. */
+  invited: number;
+  unreachable: number;
+  /** Locations the next run will work, and how many roll into later days. */
+  locations_next: number;
+  locations_left: number;
+  runs_today: number;
+  events_per_day: number;
+  next_run: {
+    event_id: number; title: string | null; from: string | null; to: string | null;
+  } | null;
+  /** A run holding the browser right now. Drives the dashboard's "inviting…" pill. */
+  running: { event_id: number; title: string | null } | null;
+}
+
+export function eventPipelineSummary(repos: Repos, now: Date): EventPipelineSummary {
+  const all = repos.eventCampaigns.list();
+  const s = repos.settings.get();
+  const summary: EventPipelineSummary = {
+    campaigns: all.length,
+    open: 0,
+    listed: 0,
+    up_next: 0,
+    invited: 0,
+    unreachable: 0,
+    locations_next: 0,
+    locations_left: 0,
+    runs_today: repos.eventCampaigns.countRunsOnDate(now.toISOString()),
+    events_per_day: Math.max(1, s.events_per_day),
+    next_run: null,
+    running: null,
+  };
+
+  for (const e of all) {
+    const counts = repos.eventInvitees.countsByStatus(e.id);
+    summary.invited += counts.invited ?? 0;
+    summary.unreachable += counts.unreachable ?? 0;
+    if (!OPEN_STATUSES.has(e.status)) continue;
+    summary.open += 1;
+    summary.listed += counts.pending ?? 0;
+    if (e.status === 'running') summary.running = { event_id: e.id, title: e.title };
+  }
+
+  const next = nextEventRun(repos, now);
+  if (next) {
+    summary.up_next = next.buckets.reduce((n, b) => n + b.target_count, 0);
+    summary.locations_next = next.buckets.length;
+    summary.locations_left = next.locationsLeft;
+    summary.next_run = {
+      event_id: next.event.id,
+      title: next.event.title,
+      from: next.reservation?.from ?? null,
+      to: next.reservation?.to ?? null,
+    };
+  }
+  return summary;
 }

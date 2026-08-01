@@ -132,7 +132,10 @@ invitee picker. It uses its own tables and its own caps — an event invite is a
 LinkedIn quota from a connection request, and 500 of them would swallow five weeks of
 `weekly_cap` if they were pooled.
 
-Give it an event URL and a list of 1st-degree connections. It buckets them by location
+Give it an event URL and a list of 1st-degree connections — pasted on the Events tab, or
+selected on **Connections** and sent over with *Invite to event*, which can also add to a
+campaign you are still drafting so a list can be assembled from several searches. It
+buckets them by location
 (US by state, everything else by country), ranks the buckets by how many of *your list*
 each holds, and shows you that plan as a **draft**. You review it and arm it; nothing
 irreversible happens before that. A run then works up to `event_bucket_ceiling` (10)
@@ -158,6 +161,14 @@ bucket, so a bucket already in flight always finishes.
 **Dry run** does everything except the submit — resolves the geo, pages the list, ticks the
 matches, checks the counter, then throws the selection away. Use it to see real reach
 before committing.
+
+On the **dashboard** it gets a conveyor of its own beside the other two, with two honest
+departures: the gauge counts today's *runs* against `events_per_day` rather than sends, and
+there are three stations instead of four — LinkedIn tells us nothing about who accepted an
+event invitation, so there is no fourth number to fill. The locations that will not fit
+today's window, and the people no filter can reach, sit beneath the track as chips rather
+than being rounded away. The armed campaign also appears under **Up next**, listed by
+location, because it competes with the cohorts for the same browser and the same day.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -324,6 +335,8 @@ card forces a pass immediately.
 - `GET /api/connections/stats` — roster size and enrichment breakdown.
 - `POST /api/events` `{ event_url, profile_urls }` — plan an event-invite campaign as a
   draft; `POST /api/events/:id/arm` to commit it, `/dry-run` to rehearse it.
+- `POST /api/events/:id/invitees` `{ profile_urls }` — add people to a draft and re-rank
+  its locations. `409` once armed.
 
 Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 

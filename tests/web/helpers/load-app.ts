@@ -32,8 +32,11 @@ export interface AppInternals {
   applyEnrichHaltUi: (status: Record<string, unknown>) => void;
   initSearch: () => void;
   initEvents: () => void;
+  initDashboard: () => void;
+  refreshQueue: () => Promise<void>;
   evRenderDetail: (detail: Record<string, unknown>) => void;
   evLoadList: () => Promise<void>;
+  evOpen: (id: number, quiet?: boolean) => Promise<void>;
   /** The bootstrap. Never called by loadApp — see the readyState note below. */
   init: () => void;
 }
@@ -65,7 +68,7 @@ export function loadApp(): AppInternals {
   const src = readFileSync(join(WEB_DIR, 'app.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, applyEnrichHaltUi, initSearch, initEvents, evRenderDetail, evLoadList, init };`,
+    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, applyEnrichHaltUi, initSearch, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }

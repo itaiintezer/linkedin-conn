@@ -289,6 +289,77 @@
         </div>
       </div>
 
+      <!-- Event invites: the same machine again, but its conveyor moves people towards ONE
+           irreversible act (an invitation), and it is paced in whole runs rather than in
+           sends — a run books the browser for a reserved block of the day. Hence "runs"
+           as fuel, three stations instead of four (there is no acceptance signal to
+           track), and a foot line for the locations that roll into later days. -->
+      <div class="engine engine-ev is-idle" id="evEngine" aria-label="Event invite engine status">
+        <div class="engine-top">
+          <div class="engine-fuel">
+            <div class="fuel-meta">
+              <span class="label">
+                <span class="kind-ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4" stroke-linecap="round"/></svg>
+                </span>
+                Today · event runs
+              </span>
+              <div class="fuel-val">
+                <span class="bignum" id="evFuelSent">0</span>
+                <span class="fuel-cap">/ <span id="evFuelCap">1</span> runs</span>
+              </div>
+            </div>
+            <div class="fuelbar" aria-hidden="true"><i id="evFuelBar" style="width:0%"></i></div>
+          </div>
+          <div class="engine-pills">
+            <span class="epill epill-sending" id="evRunningPill" hidden>
+              <span class="sending-dot" aria-hidden="true"></span>
+              <span id="evRunningTxt">inviting…</span>
+            </span>
+            <span class="epill">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+              <span id="evNextTxt">—</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="engine-state" id="evEngineState" hidden>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+          <span id="evEngineStateTxt">Paused</span>
+        </div>
+
+        <div class="track">
+          <div class="flowline" aria-hidden="true"></div>
+          <div class="dotflow" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <div class="station queued">
+            <div class="puck"><span class="n" id="evListed">0</span></div>
+            <span class="nm">On the list<small>awaiting their location</small></span>
+          </div>
+          <div class="station sched">
+            <div class="puck"><span class="n" id="evUpNext">0</span></div>
+            <span class="nm">Next run<small id="evUpNextFoot">no run planned</small></span>
+          </div>
+          <div class="station invited">
+            <div class="puck"><span class="n" id="evInvited">0</span></div>
+            <span class="nm">Invited<small>invitation sent</small></span>
+          </div>
+        </div>
+
+        <div class="engine-foot" id="evEngineFoot" hidden>
+          <span class="foot-chip" id="evFootLeft" hidden></span>
+          <span class="foot-chip is-warn" id="evFootUnreachable" hidden></span>
+        </div>
+
+        <div class="engine-idle" id="evEngineIdle">
+          <span class="engine-idle-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4" stroke-linecap="round"/></svg>
+          </span>
+          <span class="engine-idle-label">Event invites</span>
+          <span class="engine-idle-sub">No event campaigns yet — invite the connections you already have to a LinkedIn event.</span>
+          <button class="btn btn-ghost engine-idle-cta" type="button" id="evEngineIdleCta">Start one</button>
+        </div>
+      </div>
+
       <div class="panel-head sub">
         <div class="panel-title">
           <h3>Up next</h3>
@@ -511,6 +582,7 @@
         <span class="selection-count" id="selectionCount">0 selected</span>
         <div class="selection-actions">
           <button class="btn btn-ghost" id="selectionClear" type="button">Clear</button>
+          <button class="btn btn-event" id="selectionEvent" type="button">Invite to event</button>
           <button class="btn btn-green" id="selectionAdd" type="button">Add to message campaign</button>
         </div>
       </div>
@@ -817,6 +889,43 @@
           </div>
           <div class="field">
             <button class="btn btn-green" id="campConfirm" type="button">Add to cohort</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Selection -> event campaign. Deliberately does NOT arm anything: it builds (or
+       extends) a DRAFT and hands the operator to the Events tab, where the bucket ladder
+       shows what the list can actually reach before a single invitation goes out. -->
+  <div class="modal-overlay" id="evtModal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-label="Invite to a LinkedIn event">
+      <div class="modal-head">
+        <div>
+          <h3>Invite to an event</h3>
+          <p class="modal-sub" id="evtImpact"></p>
+        </div>
+        <button class="modal-close" id="evtClose" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="toast slim" id="evtResult" hidden></div>
+        <div class="form-grid">
+          <div class="field">
+            <label for="evtCampaign">Campaign</label>
+            <select id="evtCampaign"></select>
+            <p class="hint" id="evtCampaignHint">Only draft campaigns can take more people — once one is armed its location plan is frozen.</p>
+          </div>
+          <div class="field" id="evtUrlField">
+            <label for="evtUrl">Event URL</label>
+            <input id="evtUrl" type="url" placeholder="https://www.linkedin.com/events/7486088214579982336/" autocomplete="off" />
+          </div>
+          <!-- Two affordances, not one button that changes meaning: after the list lands,
+               the counts above are worth reading before jumping to the ladder. -->
+          <div class="field row-between">
+            <button class="btn btn-event" id="evtConfirm" type="button">Build the plan</button>
+            <button class="btn btn-ghost" id="evtOpen" type="button" hidden>Open the plan &rarr;</button>
           </div>
         </div>
       </div>
