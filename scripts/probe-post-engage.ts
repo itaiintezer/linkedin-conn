@@ -428,8 +428,11 @@ try {
       // accessible name is the inner text "Comment" — not "Post". It does not exist at
       // all until the editor has text, so its presence IS the armed signal. Scoping to
       // the form is mandatory: the action bar's own "Comment" button shares the name.
-      const submit = postScope.locator('form.comments-comment-box__form button')
-        .filter({ hasText: /^Comment$/ }).first();
+      // The accessible-name approach does NOT work: artdeco pads the button's textContent
+      // with newlines, so `hasText: /^Comment$/` matches nothing (observed live 2026-08-02).
+      // The BEM class is unambiguous — it exists only on the composer's submit control, so
+      // it cannot collide with the action bar's own "Comment" button.
+      const submit = page.locator('button.comments-comment-box__submit-button--cr').first();
       const n = await submit.count();
       console.log('submit-control matches:', n);
       if (n === 0) {

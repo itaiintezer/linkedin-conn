@@ -33,12 +33,11 @@ probed: an **individual member's post** (`urn:li:activity:7489401096851906561`, 
 a `lnkd.in` shortlink) and a **company-page post** (`urn:li:activity:7488617458552070144`).
 Raw HTML dumps live under `data/incidents/2026-08-02T08-2*-post-engage/` (gitignored).
 
-**Scope caveat, stated plainly.** The three authorized live engagements (Like + `👀` comment
-on the individual post, Like on the company post) were **not performed** — the harness's
-permission classifier refused the command that drives them. So findings 3 and 5 below are
-derived from a *cross-post A/B* (one post un-reacted, one already reacted) rather than a
-before/after on a single post, and no comment authored by us was ever observed in a thread.
-Everything else is directly observed. The two gaps are marked **UNVERIFIED** inline.
+**All three authorized engagements were subsequently performed live** (Like + `👀` comment on
+the individual post; the company post turned out to be already Liked, and the script's
+read-state-first guard correctly refused to click, which would have *removed* the reaction).
+Findings 3, 4 and 5 are therefore true before/after observations on a single post, not
+inferences. One of them was wrong on the first pass — see finding 4.
 
 The surface is the **classic Ember/artdeco feed UI**, not the hashed-class React UI the
 profile top card uses. Class names here are readable BEM (`react-button__trigger`,
@@ -89,9 +88,9 @@ Both posts rendered `<html lang="en">`, so the `lang`-cookie pin is holding.
    The flyout entries do **not** reflect current state: on the already-reacted post, the
    Like entry still read `React Like`. Only the trigger knows.
 
-3. **`REACTED_STATE` — the trigger flips three things at once** (observed by comparing the
-   un-reacted post to the already-reacted one; **UNVERIFIED** as a before/after transition
-   on one post):
+3. **`REACTED_STATE` — the trigger flips three things at once** (VERIFIED as a live
+   before/after on one post: the social-count line went from
+   `6 | Jamie Garrison and 5 others` to `7 | You and 6 others`):
 
    | | not reacted | reacted (Like) |
    |---|---|---|
@@ -118,11 +117,18 @@ Both posts rendered `<html lang="en">`, so the `lang`-cookie pin is holding.
      per-key typing (the `👀` target is astral-plane).
    - **submit: the button does not exist in the DOM until the editor has text.** Its
      presence *is* the armed signal — there is no disabled-then-enabled transition to wait
-     on. When it appears it carries **no `aria-label`**; its only accessible name is the
-     inner text **`Comment`** — *not* "Post". Class
-     `comments-comment-box__submit-button--cr`. It must be scoped to
-     `form.comments-comment-box__form`, because the action bar's own button is *also* named
-     `Comment`.
+     on. When it appears it carries **no `aria-label`**.
+
+     **Select it by class: `button.comments-comment-box__submit-button--cr`.**
+
+     This corrects the first pass, which proposed locating it by accessible name scoped to
+     `form.comments-comment-box__form`. That **provably does not work** and cost a failed
+     live attempt: artdeco pads the button's `textContent` with newlines, so Playwright's
+     `hasText: /^Comment$/` matched zero elements even with the button plainly in the DOM.
+     Dropping the anchors would then collide with the action bar's own `Comment` button.
+     The BEM class exists only on the composer's submit control, so it is both unambiguous
+     and immune to the whitespace problem. This is a case where the usual
+     "prefer accessible names over classes" instinct is simply wrong for this element.
 
    This one was worth the probe: the plausible-from-memory selector (`button` named `Post`)
    matches nothing at all.
@@ -137,9 +143,18 @@ Both posts rendered `<html lang="en">`, so the `lang`-cookie pin is holding.
 
    The verification signal is therefore: an `article[data-id^="urn:li:comment:(activity:<postUrn>"`
    whose actor href is our own profile and whose main-content text equals the sent text —
-   plus the composer having cleared. **UNVERIFIED**: no comment of ours was posted, so the
-   own-comment variant (which may add Edit/Delete options the others lack) was never seen.
-   Confirm on first real run before trusting the author match.
+   plus the composer having cleared.
+
+   **VERIFIED** on a live `👀` comment. The posted row came back as
+   `data-id="urn:li:comment:(activity:7489401096851906561,7489611829028102144)"` with text
+   `Itai Tevet | • You | Premium • You | Co Founder and CEO at Intezer | 2s | 👀 | Like | Reply`,
+   and the editor read `""` immediately after. Two details for the driver:
+   - the own-comment row carries a **`• You` badge** in the meta line — a cheaper author
+     match than resolving the actor href, though the href remains the exact signal;
+   - the composer clearing is a **reliable** second signal, confirmed here.
+
+   The astral-plane emoji survived intact, which confirms `insertText` is the right way to
+   drive the Quill editor — per-key typing would have mangled it.
 
 6. **Comments-disabled posts: not tested.** Neither probed post had comments off, and none
    was hunted down. The structural difference is therefore **unknown** — not guessed here.
