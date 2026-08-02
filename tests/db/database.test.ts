@@ -442,3 +442,122 @@ test('runMigrations is idempotent', () => {
   const db = openDatabase(':memory:');
   expect(() => { runMigrations(db); runMigrations(db); }).not.toThrow();
 });
+
+// ── send_log / profile_events timestamp normalisation (2026-08-02) ───────────────────────
+// Both columns were written exclusively by a `datetime('now')` DEFAULT, which produces the
+// space-separated no-timezone form. EventRepo.countSentSince compares `at` to
+// windowStartIso() -> toISOString(), and on a shared date prefix byte 10 (' ' 0x20 vs 'T'
+// 0x54) made the comparison FALSE, dropping real sends out of the weekly counter and
+// handing the sender headroom past weekly_cap. The migration converts stored values and
+// rebuilds both tables so the DEFAULT and a shape CHECK come with them.
+
+/** The pre-normalisation shape of both log tables, as a 2026-07 production DB holds them. */
+const LEGACY_LOG_SCHEMA = `
+  CREATE TABLE cohorts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+    message_template TEXT, allow_no_note INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'invite',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')));
+  CREATE TABLE profiles (id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cohort_id INTEGER NOT NULL REFERENCES cohorts(id), kind TEXT NOT NULL DEFAULT 'invite',
+    profile_url TEXT NOT NULL, first_name TEXT, full_name TEXT, custom_message TEXT,
+    status TEXT NOT NULL DEFAULT 'queued', attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT, skip_reason TEXT, scheduled_for TEXT, sent_at TEXT, accepted_at TEXT,
+    replied_at TEXT, resolved_at TEXT, thread_url TEXT, priority INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE (profile_url, kind));
+  CREATE TABLE send_log (id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER NOT NULL REFERENCES profiles(id), outcome TEXT NOT NULL,
+    at TEXT NOT NULL DEFAULT (datetime('now')));
+  CREATE INDEX idx_send_log_at ON send_log(at);
+  CREATE TABLE profile_events (id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER NOT NULL REFERENCES profiles(id), event_type TEXT NOT NULL,
+    at TEXT NOT NULL DEFAULT (datetime('now')));
+  CREATE INDEX idx_events_type ON profile_events(event_type);
+  INSERT INTO cohorts (name) VALUES ('old');
+  INSERT INTO profiles (cohort_id, profile_url, status) VALUES (1, 'https://www.linkedin.com/in/x', 'sent');
+`;
+
+test('migrates legacy space-form send_log rows to the toISOString() shape', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(LEGACY_LOG_SCHEMA);
+  db.exec(`INSERT INTO send_log (profile_id, outcome, at) VALUES
+    (1, 'sent', '2026-06-29 13:22:50'),
+    (1, 'sent', '2026-07-31 16:50:00');`);
+
+  runMigrations(db);
+
+  const ats = (db.prepare('SELECT at FROM send_log ORDER BY id').all() as { at: string }[]).map((r) => r.at);
+  expect(ats).toEqual(['2026-06-29T13:22:50.000Z', '2026-07-31T16:50:00.000Z']);
+});
+
+test('migrates legacy space-form profile_events rows too', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(LEGACY_LOG_SCHEMA);
+  db.exec(`INSERT INTO profile_events (profile_id, event_type, at) VALUES (1, 'accepted', '2026-08-01 09:27:46');`);
+
+  runMigrations(db);
+
+  expect((db.prepare('SELECT at FROM profile_events').get() as any).at).toBe('2026-08-01T09:27:46.000Z');
+});
+
+// The whole point of rebuilding rather than UPDATE-ing values in place: an in-place repair
+// leaves the old DEFAULT on the production table forever, so the next INSERT that omits the
+// column silently reintroduces the bug on exactly the database that matters.
+test('the migrated tables no longer carry the datetime(\'now\') default', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(LEGACY_LOG_SCHEMA);
+
+  runMigrations(db);
+
+  db.exec("INSERT INTO send_log (profile_id, outcome) VALUES (1, 'sent');");
+  db.exec("INSERT INTO profile_events (profile_id, event_type) VALUES (1, 'accepted');");
+  const shape = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+  expect((db.prepare('SELECT at FROM send_log').get() as any).at).toMatch(shape);
+  expect((db.prepare('SELECT at FROM profile_events').get() as any).at).toMatch(shape);
+});
+
+test('the migrated tables reject the space form outright', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(LEGACY_LOG_SCHEMA);
+  runMigrations(db);
+
+  expect(() => db.exec("INSERT INTO send_log (profile_id, outcome, at) VALUES (1, 'sent', '2026-07-31 16:50:00');"))
+    .toThrow(/CHECK constraint failed/);
+  expect(() => db.exec("INSERT INTO profile_events (profile_id, event_type, at) VALUES (1, 'accepted', '2026-07-31 16:50:00');"))
+    .toThrow(/CHECK constraint failed/);
+});
+
+test('a fresh database rejects the space form in both log tables', () => {
+  const db = openDatabase(':memory:');
+  db.exec("INSERT INTO cohorts (name) VALUES ('c');");
+  db.exec("INSERT INTO profiles (cohort_id, profile_url) VALUES (1, 'https://www.linkedin.com/in/x');");
+  expect(() => db.exec("INSERT INTO send_log (profile_id, outcome, at) VALUES (1, 'sent', '2026-07-31 16:50:00');"))
+    .toThrow(/CHECK constraint failed/);
+  expect(() => db.exec("INSERT INTO profile_events (profile_id, event_type, at) VALUES (1, 'accepted', '2026-07-31 16:50:00');"))
+    .toThrow(/CHECK constraint failed/);
+});
+
+test('the log rebuild preserves ids, FK integrity and the send_log index', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(LEGACY_LOG_SCHEMA);
+  db.exec(`INSERT INTO send_log (id, profile_id, outcome, at) VALUES (7, 1, 'sent', '2026-07-31 16:50:00');`);
+  db.exec('PRAGMA foreign_keys = ON;');
+
+  runMigrations(db);
+
+  expect((db.prepare('SELECT id, profile_id FROM send_log').get() as any)).toMatchObject({ id: 7, profile_id: 1 });
+  expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+  expect((db.prepare('PRAGMA foreign_keys').get() as any).foreign_keys).toBe(1);
+  const idx = (db.prepare('PRAGMA index_list(send_log)').all() as { name: string }[]).map((i) => i.name);
+  expect(idx).toContain('idx_send_log_at');
+});
+
+test('the log migration is idempotent and leaves already-ISO rows untouched', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(LEGACY_LOG_SCHEMA);
+  db.exec(`INSERT INTO send_log (profile_id, outcome, at) VALUES (1, 'sent', '2026-07-31 16:50:00');`);
+
+  runMigrations(db);
+  const after = (db.prepare('SELECT at FROM send_log').get() as any).at;
+  expect(() => runMigrations(db)).not.toThrow();
+  expect((db.prepare('SELECT at FROM send_log').get() as any).at).toBe(after);
+});

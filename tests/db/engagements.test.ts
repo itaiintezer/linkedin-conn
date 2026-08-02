@@ -116,9 +116,10 @@ test('countCommentedSince counts only rows that actually commented', () => {
 // ── The timestamp-format CHECKs ─────────────────────────────────────────────────────────
 // countReactedSince / countCommentedSince compare these columns as TEXT, which is only a
 // chronological comparison while every value is the one fixed-width shape toISOString()
-// produces. send_log.at is the live proof of the alternative: it holds the datetime('now')
-// space-form and silently drops out of EventRepo.countSentSince's `>=`. These pin the shape
-// in the schema so a future writer cannot reintroduce that bug here.
+// produces. send_log.at was the live proof of the alternative: it held the datetime('now')
+// space-form and silently dropped out of EventRepo.countSentSince's `>=` (fixed 2026-08-02 by
+// giving it these same constraints). These pin the shape so a future writer cannot reintroduce
+// that bug here.
 
 test('a real toISOString() value is accepted into both timestamp columns', () => {
   const iso = new Date().toISOString();
@@ -145,7 +146,7 @@ test('NULL is accepted in both timestamp columns — an un-run task has neither'
   expect(row.commented_at).toBeNull();
 });
 
-test("the datetime('now') space-form is rejected — this is the send_log bug", () => {
+test("the datetime('now') space-form is rejected — this was the send_log bug", () => {
   const e = repos.engagements.add(URL, URN, 'like', 'hello');
   expect(() => repos.engagements.setStatus(e.id, 'sent', { reacted_at: '2026-07-31 16:50:00' }))
     .toThrow(/CHECK constraint failed/);

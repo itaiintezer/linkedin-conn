@@ -142,13 +142,23 @@ export class ProfileRepo {
 
 export class EventRepo {
   constructor(private db: DB) {}
-  recordSend(profileId: number, outcome: EventType): void {
-    this.db.prepare('INSERT INTO send_log (profile_id, outcome) VALUES (?, ?)').run(profileId, outcome);
-    this.db.prepare('INSERT INTO profile_events (profile_id, event_type) VALUES (?, ?)').run(profileId, outcome);
+  /**
+   * `atIso` is written explicitly rather than left to the column DEFAULT. Both are the same
+   * shape today (see schema.sql), but leaving it to the default would mean the weekly counter
+   * compares SQLite's clock against JS's `windowStartIso`, and the timestamp would be
+   * untestable — `datetime('now')` does not move under vitest's fake timers.
+   */
+  recordSend(profileId: number, outcome: EventType, atIso: string = new Date().toISOString()): void {
+    this.db.prepare('INSERT INTO send_log (profile_id, outcome, at) VALUES (?, ?, ?)').run(profileId, outcome, atIso);
+    this.db.prepare('INSERT INTO profile_events (profile_id, event_type, at) VALUES (?, ?, ?)').run(profileId, outcome, atIso);
   }
-  recordEvent(profileId: number, type: EventType): void {
-    this.db.prepare('INSERT INTO profile_events (profile_id, event_type) VALUES (?, ?)').run(profileId, type);
+  recordEvent(profileId: number, type: EventType, atIso: string = new Date().toISOString()): void {
+    this.db.prepare('INSERT INTO profile_events (profile_id, event_type, at) VALUES (?, ?, ?)').run(profileId, type, atIso);
   }
+  /**
+   * `iso` MUST be a toISOString() value — it is compared to `at` as TEXT, which is only a
+   * chronological comparison because schema.sql pins both columns to that exact shape.
+   */
   countSentSince(iso: string, kind: CampaignKind): number {
     return (this.db.prepare(`
       SELECT COUNT(*) c FROM send_log s JOIN profiles p ON p.id = s.profile_id

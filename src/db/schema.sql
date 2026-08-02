@@ -35,11 +35,28 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE INDEX IF NOT EXISTS idx_profiles_status ON profiles(status);
 CREATE INDEX IF NOT EXISTS idx_profiles_cohort ON profiles(cohort_id);
 
+-- `at` on both log tables below is fixed to the shape toISOString() produces
+-- (YYYY-MM-DDTHH:MM:SS.sssZ), by the DEFAULT, by the CHECK, and by EventRepo.recordSend /
+-- recordEvent writing it explicitly. All three say the same thing on purpose.
+--
+-- This is a scar. Both columns used to default to datetime('now'), which produces the
+-- space-separated no-timezone form '2026-07-31 16:50:00'. EventRepo.countSentSince compares
+-- `at` with `>= ?` against windowStartIso() -> '2026-07-25T16:50:00.000Z', and TEXT >= TEXT
+-- is only a chronological comparison while EVERY value is one fixed-width shape. It was not:
+-- byte 10 is ' ' (0x20) vs 'T' (0x54), so whenever the two shared a date prefix -- i.e. sends
+-- made on the calendar date at the rolling window boundary -- the comparison was silently
+-- FALSE and those sends vanished from the weekly counter. remainingCapacity() then handed the
+-- scheduler and the sender more headroom than existed, past the configured weekly cap.
+--
+-- A CHECK cannot be added by ALTER TABLE in SQLite, so databases created before 2026-08-02
+-- get these constraints by a table rebuild in runMigrations, which converts stored values in
+-- the same pass. See `engagements` below, which was designed against this trap from the start.
 CREATE TABLE IF NOT EXISTS send_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   profile_id INTEGER NOT NULL REFERENCES profiles(id),
   outcome TEXT NOT NULL,
-  at TEXT NOT NULL DEFAULT (datetime('now'))
+  at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    CHECK (at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')
 );
 CREATE INDEX IF NOT EXISTS idx_send_log_at ON send_log(at);
 
@@ -47,7 +64,8 @@ CREATE TABLE IF NOT EXISTS profile_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   profile_id INTEGER NOT NULL REFERENCES profiles(id),
   event_type TEXT NOT NULL,
-  at TEXT NOT NULL DEFAULT (datetime('now'))
+  at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    CHECK (at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')
 );
 CREATE INDEX IF NOT EXISTS idx_events_type ON profile_events(event_type);
 
@@ -340,12 +358,14 @@ CREATE TABLE IF NOT EXISTS engagements (
   -- still allowed. This is a scar, not decoration. countReactedSince / countCommentedSince
   -- compare these columns with `>= ?` against an ISO string, and TEXT >= TEXT is only a
   -- chronological comparison while EVERY value is that one fixed-width shape. send_log.at
-  -- is the live proof of what happens otherwise: it is written by the datetime('now')
-  -- default, so it holds '2026-07-31 16:50:00', and EventRepo.countSentSince compares it to
-  -- windowStartIso() -> '2026-07-25T16:50:00.000Z'. Byte 10 is ' ' (0x20) vs 'T' (0x54), so
-  -- on a shared date prefix the comparison is silently FALSE and real sends vanish from the
-  -- weekly counter. A CHECK cannot be added by ALTER TABLE in SQLite, so it had to land
-  -- before this table existed in anyone's database.
+  -- was the live proof of what happens otherwise: written by the datetime('now') default it
+  -- held '2026-07-31 16:50:00', which EventRepo.countSentSince compared to windowStartIso()
+  -- -> '2026-07-25T16:50:00.000Z'. Byte 10 is ' ' (0x20) vs 'T' (0x54), so on a shared date
+  -- prefix the comparison was silently FALSE and real sends vanished from the weekly counter,
+  -- letting the sender past weekly_cap. Fixed 2026-08-02 by giving send_log and profile_events
+  -- these same constraints (via a table rebuild in runMigrations, since a CHECK cannot be
+  -- added by ALTER TABLE in SQLite) -- which is also why these had to land here before this
+  -- table existed in anyone's database.
   reacted_at TEXT CHECK (
     reacted_at IS NULL
     OR reacted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'

@@ -91,7 +91,15 @@ export class EventCampaignRepo {
       .run(status, nowIso, reason, id);
   }
 
-  /** How many runs started on a given local date — enforces `events_per_day`. */
+  /**
+   * How many runs started on a given local date — enforces `events_per_day`.
+   *
+   * `date()` on BOTH sides is load-bearing, not decoration. `started_at` is written by a
+   * `datetime('now')` default and so holds the space-separated form, while callers pass a
+   * toISOString() value; date() parses both and is what makes the two comparable. Rewriting
+   * this as a bare `started_at >= ?` would reintroduce the send_log bug (see schema.sql) —
+   * the raw forms differ at byte 10, ' ' (0x20) vs 'T' (0x54).
+   */
   countRunsOnDate(dateIso: string): number {
     return (this.db.prepare(
       "SELECT COUNT(*) c FROM event_runs WHERE mode = 'live' AND date(started_at) = date(?)",
