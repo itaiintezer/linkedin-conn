@@ -831,12 +831,23 @@ export class LinkedInDriver implements BrowserDriver {
         if (await commentBtn.count()) {
           await commentBtn.click().catch(() => {});
           await sleep(rand(1500, 3000));
-        } else if (await post.locator(PSEL.actionBar).count()) {
+        } else if (await post.locator(PSEL.actionBar).count()
+          && await post.locator(PSEL.reactTrigger).count()) {
           // The bar RENDERED and offers no comment control at all. That is a positive
           // structural statement about this post, not selector rot — so it is the one
           // comments_disabled verdict we are willing to reach without a wording signal.
+          //
+          // TWO signals are required, and both are language-independent, because this
+          // verdict is a terminal skip that deliberately never touches the failure streak:
+          // if it can be reached by selector rot, rot retires every comment-bearing task as
+          // "the author disabled comments" with no evidence and no halt. The action bar
+          // rendering says the page loaded; `reactTrigger` RESOLVING says our structural
+          // selectors still find controls inside that bar, which is what makes the missing
+          // comment control a statement about the post rather than about us. (PSEL.commentButton
+          // carries its own language-independence — see its note.) Anything short of both
+          // falls through to `unavailable` below, which counts toward the streak and halts.
           const ev = await captureEvidence(page, 'engage-comments-disabled',
-            { signal: 'no comment control in a rendered action bar', postUrl });
+            { signal: 'no comment control in a rendered action bar whose react trigger resolves', postUrl });
           log.info('engage', 'no comment affordance on a rendered action bar — treating as disabled',
             { postUrl });
           return {

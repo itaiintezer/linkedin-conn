@@ -255,7 +255,14 @@ and unit-tested; none of it has been exercised against the real page.
   feature, which is exactly why `unavailable` counts toward the failure streak.
 - **No comments-disabled post was ever found**, so finding 6's structure is inferred, not
   observed, and `PSEL.commentsDisabledText` is a wording probe. Every `comments_disabled`
-  verdict captures evidence so the real structure can be read off an incident later.
+  verdict captures evidence so the real structure can be read off an incident later. Because
+  the verdict is inferred AND is a terminal skip that never touches the failure streak, the
+  structural branch demands two language-independent signals before it fires: the action bar
+  rendered, and `PSEL.reactTrigger` resolves inside it (proving our selectors can still find
+  that bar's controls). `PSEL.commentButton` is itself matched on the BEM class
+  `comment-button` first and the English `aria-label="Comment"` only as a fallback — an
+  English-only probe would have read a Hebrew cold-load render as "the author disabled
+  comments". Anything short of both signals falls through to `unavailable`, which counts.
 - **Findings 3, 4 and 5 rest on one post.** The comment confirmation (`• You` badge, cleared
   composer, `article[data-id]` row) and the reaction-state flip (`aria-pressed`,
   `react-button--active`, social-count line) were each observed as a single before/after on the

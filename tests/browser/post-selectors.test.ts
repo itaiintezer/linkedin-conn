@@ -129,6 +129,21 @@ test('the comment submit control is selected by its BEM class, not its accessibl
   expect(PSEL.commentSubmit).not.toContain('aria-label');
 });
 
+test('the action bar comment control does not depend on English', () => {
+  // Its absence is read as "the author disabled comments" — a terminal skip that never
+  // touches the failure streak. An English-only probe therefore turns a Hebrew cold-load
+  // render (observed on this account; hence the pinned `lang` cookie) into a silent
+  // retirement of every comment-bearing task. The BEM class is the load-bearing signal and
+  // must come first; the aria-label survives only as a fallback.
+  expect(PSEL.commentButton).toContain('.comment-button');
+  expect(PSEL.commentButton).toContain('div.feed-shared-social-action-bar');
+  expect(PSEL.commentButton.indexOf('.comment-button'))
+    .toBeLessThan(PSEL.commentButton.indexOf('aria-label'));
+  // Stripping the English half must still leave a usable selector.
+  expect(PSEL.commentButton.replace(/,\s*\[aria-label="Comment"\]/, ''))
+    .toBe('div.feed-shared-social-action-bar button:is(.comment-button)');
+});
+
 test('the post container is matched on its two semantic attributes', () => {
   expect(PSEL.postContainer).toBe('div[data-urn][role="article"]');
 });

@@ -139,9 +139,25 @@ export const PSEL = {
 
   // --- Comment box (live-verified: a `👀` comment posted through exactly these) ---
 
-  /** The action bar's Comment button. Only needed when arriving from the feed: on a post
-   *  detail page (both `/feed/update/` and `/posts/…`) the composer is already inline. */
-  commentButton: 'div.feed-shared-social-action-bar button[aria-label="Comment"]',
+  /**
+   * The action bar's Comment button. Only needed when arriving from the feed: on a post
+   * detail page (both `/feed/update/` and `/posts/…`) the composer is already inline.
+   *
+   * TWO SIGNALS, ORed, and the language-independent one is listed first. This used to be
+   * `button[aria-label="Comment"]` alone, which is English — and LinkedIn has been observed
+   * rendering Hebrew on a cold load (hence the pinned `lang` cookie). That mattered for more
+   * than a missed click: the driver reads the ABSENCE of this control as evidence that the
+   * author disabled commenting, a terminal skip that deliberately never touches the failure
+   * streak. An English-only probe turned "we cannot read this page" into "this post has
+   * comments off", silently, for every comment-bearing task.
+   *
+   * `comment-button` is a readable BEM class on the same element, present in all six live
+   * dumps (data/incidents/*-post-engage/action-bar.html) and — checked page-wide on the dump
+   * taken with two comments rendered — matching exactly ONE element, the post's own control.
+   * Scoped to the post action bar regardless, which is what excludes comment-level controls.
+   */
+  commentButton:
+    'div.feed-shared-social-action-bar button:is(.comment-button, [aria-label="Comment"])',
   /** The composer form. */
   commentForm: 'form.comments-comment-box__form',
   /** The composer's Quill editor. Content is `<p>…</p>`, so it must be driven with
