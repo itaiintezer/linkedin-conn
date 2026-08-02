@@ -6,12 +6,17 @@ import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { INCIDENTS_DIR } from '../config.js';
 import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
-import type { BrowserDriver, CampaignKind, ProfileStatus, Settings } from '../types.js';
+import type {
+  BrowserDriver, CampaignKind, Engagement, EngagementStatus, ProfileStatus, Reaction, Settings,
+} from '../types.js';
 import { isCampaignKind, parseKind } from '../core/campaign-kind.js';
-import { normalizeProfileUrl, extractProfileUrls } from '../core/url.js';
+import { parseReaction, DEFAULT_REACTION } from '../core/engagement-action.js';
+import {
+  normalizeProfileUrl, extractProfileUrls, normalizePostUrl, isShortlink, resolveShortlink,
+} from '../core/url.js';
 import { computeCohortMetrics, type MetricRow } from '../core/metrics.js';
 import { estimateQueueCompletion, nextBatchForecast, orderUpcoming } from '../core/forecast.js';
-import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
+import { windowStartIso, remainingCapacity, dayStartIso } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
 import { Mutex } from '../core/mutex.js';
 import { runSenderOnce, type SenderOptions } from '../worker/sender.js';
@@ -30,8 +35,8 @@ import {
 } from '../worker/event-campaign.js';
 import { runEventCampaign } from '../worker/event-runner.js';
 import { defaultCohortName } from '../core/cohort-name.js';
-import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE } from '../core/message.js';
-import { capsFor } from '../core/caps.js';
+import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE, MAX_COMMENT } from '../core/message.js';
+import { capsFor, engagementCaps } from '../core/caps.js';
 import type { Logger } from '../core/logger.js';
 import { log as defaultLog } from '../core/log.js';
 import { listDocs, readDoc } from '../core/docs.js';
@@ -48,6 +53,8 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'apify_api_key', 'enrich_ttl_days', 'enrich_concurrency',
   'events_per_day', 'event_invite_cap', 'event_bucket_ceiling',
   'event_run_budget_minutes', 'event_shard_threshold',
+  'engage_weekly_cap', 'engage_batch_size', 'engage_batches_per_day',
+  'engage_comment_daily_cap',
 ]);
 
 /**
@@ -91,6 +98,9 @@ export function buildServer(
     /** Injected so tests never reach Apify. Production builds a real HTTP client per run
      *  from the key currently in settings, so a re-keyed operator takes effect immediately. */
     apifyClientFactory?: (token: string) => ApifyClient;
+    /** Injected so tests never reach the network. Used only to expand a lnkd.in shortlink
+     *  on the engagement enqueue path; production falls through to globalThis.fetch. */
+    fetchImpl?: typeof fetch;
   } = {},
 ): FastifyInstance {
   const app = Fastify({ logger: false });
@@ -198,6 +208,34 @@ export function buildServer(
     return { added, found: urls.length };
   });
 
+  /**
+   * The engagement pipeline's line on the dashboard poll.
+   *
+   * `next_scheduled` is the earliest REAL `scheduled_for` among scheduled rows, or null when
+   * nothing is scheduled. Deliberately NOT nextBatchForecast: an estimated forecast pins
+   * `at = now`, so an unplanned queue would advertise an imminent batch. The card has to be
+   * able to say "not scheduled", and only a genuine timestamp-or-null lets it.
+   *
+   * MIN() over these values is chronological because every one is the same fixed-width UTC
+   * ISO-8601 string the planner writes — the same property countReactedSince relies on.
+   */
+  const engagementSummary = (now: Date, s: Settings) => {
+    const caps = engagementCaps(s);
+    const weeklyUsed = repos.engagements.countReactedSince(windowStartIso(now));
+    const nextScheduled = (repos.db.prepare(
+      "SELECT MIN(scheduled_for) AS at FROM engagements WHERE status = 'scheduled' AND scheduled_for IS NOT NULL",
+    ).get() as unknown as { at: string | null }).at ?? null;
+    return {
+      counts: repos.engagements.countsByStatus(),
+      weekly_used: weeklyUsed,
+      weekly_cap: caps.weeklyCap,
+      weekly_remaining: remainingCapacity(caps.weeklyCap, weeklyUsed),
+      comments_today: repos.engagements.countCommentedSince(dayStartIso(now)),
+      comment_daily_cap: s.engage_comment_daily_cap,
+      next_scheduled: nextScheduled,
+    };
+  };
+
   app.get('/api/status', async () => {
     // Two conveyors, two count buckets. `counts` stays invite-only so every existing
     // invite-side number (and the forecast built from it) keeps meaning what it did
@@ -253,6 +291,9 @@ export function buildServer(
           settings: { ...s, weekly_cap: s.msg_weekly_cap, batch_size: s.msg_batch_size, batches_per_day: s.msg_batches_per_day },
         }, now),
       },
+      // The fourth conveyor. Counts, both caps and the next real instant — everything the
+      // engagements card needs, on the same poll as the other three.
+      engagements: engagementSummary(now, s),
       // The third conveyor. Everything the Events engine on the dashboard draws, on the
       // same poll as the other two — it is a handful of indexed counts over a table that
       // holds one row per campaign.
@@ -645,6 +686,265 @@ export function buildServer(
     return { ok: true, started: true };
   });
 
+  // --- Post engagements ---------------------------------------------------------------
+
+  /**
+   * Why one item failed, in a form both callers can use: the single-item path sends
+   * `message` verbatim as its `error`, and the bulk path collects the whole list.
+   *
+   * `reason` is the machine-readable name — the dashboard switches on it — while `message`
+   * is the sentence a human reads. Keeping both means the bulk path never has to
+   * reconstruct prose from an enum, which is where "rejected: invalid_url" (with no clue
+   * WHICH url) came from in earlier pipelines.
+   */
+  type EngagementReject = {
+    post_url: string;
+    reason: 'invalid_url' | 'shortlink_unresolvable' | 'duplicate' | 'unknown_reaction'
+      | 'comment_too_long';
+    message: string;
+  };
+
+  /** Only a duplicate is a conflict; everything else is malformed input. */
+  const REJECT_STATUS: Record<EngagementReject['reason'], number> = {
+    invalid_url: 400, shortlink_unresolvable: 400, unknown_reaction: 400,
+    comment_too_long: 400, duplicate: 409,
+  };
+
+  /**
+   * Every status the engagement pipeline knows, as a runtime allow-list for `?status=`.
+   *
+   * A `Record<EngagementStatus, true>` rather than an array: TypeScript demands every member
+   * of the union be present, so adding a status to EngagementStatus without listing it here
+   * fails to compile. An array would silently drift, and the drift would surface as a filter
+   * that returns an empty list for a status rows genuinely have.
+   */
+  const ENGAGEMENT_STATUSES: Record<EngagementStatus, true> = {
+    queued: true, scheduled: true, sending: true, sent: true,
+    skipped: true, failed: true, needs_attention: true,
+  };
+
+  /** How many shortlinks may be expanded at once, and the wall-clock budget for the lot. */
+  const SHORTLINK_CONCURRENCY = 4;
+  const SHORTLINK_BUDGET_MS = 15_000;
+
+  /**
+   * Expand every lnkd.in shortlink in one request. Returns a slot per input: the expanded
+   * URL, or null for "could not expand" — and also null for an input that is not a shortlink
+   * at all, which callers must not consult (they gate on isShortlink themselves).
+   *
+   * BOUNDED ON PURPOSE. Expanding N shortlinks one after another would cost N sequential
+   * round trips at up to 5s each, so a paste of fifty would hold the handler for minutes and
+   * outlive any client timeout. Two bounds instead: a small concurrency window, and a total
+   * budget after which the remaining links are not called out for at all. Whatever the budget
+   * cuts off degrades into a named `shortlink_unresolvable` reject telling the operator to
+   * paste the full URL — the same answer a dead link gets, which is the honest one.
+   *
+   * Concurrency is deliberately small: this is a request to lnkd.in on the operator's behalf,
+   * and four in flight is plenty to make a paste feel instant without looking like a scraper.
+   */
+  const expandShortlinks = async (raws: string[]): Promise<(string | null)[]> => {
+    const out: (string | null)[] = raws.map(() => null);
+    const pending = raws.map((raw, i) => ({ raw, i })).filter(({ raw }) => isShortlink(raw));
+    if (pending.length === 0) return out; // the common case: not one network call
+    const deadline = Date.now() + SHORTLINK_BUDGET_MS;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < pending.length) {
+        const { raw, i } = pending[cursor++];
+        if (Date.now() >= deadline) continue; // out of budget: leave it null
+        out[i] = await resolveShortlink(raw, { fetchImpl: opts.fetchImpl });
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(SHORTLINK_CONCURRENCY, pending.length) }, worker));
+    return out;
+  };
+
+  /**
+   * Validate one item and insert it, or say why not. SYNCHRONOUS BY CONTRACT.
+   *
+   * The duplicate check and the insert must be one uninterrupted unit, which is why every
+   * network call (shortlink expansion) happens before this runs. EngagementRepo.add is
+   * idempotent — it RETURNS the existing row rather than throwing on UNIQUE(post_urn) — so an
+   * await between the check and the insert would let a concurrent request slip in and this one
+   * answer 201 with somebody else's row: a different reaction, a different comment, and no
+   * hint that nothing was created. No await here means that window does not exist. It is also
+   * what makes two items naming the same post inside ONE bulk request resolve correctly: the
+   * second one's check sees the first one's insert.
+   */
+  const createEngagement = (
+    item: Record<string, unknown>, raw: string, expanded: string | null,
+  ): Engagement | EngagementReject => {
+    const reject = (reason: EngagementReject['reason'], message: string): EngagementReject =>
+      ({ post_url: raw, reason, message });
+
+    // A shortlink is resolved to its destination first; anything else is judged as pasted.
+    // isShortlink is NOT redundant with resolveShortlink's own guard here: resolveShortlink
+    // answers null both for "not a shortlink" and for "shortlink I could not follow", so
+    // without this test an ordinary post URL would be reported as an unresolvable shortlink.
+    // The guard makes it safe; this makes the error message true.
+    let reference = raw;
+    if (isShortlink(raw)) {
+      if (expanded === null) {
+        return reject('shortlink_unresolvable',
+          `could not expand the shortlink ${raw} — open it and paste the full post URL`);
+      }
+      reference = expanded;
+    }
+    const post = normalizePostUrl(reference);
+    if (post === null) {
+      return reject('invalid_url', `not a LinkedIn post URL: ${raw === '' ? '(empty)' : raw}`);
+    }
+
+    const parsed = parseReaction(item.reaction);
+    if (!parsed.ok) return reject('unknown_reaction', parsed.error);
+    // Absent means `like`. The one place this pipeline defaults where parseKind refuses to:
+    // a mis-defaulted campaign kind sends an unsendable request, a mis-defaulted reaction is
+    // cosmetic and retractable.
+    const reaction: Reaction = parsed.reaction ?? DEFAULT_REACTION;
+
+    // An all-whitespace comment is NO comment, not an empty one: stored as '' it would claim
+    // a slot against the daily comment cap and then try to publish nothing.
+    const trimmed = typeof item.comment === 'string' ? item.comment.trim() : '';
+    const comment = trimmed === '' ? null : trimmed;
+    if (comment !== null && comment.length > MAX_COMMENT) {
+      return reject('comment_too_long', `comment too long (max ${MAX_COMMENT} characters)`);
+    }
+
+    // Checked here so the answer names the row that already holds this post, rather than
+    // letting add()'s idempotence hand back a stranger's row as if it were new.
+    const existing = repos.engagements.findByUrn(post.urn);
+    if (existing) {
+      return reject('duplicate',
+        `already queued as engagement ${existing.id} (${existing.status})`);
+    }
+    return repos.engagements.add(post.url, post.urn, reaction, comment);
+  };
+
+  /**
+   * Enqueue one post (`{ post_url, reaction?, comment? }`) or many (`{ items: [...] }`).
+   *
+   * The only endpoint that puts work INTO the pipeline, so it is where validation earns its
+   * keep: a bad URN here becomes a browser opening the wrong page later.
+   */
+  app.post('/api/engagements', async (req, reply) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const bulk = Array.isArray(b.items);
+    // A non-object entry is mapped to {} rather than dropped, so it comes back as a named
+    // invalid_url reject instead of silently vanishing from the count.
+    const items: Record<string, unknown>[] = bulk
+      ? (b.items as unknown[]).map((x) =>
+        (typeof x === 'object' && x !== null ? x as Record<string, unknown> : {}))
+      : [b];
+    if (items.length === 0) return reply.code(400).send({ error: 'no items supplied' });
+
+    const raws = items.map((it) => (typeof it.post_url === 'string' ? it.post_url.trim() : ''));
+    // Expand a lnkd.in shortlink BEFORE validating. This is the one network call on the
+    // enqueue path, and it is deliberate: lnkd.in is a plain single-hop 301 with no JS
+    // interstitial, and shortlinks are the common real-world paste form (a mobile share sheet
+    // produces one). resolveShortlink is bounded and returns null rather than throwing, so a
+    // dead or slow link degrades to a named reject.
+    const expanded = await expandShortlinks(raws);
+
+    const created: Engagement[] = [];
+    const rejected: EngagementReject[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const outcome = createEngagement(items[i], raws[i], expanded[i]);
+      if ('reason' in outcome) rejected.push(outcome); else created.push(outcome);
+    }
+
+    if (created.length > 0) {
+      // Same reasoning as /api/lists: give the new backlog real slots now instead of leaving
+      // it untouched until the hourly tick. planAndAssignToday declines on its own while
+      // paused, halted, off-hours or on a non-sending day, so this adds no way to slip work
+      // past those gates.
+      planAndAssignToday(repos, new Date());
+      defaultLog.info('api', 'engagements enqueued', {
+        added: created.length, rejected: rejected.length,
+      });
+    }
+    // Re-read so the response reports the status planning just assigned, not the pre-plan one.
+    const rows = created.map((e) => repos.engagements.findById(e.id) ?? e);
+
+    if (!bulk) {
+      const bad = rejected[0];
+      if (bad) return reply.code(REJECT_STATUS[bad.reason]).send({ error: bad.message });
+      return reply.code(201).send(rows[0]);
+    }
+    return reply.code(201).send({ added: rows.length, engagements: rows, rejected });
+  });
+
+  app.get('/api/engagements', async (req, reply): Promise<unknown> => {
+    const q = req.query as { status?: string; limit?: string };
+    // An unknown status is a 400, not a silently-dropped filter — the same rule (and the same
+    // reason) as ?kind= on /api/profiles: an empty list looks like "no such rows".
+    //
+    // Object.hasOwn, NOT `in`: `'toString' in ENGAGEMENT_STATUSES` is true, so `in` would
+    // accept every inherited Object member as a status and answer with an empty list — the
+    // exact silent-empty-filter failure this check exists to prevent.
+    if (q.status !== undefined && !Object.hasOwn(ENGAGEMENT_STATUSES, q.status)) {
+      return reply.code(400).send({ error: `unknown status: ${q.status}` });
+    }
+    const raw = Number(q.limit);
+    // Anything non-finite, zero or negative falls back to the default; the ceiling caps both
+    // an absurd number and Infinity (Number('1e9999')), which SQLite could not bind anyway.
+    const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 500) : 200;
+    // DESC so a limit keeps the NEWEST rows. Ascending + LIMIT would hand back the oldest
+    // ones, which for a queue view is precisely backwards.
+    return repos.db.prepare(`
+      SELECT * FROM engagements
+      ${q.status !== undefined ? 'WHERE status = ?' : ''}
+      ORDER BY id DESC LIMIT ${limit}
+    `).all(...(q.status !== undefined ? [q.status] : [])) as unknown[];
+  });
+
+  app.get('/api/engagements/:id', async (req, reply) => {
+    const e = repos.engagements.findById(Number((req.params as { id: string }).id));
+    if (!e) return reply.code(404).send({ error: 'engagement not found' });
+    return e;
+  });
+
+  /**
+   * Retry re-runs the task, so it is only ever valid where nothing may have landed twice.
+   *
+   * `needs_attention` IS retryable, deliberately: parking an unverified comment exists so a
+   * human can open the post and decide, and retry is how they say "I checked, it did not
+   * post". The sender's comment step is guarded on commented_at, so a retry after a landed
+   * reaction re-drives only what is missing.
+   */
+  const RETRYABLE_ENGAGEMENT_STATUSES = new Set<EngagementStatus>([
+    'failed', 'needs_attention', 'skipped',
+  ]);
+
+  app.post('/api/engagements/:id/retry', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const e = repos.engagements.findById(id);
+    if (!e) return reply.code(404).send({ error: 'engagement not found' });
+    if (!RETRYABLE_ENGAGEMENT_STATUSES.has(e.status)) {
+      return reply.code(409).send({
+        error: `cannot retry a ${e.status} engagement — retry only applies to failed, needs_attention or skipped`,
+      });
+    }
+    repos.engagements.setStatus(id, 'queued', {
+      scheduled_for: null, last_error: null, skip_reason: null,
+    });
+    return { ok: true };
+  });
+
+  /** Terminal skip. Also the cancel path for a row that has not run yet. */
+  app.post('/api/engagements/:id/dismiss', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!repos.engagements.findById(id)) {
+      return reply.code(404).send({ error: 'engagement not found' });
+    }
+    // scheduled_for is cleared, not just superseded: a dismissed row holding a future slot
+    // would keep answering /api/status's "next scheduled" question.
+    repos.engagements.setStatus(id, 'skipped', {
+      last_error: null, skip_reason: 'dismissed', scheduled_for: null,
+    });
+    return { ok: true };
+  });
+
   app.get('/api/metrics', async () => {
     const rows = repos.db.prepare(`
       SELECT p.cohort_id, c.name AS cohort_name, p.kind, p.status, p.sent_at, p.accepted_at, p.replied_at
@@ -768,15 +1068,39 @@ export function buildServer(
     return { ok: true, retried: targets.length };
   });
 
-  // Problem profiles for the Attention tab: failed + needs_attention with their errors.
-  app.get('/api/attention', async () =>
-    repos.db.prepare(`
+  /**
+   * Everything stuck for the Attention tab: failed + needs_attention, from BOTH pipelines.
+   *
+   * Two row shapes in one list, so each carries a `source` discriminator. Without it the
+   * client cannot tell a post from a person — and would POST an engagement's id to
+   * /api/profiles/:id/retry, which is a different table with its own ids: a retry aimed at
+   * whatever profile happens to share that number. The tag is on the profile rows too, not
+   * only the new ones; a discriminator only one side carries is one every reader has to
+   * guess about.
+   *
+   * Profiles first, then engagements, each newest-first. Ids are per-table, so there is no
+   * meaningful single order to interleave them into.
+   */
+  app.get('/api/attention', async () => {
+    const profiles = repos.db.prepare(`
       SELECT p.id, p.profile_url, p.kind, p.status, p.last_error, p.attempts,
              p.sent_at, p.scheduled_for, c.name AS cohort_name
       FROM profiles p JOIN cohorts c ON c.id = p.cohort_id
       WHERE p.status IN ('failed','needs_attention')
       ORDER BY p.id DESC
-    `).all());
+    `).all() as unknown[];
+    const engagements = repos.db.prepare(`
+      SELECT id, post_url, post_urn, reaction, comment_text, status, last_error, attempts,
+             scheduled_for, reacted_at, commented_at
+      FROM engagements
+      WHERE status IN ('failed','needs_attention')
+      ORDER BY id DESC
+    `).all() as unknown[];
+    return [
+      ...profiles.map((r) => ({ source: 'profile' as const, ...(r as object) })),
+      ...engagements.map((r) => ({ source: 'engagement' as const, ...(r as object) })),
+    ];
+  });
 
   // Retry re-queues the profile for a FRESH send, so it is only ever valid for a profile
   // that never landed a send. Retrying a `replied`/`accepted`/`sent` row would message the
