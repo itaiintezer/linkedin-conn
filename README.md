@@ -14,11 +14,27 @@ without the terminal detail.
 | | |
 |---|---|
 | **Node.js** | **22.13 or newer** (22.13 is the first release where the built-in `node:sqlite` works without a command-line flag — 22.5–22.12 install fine and then crash on boot). Get it from [nodejs.org](https://nodejs.org). |
+| **git** | To clone the repo and to take updates with `npm run update`. macOS: `xcode-select --install`. Windows: [git-scm.com](https://git-scm.com/download/win). Linux: your package manager. The app itself runs without it; only updating needs it. |
 | **OS** | macOS (Apple Silicon or Intel), Windows 10/11 **x64**, or Linux (x64/arm64). Windows on ARM is not supported — the stealth browser has no arm64 Windows build. |
 | **Disk** | ~1.5 GB free: `npm install` downloads a patched Chromium (~1 GB installed) that The Machine drives. |
 | **Network** | Needed during install to fetch npm packages and that browser. |
 
 No compiler, no Python, no native build step — `node:sqlite` is built into Node.
+
+## Get the code
+
+```bash
+git clone https://github.com/itaiintezer/linkedin-conn.git
+cd linkedin-conn
+```
+
+That creates a `linkedin-conn` folder wherever you ran it. Clone it somewhere you own —
+Documents, your home folder, Downloads — not `/Applications` or `C:\Program Files`, because
+The Machine writes its database (`data/`) and browser profile (`.linkedin-profile/`) next to
+its own files. Everything below is run from inside that folder.
+
+Cloning rather than downloading a zip is what makes [Updating](#updating) a single command
+later.
 
 ## Install
 
@@ -75,13 +91,52 @@ Two environment variables opt out, for CI and offline machines:
 |  | macOS | Windows |
 |---|---|---|
 | Terminal | Terminal or iTerm | PowerShell (or Windows Terminal) |
-| Go to the folder | `cd ~/Downloads/the-machine` | `cd $HOME\Downloads\the-machine` |
+| Go to the folder | `cd ~/linkedin-conn` | `cd $HOME\linkedin-conn` |
 | Run on another port | `PORT=4401 npm start` | `$env:PORT=4401; npm start` |
 | Browser cache lives in | `~/.cloakbrowser` | `%USERPROFILE%\.cloakbrowser` |
+
+## Updating
+
+```bash
+npm run update
+```
+
+Run it from The Machine's folder, with the app **stopped** (`Ctrl+C` first). It:
+
+1. Refuses if The Machine is still running, if git is missing, if this folder wasn't cloned,
+   if you're not on `main`, or if you have local edits that a pull would try to merge. Each
+   refusal says what to do, and nothing has been changed when it stops.
+2. Copies `data/app.db` to `data/backups/app.db.<timestamp>`, keeping the newest 5.
+3. `git pull --ff-only`, then `npm install` to pick up any new dependencies.
+4. Prints what changed. Then start it again with `npm start`.
+
+**Your data is never at risk from an update.** The queue, the connection roster, your
+settings, your Apify key and your LinkedIn login live in `data/` and `.linkedin-profile/` —
+neither is tracked by git, so a pull cannot touch either. Schema changes are applied
+automatically on the next boot.
+
+By hand, if you'd rather — stop the app first, and note that you're taking the backup on
+yourself:
+
+```bash
+cp data/app.db data/app.db.bak   # PowerShell: copy data\app.db data\app.db.bak
+git pull --ff-only
+npm install
+npm start
+```
+
+## Where things live
 
 Install into a folder you own (Documents, home, Downloads) — not `/Applications`,
 `C:\Program Files`, or another location needing admin rights. The Machine writes its
 database (`data/`) and browser profile (`.linkedin-profile/`) next to its own files.
+
+| Path | What it is | In git? |
+|---|---|---|
+| `data/app.db` | Queue, cohorts, roster, settings, Apify key | no |
+| `data/backups/` | Pre-update database copies (newest 5) | no |
+| `data/incidents/` | Screenshots of pages that tripped a checkpoint | no |
+| `.linkedin-profile/` | Your logged-in browser session | no |
 
 ## First run
 
@@ -281,7 +336,7 @@ is there for when you want a run to begin this second.
 - **Staying current:** anyone new is enriched automatically, and everyone is re-scraped
   after 180 days (`enrich_ttl_days`) so job changes don't rot the data. Steady state is a few
   cents a day.
-- **While paused:** automatic enrichment stands down, so a paused Relay never spends money on
+- **While paused:** automatic enrichment stands down, so a paused Machine never spends money on
   its own. **Start enrichment** still works if you want a run anyway.
 
 Some people can't be scraped — restricted or deleted profiles come back empty. Those are
@@ -405,6 +460,10 @@ Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 | **Connect LinkedIn** hangs for minutes on first click | The browser wasn't downloaded at install time. Run `npm run install-browser`. |
 | `npm start` warns that port 4400 is in use | Another copy is already running — use it, or start on another port (see platform notes). |
 | `npm start` fails to launch the browser, or the window never appears | A previous run was killed instead of `Ctrl+C`, leaving an orphaned browser holding `.linkedin-profile`. Quit any leftover Chromium windows (Task Manager / Activity Monitor: `chrome`/`Chromium`), then start again. |
+| `npm run update` says **The Machine: still running on port 4400** | Press `Ctrl+C` in the terminal running `npm start` and wait for the prompt, then retry. Don't close the window instead — that orphans the browser. |
+| `npm run update` says **Local changes** and lists files | Something in the folder was edited. `git checkout -- .` discards those edits (your queue and login aren't in git, so they're unaffected), or `git stash` keeps them for later. |
+| `npm run update` says **git refused to fast-forward** | This copy has commits the published version doesn't. Nothing was changed. Easiest fix: clone fresh into a new folder and copy your old `data/` across. |
+| `npm run update` says **this folder was not cloned with git** | You have a zip copy. Clone the repo, then copy your old `data/` folder into the new one. |
 | A message sits in **Needs attention** saying `interrupted mid-send` | The app stopped (crash, Task Manager, antivirus) while that DM was mid-flight, and nothing in the queue records whether it actually went out — the name, thread link and send log are all written from an outcome that never arrived. Open that conversation on LinkedIn: if the message is there, dismiss the row; if not, retry it. Invites in the same situation recover automatically, because a duplicate invite is harmless and a duplicate DM isn't. |
 
 ## Tests
@@ -421,3 +480,8 @@ LinkedIn changes its HTML periodically. All selectors live in
 `src/browser/linkedin-selectors.ts` (with the event picker's in `event-selectors.ts` and the
 post reaction bar and comment box in `post-selectors.ts`) — update them there if sends start
 failing.
+
+## Licence
+
+Internal use only — see [LICENSE](LICENSE). The source is public so colleagues can clone it;
+that is not a grant to redistribute it.

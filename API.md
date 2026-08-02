@@ -426,9 +426,9 @@ guardrail — the only limits are money and your Apify plan's concurrency
 whatever put it there — an import, roster discovery of a new connection, the TTL staleness
 sweep, or recovery after a crash. So the roster converges on fully-enriched without anyone
 clicking anything, and `POST /api/enrichment/start` exists for forcing a run (it also works
-while Relay is paused, which the automatic tick does not).
+while The Machine is paused, which the automatic tick does not).
 
-The tick stands down while Relay is **paused** — pause is the operator's "stop doing things"
+The tick stands down while The Machine is **paused** — pause is the operator's "stop doing things"
 switch, so it stops unattended spending too. It deliberately **ignores a tripped guardrail**,
 which is about LinkedIn session health and has no bearing on Apify.
 

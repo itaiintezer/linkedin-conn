@@ -12,13 +12,23 @@ machine (Windows on ARM won't work), or any Mac from the last several years.
 1. Install **Node.js 22.13 or newer** from https://nodejs.org — take the big green **LTS**
    button. If you already have Node, check the version with `node -v`; anything below
    22.13 must be updated, or The Machine won't start.
-2. Get The Machine folder onto your machine (ask whoever shared it for the zip or repo
-   link). Put it somewhere you own — Documents, Downloads or your home folder. Not
-   `Program Files` or `Applications`.
-3. Open a terminal **in The Machine folder**:
-   - **Mac:** right-click the folder → *Services* → *New Terminal at Folder*.
-   - **Windows:** open the folder in File Explorer, right-click empty space →
-     *Open in Terminal* (or type `powershell` in the address bar).
+2. Install **git**, if you don't have it. Check with `git --version`.
+   - **Mac:** run `xcode-select --install` and accept the prompt.
+   - **Windows:** download it from https://git-scm.com/download/win and click through the
+     installer, accepting every default.
+
+   You need it for step 3, and again later every time you want the newest version.
+3. Open a terminal — **Mac:** Terminal (in Applications → Utilities); **Windows:** search
+   the Start menu for *PowerShell*. Then get your own copy of The Machine by running:
+   ```
+   git clone https://github.com/itaiintezer/linkedin-conn.git
+   cd linkedin-conn
+   ```
+   The first line downloads a folder called `linkedin-conn`; the second moves you into it.
+   Run it from somewhere you own — your home folder, Documents or Downloads is fine, and
+   that's where a plain terminal starts you. Not `Program Files` or `Applications`.
+
+   Every command from here on is typed into that same terminal window, in that folder.
 4. Run:
    ```
    npm install
@@ -27,17 +37,11 @@ machine (Windows on ARM won't work), or any Mac from the last several years.
    missing (wrong Node version, no npm, unsupported computer). Then it downloads the
    browser The Machine drives — **about 1 GB, a few minutes, once ever**. It's not stuck;
    wait for it to finish.
-5. **Updating an existing install?** Before the first `npm start` after this update, copy
-   `data/app.db` somewhere safe. The first boot upgrades that file in place (it rebuilds the
-   profiles table to add the invite/message distinction). The Machine also snapshots it for
-   you as `data/app.db.pre-kind-backup` before touching anything, but a copy you made
-   yourself is the one you'll trust at 5pm. A brand-new install has no `data/app.db` yet —
-   skip this step.
-6. Run:
+5. Run:
    ```
    npm start
    ```
-7. Open your browser to **http://localhost:4400**.
+6. Open your browser to **http://localhost:4400**.
 
 Leave the terminal window open — that's the engine. To stop sending, click into that
 window and press **Ctrl+C**. Don't just close the window: that can leave the hidden
@@ -45,6 +49,9 @@ LinkedIn browser running and block the next start.
 
 If anything above fails, run `npm run preflight` — it lists every requirement with a
 one-line fix for whatever is wrong.
+
+You only ever do this once. When a newer version comes out, you don't repeat any of it —
+see **§12, Getting a newer version**.
 
 ## 2. Connect your LinkedIn (first run)
 A setup wizard appears the first time.
@@ -229,6 +236,8 @@ from someone you hadn't. Treat **Replied** as a floor, and your LinkedIn inbox a
   `Chromium`), then `npm start` again.
 - **Stop everything** → click the terminal running `npm start` and press **Ctrl+C**. Wait
   for it to return to a prompt. Only then close the window.
+- **`npm run update` refused to run** → that's it working as intended; it stops before
+  changing anything. The `FAIL` line says what to fix — see §12.
 
 ## 10. Your connection list
 Separate from campaigns, The Machine keeps a list of everyone you're actually connected to,
@@ -256,8 +265,8 @@ connections, once.
 It takes a couple of hours for a large list. You can close the page; it keeps going, and
 **Pause** stops it safely — restarting picks up exactly where it left off. This does not use
 your LinkedIn session at all, so it can't get your account flagged and isn't slowed down for
-safety like sending is. Pausing The Machine also pauses looking people up, so a paused Relay
-never spends money while you're away.
+safety like sending is. Pausing The Machine also pauses looking people up, so it never spends
+money while you're away.
 
 A few people can't be looked up (deleted accounts, locked-down profiles). They're marked and
 not retried, since each attempt costs money. **Retry failed** tries them again if you want.
@@ -352,3 +361,38 @@ exits non-zero if any line says FAIL, so it can be run from another script.
   nothing.
 
 Click any row to see everything The Machine knows about that person.
+
+## 12. Getting a newer version
+When The Machine is improved, you get the improvements by running one command. You do **not**
+download anything again, reinstall Node, or log in to LinkedIn again.
+
+1. **Stop it.** Click the terminal window running The Machine and press **Ctrl+C**. Wait for
+   it to come back to a prompt.
+2. Run:
+   ```
+   npm run update
+   ```
+3. Start it again:
+   ```
+   npm start
+   ```
+
+**Nothing you've built up is lost.** Your queue, your cohorts, your connection list, your
+settings, your Apify key and your LinkedIn login are all stored outside the part that gets
+updated. An update cannot touch them. Before it changes anything, it also copies your
+database to `data/backups/`, keeping the five most recent copies.
+
+**If it refuses, read the line marked `FAIL`.** It stops *before* changing anything and tells
+you what to do. The three you might see:
+
+- **"still running on port 4400"** — you skipped step 1. Press Ctrl+C in the other terminal
+  window and try again. Don't close the window instead: that can leave the hidden LinkedIn
+  browser running and block the next start.
+- **"N files in this folder have been edited"** — something changed files in the folder. If
+  you didn't do it deliberately, run `git checkout -- .` to put them back, then try again.
+  This does not touch your queue or your login.
+- **"git refused to fast-forward"** — rare, and it means this copy has drifted from the
+  published one. Nothing was changed and The Machine still works. Ask whoever maintains it.
+
+**How do I know there's a new version?** Whoever maintains The Machine will tell you. Running
+`npm run update` when there's nothing new is harmless — it says "Already up to date" and stops.
