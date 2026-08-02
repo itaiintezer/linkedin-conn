@@ -81,6 +81,28 @@ export const PSEL = {
    */
   postContainer: 'div[data-urn][role="article"]',
 
+  /**
+   * The post-detail shell — the wrapper that holds the ONE post the URL names.
+   *
+   * `postContainer` is matched page-wide, and its `data-urn` is fed straight into
+   * `reconcileUrn`, which rewrites the row's identity unconditionally. `.first()` therefore
+   * makes DOM ORDER the post's identity: the day LinkedIn renders a related post above the
+   * target, the engine reacts to the wrong post AND re-keys the row onto it, with nothing to
+   * notice. Scoping to this shell is what removes the assumption.
+   *
+   * `div.update-outlet`, not `main[aria-label="Feed detail update"]` or the same element's
+   * `aria-label="Update container"`: those are English, and this repo has been burned by a
+   * Hebrew cold-load render. The class is the language-independent half of the same element.
+   * All six live dumps (data/incidents/*-post-engage/full-page.html — both an individual's
+   * and a company's post, reached from both a `/feed/update/` and a `/posts/…-share-…` URL)
+   * carry EXACTLY ONE, always inside that `<main>`, always containing the post container.
+   *
+   * Worth recording: those dumps hold exactly one `div[data-urn][role="article"]` page-wide
+   * — no related posts at all. So `.first()` is unambiguous on the pages we have actually
+   * seen; this scope is about the layout change we have not.
+   */
+  detailShell: 'div.update-outlet',
+
   /** The post-level action bar. Absent from comment social bars, which is what makes it the
    *  scope that separates the post's own controls from every comment's. */
   actionBar: 'div.feed-shared-social-action-bar',

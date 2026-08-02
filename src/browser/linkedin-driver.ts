@@ -689,8 +689,7 @@ export class LinkedInDriver implements BrowserDriver {
         if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
       }
 
-      const post = page.locator(PSEL.postContainer).first();
-      await post.waitFor({ state: 'attached', timeout: POST_LOAD_TIMEOUT_MS }).catch(() => {});
+      const post = await this.resolvePostContainer(page);
       if (await post.count()) {
         observedUrn = (await post.getAttribute('data-urn').catch(() => null)) ?? undefined;
       }
@@ -750,6 +749,39 @@ export class LinkedInDriver implements BrowserDriver {
   }
 
   /**
+   * The post container for the URL we just navigated to — waited for, then scoped.
+   *
+   * Both engagement steps read `data-urn` off this element and hand it to `reconcileUrn`,
+   * which rewrites the row's identity unconditionally. A page-wide `.first()` therefore
+   * makes DOM order the post's identity: a layout change that renders a related post above
+   * the target would engage the wrong post AND re-key the row onto it, silently. Scoping to
+   * the detail shell is what makes the choice structural instead of positional.
+   *
+   * The wait is on the page-wide locator, exactly as before, so nothing here costs extra
+   * time: it only asks "has a post rendered yet". The shell is then preferred if it resolved
+   * unambiguously. Two shells means this is not a single-post detail page (a feed, say),
+   * where DOM order tells us nothing anyway — so that falls back with the page-wide locator,
+   * which is today's behaviour, and logs. An absent container is left absent: the callers'
+   * `count()` checks turn it into `unavailable`, which counts toward the failure streak.
+   */
+  private async resolvePostContainer(page: Page): Promise<Locator> {
+    const wide = page.locator(PSEL.postContainer).first();
+    await wide.waitFor({ state: 'attached', timeout: POST_LOAD_TIMEOUT_MS }).catch(() => {});
+
+    const shell = page.locator(PSEL.detailShell);
+    if (await shell.count() === 1) {
+      const scoped = shell.locator(PSEL.postContainer).first();
+      if (await scoped.count()) return scoped;
+    }
+
+    if (await wide.count()) {
+      log.warn('engage', 'post container resolved outside the detail shell — its identity rests on DOM order',
+        { url: page.url() });
+    }
+    return wide;
+  }
+
+  /**
    * Hover the react trigger and resolve one reaction's flyout entry, or null.
    *
    * The flyout mounts on hover: `reactions-menu` appears in no pre-hover page dump and is gone
@@ -805,8 +837,7 @@ export class LinkedInDriver implements BrowserDriver {
         if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
       }
 
-      const post = page.locator(PSEL.postContainer).first();
-      await post.waitFor({ state: 'attached', timeout: POST_LOAD_TIMEOUT_MS }).catch(() => {});
+      const post = await this.resolvePostContainer(page);
       if (await post.count()) {
         observedUrn = (await post.getAttribute('data-urn').catch(() => null)) ?? undefined;
       }

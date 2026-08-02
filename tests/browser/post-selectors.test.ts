@@ -148,6 +148,15 @@ test('the post container is matched on its two semantic attributes', () => {
   expect(PSEL.postContainer).toBe('div[data-urn][role="article"]');
 });
 
+test('the detail shell scopes that container without depending on English', () => {
+  // postContainer is page-wide and its data-urn becomes the row's identity via reconcileUrn,
+  // so the shell is what stops DOM order from deciding which post a row IS. The same element
+  // carries aria-label="Update container" inside main[aria-label="Feed detail update"] —
+  // both English, both unusable for a surface that has rendered Hebrew on a cold load.
+  expect(PSEL.detailShell).toBe('div.update-outlet');
+  expect(PSEL.detailShell).not.toContain('aria-label');
+});
+
 test('composer selectors match the live Quill editor and form', () => {
   expect(PSEL.commentForm).toBe('form.comments-comment-box__form');
   expect(PSEL.commentEditor).toBe('div.ql-editor[contenteditable="true"][role="textbox"]');
