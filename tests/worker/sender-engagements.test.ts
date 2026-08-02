@@ -3,6 +3,7 @@ import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { runSenderOnce, type SenderOptions } from '../../src/worker/sender.js';
+import { recoverOrphanedEngagements, resortSchedule } from '../../src/worker/scheduler-service.js';
 
 let repos: Repos; let driver: FakeDriver;
 beforeEach(() => {
@@ -256,4 +257,100 @@ test('a genuine reaction DOES reset the failure streak', async () => {
   repos.appState.incFailureStreak();
   await run(NOW);
   expect(repos.appState.get().failure_streak).toBe(0);
+});
+
+// --- Crash recovery --------------------------------------------------------------------
+// The sender marks a row 'sending' before driving the browser, so an abrupt exit strands it
+// there forever. Recovery has to GUESS from the timestamps, and the guess is three-way
+// because a duplicate Like is free while a duplicate published comment is not.
+
+test('crash before the reaction: requeue — a repeated Like is idempotent', () => {
+  const e = seed(1, 'hi');
+  repos.engagements.setStatus(e.id, 'sending', {});
+  recoverOrphanedEngagements(repos);
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.status).toBe('queued');
+  expect(row.scheduled_for).toBeNull();
+});
+
+test('crash after a reaction-only task reacted: it provably finished', () => {
+  const e = seed(1);
+  repos.engagements.setStatus(e.id, 'sending', { reacted_at: REACTED_EARLIER });
+  recoverOrphanedEngagements(repos);
+  expect(repos.engagements.findById(e.id)!.status).toBe('sent');
+});
+
+test('crash straddling the comment: park, never requeue', () => {
+  const e = seed(1, 'hi');
+  repos.engagements.setStatus(e.id, 'sending', { reacted_at: REACTED_EARLIER });
+  recoverOrphanedEngagements(repos);
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.last_error).toMatch(/may have posted/);
+});
+
+test('crash after everything landed: mark sent', () => {
+  const e = seed(1, 'hi');
+  repos.engagements.setStatus(e.id, 'sending', {
+    reacted_at: REACTED_EARLIER, commented_at: REACTED_EARLIER,
+  });
+  recoverOrphanedEngagements(repos);
+  expect(repos.engagements.findById(e.id)!.status).toBe('sent');
+});
+
+test('rows not in sending are untouched', () => {
+  const e = seed(1);
+  recoverOrphanedEngagements(repos);
+  expect(repos.engagements.findById(e.id)!.status).toBe('scheduled');
+});
+
+test('the requeued attempt is not refunded — attempts stays where the sender left it', () => {
+  // Mirrors recoverOrphanedSending: the attempt WAS consumed, so the count must not be
+  // rewound. Rewinding it would hide a crash-loop from the attention view entirely.
+  const e = seed(1);
+  repos.engagements.setStatus(e.id, 'sending', { attempts: 1 });
+  recoverOrphanedEngagements(repos);
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.status).toBe('queued');
+  expect(row.attempts).toBe(1);
+});
+
+test('a requeued row is re-planned into a slot rather than left stranded in queued', () => {
+  // Recovery only returns the row to the queue; something must then give it a slot, or the
+  // rescue is cosmetic. resortSchedule is what start() runs immediately afterwards.
+  const e = seed(1);
+  repos.engagements.setStatus(e.id, 'sending', {});
+  recoverOrphanedEngagements(repos);
+  resortSchedule(repos, NOW, () => 0.5);
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.status).toBe('scheduled');
+  expect(row.scheduled_for).not.toBeNull();
+});
+
+test('resortSchedule cannot undo a parked recovery', () => {
+  // resortSchedule requeues EVERY scheduled row. A parked (or completed) recovery must be
+  // out of its reach, or the startup re-sort would hand a maybe-published comment straight
+  // back to the sender.
+  const parked = seed(1, 'hi');
+  repos.engagements.setStatus(parked.id, 'sending', { reacted_at: REACTED_EARLIER });
+  const done = seed(2);
+  repos.engagements.setStatus(done.id, 'sending', { reacted_at: REACTED_EARLIER });
+  recoverOrphanedEngagements(repos);
+  resortSchedule(repos, NOW, () => 0.5);
+  expect(repos.engagements.findById(parked.id)!.status).toBe('needs_attention');
+  expect(repos.engagements.findById(done.id)!.status).toBe('sent');
+});
+
+test('the unreachable fourth state (commented but never reacted) requeues without re-commenting', async () => {
+  // Nothing writes commented_at without reacted_at today. If a future path ever did, the
+  // reacted_at===null branch claims it — and that is the safe landing: the sender's own
+  // comment guard is `commented_at === null`, so the replay reacts and stops.
+  const e = seed(1, 'hi');
+  repos.engagements.setStatus(e.id, 'sending', { commented_at: REACTED_EARLIER });
+  recoverOrphanedEngagements(repos);
+  expect(repos.engagements.findById(e.id)!.status).toBe('queued');
+  repos.engagements.setScheduled(e.id, DUE); // stand in for the planner, minus its slot maths
+  await run(NOW);
+  expect(driver.reactLog).toHaveLength(1);
+  expect(driver.commentLog).toHaveLength(0); // never re-published
 });

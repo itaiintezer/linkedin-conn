@@ -309,3 +309,52 @@ export function recoverOrphanedSending(repos: Repos): number {
   }
   return stuck.length;
 }
+
+/**
+ * Rescue engagements abandoned in 'sending' by an abrupt exit.
+ *
+ * Nothing in the row says whether the browser action landed, so recovery is decided by what
+ * the timestamps PROVE — which is why this pipeline splits reacted_at from commented_at
+ * instead of carrying one sent_at:
+ *
+ *  - no reacted_at: nothing was published. Requeue — the driver reads reaction state before
+ *    clicking and reports `already`, so a second pass cannot toggle off a live reaction.
+ *  - reacted_at, no comment wanted: the task's only work provably completed. Mark it sent.
+ *  - reacted_at, comment wanted, no commented_at: the crash straddled the comment. Park as
+ *    needs_attention and NEVER requeue — a duplicate published comment is visible to real
+ *    people and cannot be cleanly unsent. Same doctrine as an interrupted DM.
+ *  - both stamped: everything landed. Mark it sent.
+ *
+ * `attempts` is left as-is on every branch, exactly as recoverOrphanedSending does: the
+ * attempt was consumed, and rewinding the count would hide a crash loop from the operator.
+ *
+ * STARTUP-ONLY: the browser is in-process, so a fresh process has nothing genuinely in
+ * flight. Never call this mid-run, where a 'sending' row is a live engagement.
+ */
+export function recoverOrphanedEngagements(repos: Repos): number {
+  const stuck = repos.engagements.byStatus('sending');
+  let requeued = 0; let completed = 0; let parked = 0;
+  for (const e of stuck) {
+    if (e.reacted_at === null) {
+      // Also where the (currently unreachable) commented-but-never-reacted row lands, and it
+      // is the safe landing: the sender's comment step is guarded on commented_at === null,
+      // so the replay reacts and stops rather than publishing a second comment.
+      repos.engagements.setStatus(e.id, 'queued', { scheduled_for: null });
+      requeued++;
+    } else if (e.comment_text !== null && e.commented_at === null) {
+      repos.engagements.setStatus(e.id, 'needs_attention', {
+        scheduled_for: null,
+        last_error: 'interrupted mid-comment — it may have posted; check the post before retrying',
+      });
+      parked++;
+    } else {
+      repos.engagements.setStatus(e.id, 'sent', {});
+      completed++;
+    }
+  }
+  if (stuck.length > 0) {
+    log.info('scheduler', 'recovered orphaned engagements',
+      { requeued, completed, needs_attention: parked });
+  }
+  return stuck.length;
+}

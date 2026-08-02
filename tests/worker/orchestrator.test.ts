@@ -260,6 +260,31 @@ test('start() recovers a profile stranded in sending by a mid-send crash', () =>
   expect(repos.profiles.findById(p.id)!.status).not.toBe('sending');
 });
 
+test('start() recovers engagements stranded in sending, each by what its timestamps prove', () => {
+  // All three branches, driven through start() rather than the function directly — the
+  // question is not only "does it decide correctly" but "does anything in start() undo it".
+  // resortSchedule runs immediately after and requeues every SCHEDULED engagement, so the
+  // parked and completed rows must be out of its reach by the time it runs.
+  const before = repos.engagements.add('u1', 'urn:li:activity:1', 'like', 'hi');
+  repos.engagements.setStatus(before.id, 'sending', { attempts: 1 });
+
+  const reactedOnly = repos.engagements.add('u2', 'urn:li:activity:2', 'like', null);
+  repos.engagements.setStatus(reactedOnly.id, 'sending', { reacted_at: '2026-06-30T09:00:00.000Z' });
+
+  const midComment = repos.engagements.add('u3', 'urn:li:activity:3', 'like', 'hi');
+  repos.engagements.setStatus(midComment.id, 'sending', { reacted_at: '2026-06-30T09:00:00.000Z' });
+
+  const orch = new Orchestrator(repos, driver);
+  orch.start();
+  orch.stop();
+
+  // Requeued, then handed to the planner by the same startup pass — never left in 'sending'.
+  expect(['queued', 'scheduled']).toContain(repos.engagements.findById(before.id)!.status);
+  expect(repos.engagements.findById(before.id)!.attempts).toBe(1); // the attempt was consumed
+  expect(repos.engagements.findById(reactedOnly.id)!.status).toBe('sent');
+  expect(repos.engagements.findById(midComment.id)!.status).toBe('needs_attention');
+});
+
 // Local-component Date constructors: daySlot slices the LOCAL day, so building
 // these from a UTC ISO string would make the slot boundary timezone-dependent.
 const localAt = (h: number, m = 0) => new Date(2026, 6, 31, h, m, 0, 0);
