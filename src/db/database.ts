@@ -51,6 +51,14 @@ export function openDatabase(path: string): DB {
       copyFileSync(path, backupPath);
     }
   }
+  // Safety net before the log-timestamp rebuild rewrites every send_log/profile_events row.
+  // Same shape as the two snapshots above, and schema-detectable for the same reason the
+  // pre-kind one is: CREATE TABLE IF NOT EXISTS above cannot change an existing table's
+  // DEFAULT, so a legacy table still declares datetime('now') at this point. A fresh
+  // database was just created with the ISO default and is correctly skipped.
+  if (path !== ':memory:' && logTablesNeedIsoRebuild(db)) {
+    snapshotOnce(db, path, 'pre-log-iso-backup');
+  }
   runMigrations(db);
   return db;
 }
@@ -73,6 +81,90 @@ export function snapshotOnce(db: DB, path: string, suffix: string): boolean {
   db.exec('PRAGMA wal_checkpoint(TRUNCATE);'); // fold the WAL in — a bare file copy misses it
   copyFileSync(path, dest);
   return true;
+}
+
+/** The exact shape toISOString() produces, as a SQLite expression and a GLOB. */
+const ISO_NOW_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+const ISO_GLOB = "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'";
+
+/** The two tables whose `at` column was written by the datetime('now') default. */
+const LOG_TABLES = [
+  { table: 'send_log', payload: 'outcome', index: 'CREATE INDEX IF NOT EXISTS idx_send_log_at ON send_log(at)' },
+  { table: 'profile_events', payload: 'event_type', index: 'CREATE INDEX IF NOT EXISTS idx_events_type ON profile_events(event_type)' },
+] as const;
+
+/**
+ * True when `table` exists and still declares the legacy `datetime('now')` default on `at`.
+ *
+ * Detection is on the STORED CREATE statement, not the data: a table whose rows happen to
+ * have been repaired but whose default is still the space form is exactly the trap this
+ * rebuild closes, so the default is what decides. `at` is the only defaulted column in
+ * either table, which is what makes the substring test precise.
+ *
+ * Checked per table rather than once for both: a production database has both, but isolated
+ * migration tests build partial fixtures, and one missing table must not skip — or crash —
+ * the rebuild of the other.
+ */
+function needsIsoRebuild(db: DB, table: string): boolean {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(table) as
+    unknown as { sql: string } | undefined;
+  return row !== undefined && row.sql.includes("datetime('now')");
+}
+
+/** Whether any log table needs the rebuild — openDatabase's cue to snapshot the file first. */
+function logTablesNeedIsoRebuild(db: DB): boolean {
+  return LOG_TABLES.some(({ table }) => needsIsoRebuild(db, table));
+}
+
+/**
+ * Rebuild send_log/profile_events with the ISO default and a shape CHECK, converting stored
+ * values in the same pass.
+ *
+ * A rebuild rather than an UPDATE of the values, because an in-place repair cannot change a
+ * column DEFAULT and SQLite cannot ALTER one in: the production table would keep emitting the
+ * space form for the next INSERT that omits `at`, which is precisely how the bug survived.
+ * Nothing FK-references these two tables, so unlike the profiles rebuild there is nothing to
+ * re-point — but foreign_keys is suspended anyway, since both hold an FK *to* profiles and
+ * the swap drops the child table out from under it.
+ *
+ * strftime() returns NULL for anything it cannot parse, which the NOT NULL then rejects and
+ * the transaction rolls back on. That is deliberate: a timestamp this code cannot interpret
+ * is a row that would silently drop out of the weekly counter, which is the bug, not the fix.
+ */
+function rebuildLogTablesAsIso(db: DB): void {
+  if (!logTablesNeedIsoRebuild(db)) return;
+  // PRAGMA foreign_keys is a no-op inside a transaction, so it is toggled outside the
+  // BEGIN/COMMIT below; restored in `finally` regardless of how the transaction ends.
+  db.exec('PRAGMA foreign_keys = OFF;');
+  try {
+    db.exec('BEGIN');
+    for (const { table, payload, index } of LOG_TABLES) {
+      if (!needsIsoRebuild(db, table)) continue;
+      db.exec(`DROP TABLE IF EXISTS ${table}_new`); // stale table from an interrupted earlier attempt
+      db.exec(`
+        -- Keep in sync with ${table} in schema.sql.
+        CREATE TABLE ${table}_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          profile_id INTEGER NOT NULL REFERENCES profiles(id),
+          ${payload} TEXT NOT NULL,
+          at TEXT NOT NULL DEFAULT (${ISO_NOW_SQL}) CHECK (at GLOB ${ISO_GLOB})
+        );
+      `);
+      // Ids are preserved so anything holding one still resolves. strftime() is a no-op on a
+      // value that is already this shape, which is what makes a re-run harmless.
+      db.exec(`
+        INSERT INTO ${table}_new (id, profile_id, ${payload}, at)
+        SELECT id, profile_id, ${payload}, strftime('%Y-%m-%dT%H:%M:%fZ', at) FROM ${table};
+      `);
+      db.exec(`DROP TABLE ${table}; ALTER TABLE ${table}_new RENAME TO ${table}; ${index};`);
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+    throw e;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
 }
 
 /** Idempotent schema migrations for databases created before a column existed. */
@@ -329,4 +421,9 @@ export function runMigrations(db: DB): void {
       db.exec('PRAGMA foreign_keys = ON;');
     }
   }
+
+  // --- send_log/profile_events timestamp normalisation (2026-08-02) ---
+  // Runs last, after the profiles rebuild above has settled the table these two reference.
+  // No-op on a fresh database and on a second run: see rebuildLogTablesAsIso.
+  rebuildLogTablesAsIso(db);
 }

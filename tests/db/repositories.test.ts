@@ -146,6 +146,40 @@ test('countSentSince counts per kind via the profile join', () => {
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'message')).toBe(1);
 });
 
+// ── send_log / profile_events timestamp format ──────────────────────────────────────────
+// countSentSince compares `at` as TEXT against windowStartIso(), which is toISOString().
+// TEXT >= TEXT is only a chronological comparison while both sides are that one shape.
+// These pin it. See the same reasoning, and the CHECK that enforces it, on `engagements`.
+
+test('recordSend stores `at` in the toISOString() shape countSentSince compares against', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/x', null);
+  repos.events.recordSend(p.id, 'sent');
+  const row = repos.db.prepare('SELECT at FROM send_log').get() as unknown as { at: string };
+  expect(row.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+});
+
+test('recordEvent stores `at` in the same shape', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/x', null);
+  repos.events.recordEvent(p.id, 'accepted');
+  const row = repos.db.prepare('SELECT at FROM profile_events').get() as unknown as { at: string };
+  expect(row.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+});
+
+// The boundary that the space-form got wrong. A different-date case passes even with the
+// bug present (byte 0-9 decides it before reaching the separator), so it would give false
+// confidence — the window start here shares its calendar date with both sends, which is
+// exactly when byte 10 (' ' 0x20 vs 'T' 0x54) decided the comparison instead.
+test('countSentSince includes and excludes correctly at a same-calendar-date window boundary', () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const inside = repos.profiles.add(c.id, 'https://www.linkedin.com/in/inside', null);
+  const outside = repos.profiles.add(c.id, 'https://www.linkedin.com/in/outside', null);
+  repos.events.recordSend(inside.id, 'sent', '2026-07-26T14:00:00.000Z');
+  repos.events.recordSend(outside.id, 'sent', '2026-07-26T08:00:00.000Z');
+  expect(repos.events.countSentSince('2026-07-26T09:00:00.000Z', 'invite')).toBe(1);
+});
+
 test('queuedByPriorityKind filters by kind and orders by (priority, id)', () => {
   const inv = repos.cohorts.create('QI', null, true);
   const msg = repos.cohorts.create('QM', 'hi', true, 'message');
