@@ -25,6 +25,8 @@ const SETTINGS_COLUMNS = new Set([
   'expiry_days',
   'events_per_day', 'event_invite_cap', 'event_bucket_ceiling',
   'event_run_budget_minutes', 'event_shard_threshold',
+  'engage_weekly_cap', 'engage_batch_size', 'engage_batches_per_day',
+  'engage_comment_daily_cap',
 ]);
 
 export class CohortRepo {

@@ -378,3 +378,53 @@ test('runMigrations adds the event settings columns to a legacy settings table',
   expect(row.event_run_budget_minutes).toBe(20);
   expect(row.event_shard_threshold).toBe(900);
 });
+
+// --- Post engagements ------------------------------------------------------------
+
+test('a fresh database has the engagements table with the expected shape', () => {
+  const db = openDatabase(':memory:');
+  const cols = (db.prepare('PRAGMA table_info(engagements)').all() as { name: string }[])
+    .map((c) => c.name);
+  expect(cols).toEqual(expect.arrayContaining([
+    'id', 'post_url', 'post_urn', 'reaction', 'comment_text', 'status', 'attempts',
+    'last_error', 'skip_reason', 'scheduled_for', 'reacted_at', 'commented_at',
+    'priority', 'created_at',
+  ]));
+});
+
+test('one engagement per post is a hard constraint', () => {
+  const db = openDatabase(':memory:');
+  const ins = "INSERT INTO engagements (post_url, post_urn, reaction) VALUES ('u', 'urn:li:activity:1', 'like')";
+  db.exec(ins);
+  expect(() => db.exec(ins)).toThrow();
+});
+
+test('the engage_* settings columns exist with their documented defaults', () => {
+  const db = openDatabase(':memory:');
+  const s = db.prepare('SELECT * FROM settings WHERE id = 1').get() as unknown as Record<string, number>;
+  expect(s.engage_weekly_cap).toBe(500);
+  expect(s.engage_batch_size).toBe(15);
+  expect(s.engage_batches_per_day).toBe(6);
+  expect(s.engage_comment_daily_cap).toBe(10);
+});
+
+// CAREFUL, this test is load-bearing on a SQLite quirk: dropping the LAST column of a
+// table scans backwards for the preceding comma and does NOT skip `--` comments, so a
+// comma anywhere in the comment block directly above the last column corrupts the
+// rewrite ("error in table settings after drop column: incomplete input"). Verified on
+// SQLite 3.51.2. engage_comment_daily_cap is currently that last column — keep the two
+// comment lines above it in schema.sql comma-free, or drop it here in a different order.
+test('a settings table predating the engage_* columns is migrated', () => {
+  const db = openDatabase(':memory:');
+  db.exec('ALTER TABLE settings DROP COLUMN engage_weekly_cap');
+  db.exec('ALTER TABLE settings DROP COLUMN engage_comment_daily_cap');
+  runMigrations(db);
+  const s = db.prepare('SELECT * FROM settings WHERE id = 1').get() as unknown as Record<string, number>;
+  expect(s.engage_weekly_cap).toBe(500);
+  expect(s.engage_comment_daily_cap).toBe(10);
+});
+
+test('runMigrations is idempotent', () => {
+  const db = openDatabase(':memory:');
+  expect(() => { runMigrations(db); runMigrations(db); }).not.toThrow();
+});

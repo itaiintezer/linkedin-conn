@@ -8,6 +8,12 @@ export type { CheckpointScan };
 import type { CampaignKind } from './core/campaign-kind.js';
 export type { CampaignKind };
 
+// Derived from the REACTIONS list so the runtime validator and this type can never drift.
+// Imported as well as re-exported: `export type { X } from` alone would not bring the name
+// into this file's scope, and the Engagement interface below uses it.
+import type { Reaction } from './core/engagement-action.js';
+export type { Reaction };
+
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
   | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
@@ -81,6 +87,10 @@ export interface Settings {
   event_bucket_ceiling: number;
   event_run_budget_minutes: number;
   event_shard_threshold: number;
+  engage_weekly_cap: number;
+  engage_batch_size: number;
+  engage_batches_per_day: number;
+  engage_comment_daily_cap: number;
 }
 
 // --- Event invites -----------------------------------------------------------------
@@ -189,6 +199,35 @@ export interface EventInvitee {
   invited_at: string | null;
   responded_at: string | null;
   note: string | null;
+}
+
+// --- Post engagements -----------------------------------------------------------------
+
+/** Its own union, NOT an alias of ProfileStatus: an engagement can never be accepted,
+ *  replied or expired, and a shared type would invite code that pretends otherwise. */
+export type EngagementStatus =
+  | 'queued' | 'scheduled' | 'sending' | 'sent' | 'skipped' | 'failed' | 'needs_attention';
+
+/** Why a skipped engagement was skipped (terminal — the engine never retries these). */
+export type EngagementSkipReason =
+  | 'not_found' | 'unavailable' | 'comments_disabled' | 'dismissed';
+
+export interface Engagement {
+  id: number;
+  post_url: string;
+  post_urn: string;
+  reaction: Reaction;
+  /** null for a reaction-only task. When set, always delivered WITH the reaction. */
+  comment_text: string | null;
+  status: EngagementStatus;
+  attempts: number;
+  last_error: string | null;
+  skip_reason: EngagementSkipReason | null;
+  scheduled_for: string | null;
+  reacted_at: string | null;
+  commented_at: string | null;
+  priority: number;
+  created_at: string;
 }
 
 export type SendResult =

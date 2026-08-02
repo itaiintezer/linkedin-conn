@@ -231,6 +231,23 @@ export function runMigrations(db: DB): void {
     db.exec('ALTER TABLE settings ADD COLUMN event_shard_threshold INTEGER NOT NULL DEFAULT 900');
   }
 
+  // --- Post engagements (2026-08-02) ---
+  // The engagements table is back-filled by schema.sql's CREATE TABLE IF NOT EXISTS.
+  // Settings columns are not: one guard each, so an interruption between ALTERs cannot
+  // permanently skip whichever did not run yet.
+  if (cols.length > 0 && !cols.includes('engage_weekly_cap')) {
+    db.exec('ALTER TABLE settings ADD COLUMN engage_weekly_cap INTEGER NOT NULL DEFAULT 500');
+  }
+  if (cols.length > 0 && !cols.includes('engage_batch_size')) {
+    db.exec('ALTER TABLE settings ADD COLUMN engage_batch_size INTEGER NOT NULL DEFAULT 15');
+  }
+  if (cols.length > 0 && !cols.includes('engage_batches_per_day')) {
+    db.exec('ALTER TABLE settings ADD COLUMN engage_batches_per_day INTEGER NOT NULL DEFAULT 6');
+  }
+  if (cols.length > 0 && !cols.includes('engage_comment_daily_cap')) {
+    db.exec('ALTER TABLE settings ADD COLUMN engage_comment_daily_cap INTEGER NOT NULL DEFAULT 10');
+  }
+
   // profiles: kind/full_name/thread_url/replied_at + UNIQUE(profile_url) -> UNIQUE(profile_url, kind).
   // SQLite cannot alter a column-level UNIQUE, so rebuild the table once. Detection: the
   // kind column is absent exactly on pre-messaging databases. IDs are preserved, so
