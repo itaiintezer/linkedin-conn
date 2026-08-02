@@ -162,6 +162,50 @@ test('the daily comment cap holds a comment task WHOLE — it does not react alo
   expect(repos.engagements.findById(e.id)!.status).toBe('scheduled');
 });
 
+// --- The three caps INTERACTING ---------------------------------------------------------
+// Each is covered alone above. These pin what they do to each other, because the comment
+// filter runs after pickDue has already clamped the batch — so the caps compose by
+// subtraction, not independently.
+
+test('a comment task dropped by its cap SHRINKS the batch — it does not refill from the tail', async () => {
+  // Deliberate, and worth locking precisely because it looks like a bug. pickDue clamps to
+  // batch_size FIRST; the comment filter then drops from that clamped set, so a reaction-only
+  // task sitting due behind the dropped ones does not move up. Refilling from the tail would
+  // reorder the queue out of scheduled_for order and let a later task jump an earlier one —
+  // the under-fill only slows the drain (the held rows lead the next tick) and can never
+  // over-send. A future "helpful" refill must fail here.
+  repos.settings.update({ engage_comment_daily_cap: 0, engage_batch_size: 2 });
+  seed(1, 'hi'); seed(2, 'hi'); const reactionOnly = seed(3);
+
+  await run(NOW);
+
+  expect(driver.commentLog).toHaveLength(0);
+  expect(driver.reactLog).toHaveLength(0);          // NOT one — row 3 never entered the batch
+  expect(repos.engagements.findById(reactionOnly.id)!.status).toBe('scheduled');
+  expect(driver.browserOpen()).toBe(false);         // an emptied batch stays dark
+});
+
+test('the weekly cap and the comment cap bind together in one tick', async () => {
+  // The weekly cap clamps the batch, then the comment cap filters what survived. Both are
+  // subtractive, so the tick runs the intersection, not the smaller of the two.
+  repos.settings.update({ engage_weekly_cap: 2, engage_comment_daily_cap: 1, engage_batch_size: 5 });
+  seed(1, 'hi'); seed(2, 'hi'); const third = seed(3, 'hi');
+
+  await run(NOW);
+  // Weekly leaves room for 2 of the 3; the comment cap then leaves 1 of those 2.
+  expect(driver.reactLog).toHaveLength(1);
+  expect(driver.commentLog).toHaveLength(1);
+  expect(repos.engagements.findById(2)!.status).toBe('scheduled');
+  expect(repos.engagements.findById(third.id)!.status).toBe('scheduled');
+
+  // Same day, second tick: weekly has 1 slot left, but the comment budget is spent — so the
+  // survivor of one cap is stopped by the other, and nothing runs.
+  await run(NOW);
+  expect(driver.reactLog).toHaveLength(1);
+  expect(driver.commentLog).toHaveLength(1);
+  expect(repos.engagements.findById(2)!.status).toBe('scheduled');
+});
+
 test('a retried task whose reaction already landed does not react twice', async () => {
   const e = seed(1, 'hi');
   repos.engagements.setStatus(e.id, 'scheduled', { reacted_at: REACTED_EARLIER });
