@@ -230,6 +230,36 @@ export interface Engagement {
   created_at: string;
 }
 
+/**
+ * What one engagement step did.
+ *
+ * `unverified` is COMMENT-ONLY: reactToPost never returns it, because an unconfirmed
+ * reaction is safe to retry and so reports `error` instead. An unconfirmed COMMENT may
+ * already be published under the operator's name, so it gets its own result that the sender
+ * turns into needs_attention rather than a retry.
+ *
+ * `comments_disabled` is split from `unavailable` deliberately: an author who restricted
+ * commenting is a per-post terminal fact, and folding it into `unavailable` would march a
+ * batch of such posts toward a repeated_failures halt.
+ */
+export type EngagementResult =
+  | 'done' | 'already' | 'not_found' | 'unavailable'
+  | 'comments_disabled' | 'unverified' | 'checkpoint' | 'error';
+
+export interface EngagementOutcome {
+  result: EngagementResult;
+  /** Set on `already`: the reaction found on the post. Logged, never persisted.
+   *  Deliberately `string`, not `Reaction`: it is read verbatim out of a live aria-label
+   *  ("Unreact <X>"), so it may be a reaction we do not model. Narrowing it here would
+   *  force the driver to drop the value exactly when it is most surprising. */
+  existingReaction?: string;
+  /** Canonical URN read off the post container's data-urn, when present. The sender
+   *  reconciles the row's identity from this — the URL's id is only best-effort. */
+  observedUrn?: string;
+  error?: string;
+  evidence?: SendEvidence;
+}
+
 export type SendResult =
   | 'sent' | 'already' | 'unavailable' | 'note_quota' | 'checkpoint' | 'error'
   | 'email_required' | 'not_found' | 'weekly_limit' | 'not_connected';
@@ -288,6 +318,15 @@ export interface BrowserDriver {
    *  `dryRun`. Opens AND closes its own picker, so buckets share no modal state and the
    *  caller needs no teardown call. */
   runEventBucket(req: BucketRunRequest): Promise<BucketRunResult>;
+
+  // --- Post engagements ---
+  /** Place a reaction on a post. MUST read current state first and report `already`
+   *  rather than clicking: the trigger is a toggle, so a blind click on an
+   *  already-reacted post REMOVES the reaction. */
+  reactToPost(postUrl: string, reaction: Reaction): Promise<EngagementOutcome>;
+  /** Post a comment. Reports `unverified` rather than `error` when it cannot confirm the
+   *  comment landed — the caller must NOT retry that. */
+  commentOnPost(postUrl: string, text: string): Promise<EngagementOutcome>;
 
   close(): Promise<void>;
 }

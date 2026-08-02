@@ -2,6 +2,7 @@ import type { Page } from 'playwright-core';
 import type {
   BrowserDriver, SendOutcome, SendOptions, LoginSnapshot, CheckpointScan, InboxRow,
   ConnectionCard, EventStepOutcome, BucketRunRequest, BucketRunResult,
+  EngagementOutcome, Reaction,
 } from '../types.js';
 import { attendEvent, openEvent, runBucket } from './event-invite-driver.js';
 import { CloakSession } from './cloak-session.js';
@@ -649,6 +650,22 @@ export class LinkedInDriver implements BrowserDriver {
 
   async runEventBucket(req: BucketRunRequest): Promise<BucketRunResult> {
     return runBucket(await this.session.page(), req);
+  }
+
+  // --- Post engagements ---
+  // PLACEHOLDER until Task 12 wires up the probe-derived selectors. Navigating is real so
+  // the URL handling is exercised; the controls are not driven, and this reports
+  // `unavailable` rather than silently claiming success.
+  async reactToPost(postUrl: string, _reaction: Reaction): Promise<EngagementOutcome> {
+    const page = await this.session.page();
+    await page.goto(postUrl, { waitUntil: 'domcontentloaded' });
+    return { result: 'unavailable', error: 'reaction driving not implemented yet' };
+  }
+
+  async commentOnPost(postUrl: string, _text: string): Promise<EngagementOutcome> {
+    const page = await this.session.page();
+    await page.goto(postUrl, { waitUntil: 'domcontentloaded' });
+    return { result: 'unavailable', error: 'comment driving not implemented yet' };
   }
 
   async close(): Promise<void> { await this.session.close(); }
