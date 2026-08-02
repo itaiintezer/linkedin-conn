@@ -37,7 +37,11 @@ Raw HTML dumps live under `data/incidents/2026-08-02T08-2*-post-engage/` (gitign
 the individual post; the company post turned out to be already Liked, and the script's
 read-state-first guard correctly refused to click, which would have *removed* the reaction).
 Findings 3, 4 and 5 are therefore true before/after observations on a single post, not
-inferences. One of them was wrong on the first pass — see finding 4.
+inferences. **Three findings were wrong on the first pass and are corrected in place below —
+1, 2 and 4.** Findings 1 and 2 were disproved during implementation by re-reading these same
+saved dumps rather than by a fresh probe, which is worth noting: the evidence to catch both
+was already on disk at the time the first pass was written. Every correction is marked
+**CORRECTED** and states what the wrong version would have cost.
 
 The surface is the **classic Ember/artdeco feed UI**, not the hashed-class React UI the
 profile top card uses. Class names here are readable BEM (`react-button__trigger`,
@@ -63,6 +67,27 @@ Both posts rendered `<html lang="en">`, so the `lang`-cookie pin is holding.
    the flyout) and the identity toggle, `aria-label="Open menu for switching identity when
    interacting with this post"`. The latter matters — see finding 9.
 
+   **CORRECTED (during implementation, from the saved dumps).** The claim above that scoping
+   to `div[data-urn][role="article"]` separates post-level controls from comment-level ones is
+   **wrong**. Walking the post-comment dump shows that `article.comments-comment-entity`,
+   `form.comments-comment-box__form`, the `ql-editor` and **each comment's own react button**
+   are all descendants of that container. Worse, a comment's button carries the *same*
+   `react-button__trigger` class and the *same* `span.reactions-react-button` wrapper as the
+   post trigger, so neither of those distinguishes them either. The only thing absent from a
+   comment's social bar is **`div.feed-shared-social-action-bar`**, so that is the actual
+   discriminator, and it is what `src/browser/post-selectors.ts` scopes on:
+
+   ```
+   div.feed-shared-social-action-bar span.reactions-react-button button[aria-pressed]
+   ```
+
+   That path is also language-independent, which the label form is not. **What the wrong
+   version would have cost:** the bare-vs-suffixed label distinction only holds while LinkedIn
+   renders English, and an `[aria-label^="Unreact "]` prefix match resolves to a *comment's*
+   like button — inside the scope, `aria-pressed` present, indistinguishable by class. Clicking
+   it would have **removed somebody's reaction from their own comment**. A destructive
+   mis-click, dressed as a scoping shortcut.
+
 2. **The flyout opens on hover of the Like trigger.** No click, no long-press. It settles
    well within 2.5 s. It is a sibling `span` that is always in the DOM and becomes visible
    by class (`reactions-menu reactions-menu--active reactions-menu--v2-visible`); it is
@@ -87,6 +112,20 @@ Both posts rendered `<html lang="en">`, so the `lang`-cookie pin is holding.
 
    The flyout entries do **not** reflect current state: on the already-reacted post, the
    Like entry still read `React Like`. Only the trigger knows.
+
+   **CORRECTED (during implementation, from the saved dumps).** "A sibling `span` that is
+   always in the DOM and becomes visible by class" is **wrong** — it is not always in the DOM.
+   `reactions-menu` appears in **no** page dump: not the pre-hover capture, and not the
+   post-hover captures taken once the pointer had moved away, where only
+   `reactions-menu__trigger` is present. It appears solely in the capture taken while the
+   pointer was still on the trigger. The flyout **mounts on hover and unmounts when the hover
+   ends**.
+
+   So `reactions-menu--active` / `reactions-menu--v2-visible` are not state to be polled on a
+   persistent node, and waiting on them would be waiting on an element that does not exist yet.
+   The driver instead hovers and waits for the flyout **entry** it intends to click to become
+   visible — the thing it actually needs, and the only signal that survives a remount.
+   `PSEL.reactionFlyout` is kept for diagnostics and for this note, not as a gate.
 
 3. **`REACTED_STATE` — the trigger flips three things at once** (VERIFIED as a live
    before/after on one post: the social-count line went from
@@ -203,6 +242,25 @@ Both posts rendered `<html lang="en">`, so the `lang`-cookie pin is holding.
    authoring identity to a company page for subsequent actions. The driver must never touch
    it, and should assert the trigger it clicks is the react button, not the first button in
    the bar.
+
+### Known gaps — what these findings do NOT cover
+
+Recorded so nobody reads "live-verified" as broader than it is. Everything here is implemented
+and unit-tested; none of it has been exercised against the real page.
+
+- **Only `like` has ever been placed live.** The other five reactions are implemented, mapped
+  to LinkedIn's enum and covered by tests, but no `celebrate`/`support`/`love`/`insightful`/
+  `funny` has been clicked on a real post. The hover-flyout path they all depend on was
+  observed, but only the trigger itself was ever pressed. This is the least-proven part of the
+  feature, which is exactly why `unavailable` counts toward the failure streak.
+- **No comments-disabled post was ever found**, so finding 6's structure is inferred, not
+  observed, and `PSEL.commentsDisabledText` is a wording probe. Every `comments_disabled`
+  verdict captures evidence so the real structure can be read off an incident later.
+- **Findings 3, 4 and 5 rest on one post.** The comment confirmation (`• You` badge, cleared
+  composer, `article[data-id]` row) and the reaction-state flip (`aria-pressed`,
+  `react-button--active`, social-count line) were each observed as a single before/after on the
+  same individual member's post. Finding 9 says an individual and a company post render the
+  same action bar, but the *comment thread* on a company post was never posted into.
 
 ## Why not a fourth `CampaignKind`
 

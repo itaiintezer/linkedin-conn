@@ -69,6 +69,14 @@ Response (abridged): `{ "paused": 0, "weekly_sent": 12, "weekly_cap": 100, "coun
   every campaign. `up_next` / `locations_next` describe the slice **one** run reaches, and
   `next_run.from` is `null` for a campaign that is armed but has not been given a window
   yet — never render a clock time for it.
+- `engagements` is the fourth pipeline's summary, paced in reactions with a second cap for
+  comments:
+  `{ "counts": { "queued": 3, "scheduled": 15, "sent": 41 }, "weekly_used": 41, "weekly_cap": 500, "weekly_remaining": 459, "comments_today": 2, "comment_daily_cap": 10, "next_scheduled": "2026-08-02T14:05:00.000Z" }`.
+  `counts` is a `GROUP BY status`, so **a status with no rows is absent rather than zero** —
+  read it with a default, never as a complete set of keys. `next_scheduled` is the earliest
+  real `scheduled_for` among `scheduled` rows, or `null` when nothing is scheduled; it is
+  deliberately **not** a `next_batch` forecast, so there is never a clock time here without a
+  slot behind it.
 - A `next_batch` / `msg_next_batch` is one of four shapes: `null` (nothing queued),
   `{ blocked, reason }`, `{ estimated: false, at, count }` for a materialized slot, or
   `{ estimated: true, count, … }` for a prediction. A prediction carries **either** `at`
@@ -568,6 +576,166 @@ worst-case overrun is one bucket.
 `event_bucket_ceiling` (locations per run, default 10), `event_run_budget_minutes`,
 `event_shard_threshold` (roster size above which a bucket is sub-sharded, default 900).
 
+## Post engagements
+
+The fourth pipeline: react to a LinkedIn post, optionally with a comment. Like event invites
+it does **not** use cohorts, profiles or campaign kinds — a post is not a person — but it is
+drained by the same sender tick as invites and messages, behind the same pause, guardrail,
+working-hours and browser-lock rails, with its own caps.
+
+There is **one row per post**, keyed on the post URN and never on the URL (the same post is
+reachable as `/feed/update/<urn>/`, `/posts/<slug>-activity-…`, `/posts/<slug>-share-…` and
+`?updateId=…`, so deduping on the URL would dedupe nothing). Statuses are
+`queued` → `scheduled` → `sending` → `sent`, plus `skipped`, `failed` and `needs_attention`;
+`skip_reason` is one of `not_found`, `unavailable`, `comments_disabled` or `dismissed`. There
+is no acceptance or reply funnel — `attempts`, `last_error`, `reacted_at` and `commented_at`
+on the row are the whole history.
+
+Four behaviours are worth reading before you call anything here.
+
+**Shortlinks are expanded server-side.** A `lnkd.in/…` reference (with or without a scheme —
+a mobile share sheet omits it) is followed with an unauthenticated `GET` before validation:
+at most 3 hops, 5s per hop, and across one bulk request at most 4 in flight under a total
+15s budget. Whatever the budget cuts off, plus anything that redirects off `linkedin.com`,
+is rejected as `shortlink_unresolvable` — paste the full post URL instead. The **expanded**
+URL is what gets parsed and stored.
+
+**The URN is the identity, and it can change after enqueue.** A share-link slug carries a
+different number from the post's own `data-urn` — observed live: slug `7489401095899770880`
+against `urn:li:activity:7489401096851906561` for one post. So the `post_urn` you get back at
+creation is **provisional**: the driver reads the canonical URN off the live post on first
+execution and reconciles the row to it. If that canonical URN turns out to be held by another
+row, this row is the redundant one and is retired as `skipped` with
+`skip_reason: "dismissed"` rather than engaging with the same post twice.
+
+**A comment is always paired with a reaction.** There is no comment-only engagement; `comment`
+rides along with the `reaction` on the same task. An all-whitespace `comment` is stored as
+`null` — otherwise it would claim a slot against the daily comment cap and then publish
+nothing.
+
+**A reaction is never replaced.** If the post already carries one of your reactions, the
+engine records that, logs which one it found, and leaves it alone. The LinkedIn control is a
+toggle: clicking it while your reaction is on the post **removes** the reaction, so switching
+one is not something this pipeline will do to a reaction you placed by hand.
+
+### POST /api/engagements
+
+Enqueue one post, or many. Single form:
+
+```json
+{ "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:7489401096851906561/",
+  "reaction": "insightful",
+  "comment": "Useful framing — thanks for writing it up." }
+```
+
+- `post_url` (required) — a post URL in any of the forms above, a bare
+  `urn:li:activity:…` / `urn:li:ugcPost:…` / `urn:li:share:…`, or a `lnkd.in` shortlink.
+- `reaction` (optional) — one of `like`, `celebrate`, `support`, `love`, `insightful`,
+  `funny`. **Defaults to `like`** when absent. Unlike `kind` on `/api/profiles`, absent is a
+  real default here: a mis-defaulted reaction is cosmetic, where a mis-defaulted campaign kind
+  sends an unsendable request.
+- `comment` (optional) — literal text, no templates and no `{firstName}` substitution. Max
+  1250 characters.
+
+Responds `201` with the created row, re-read after planning so its `status` and
+`scheduled_for` are the ones planning just assigned:
+
+```json
+{ "id": 7, "post_url": "https://www.linkedin.com/feed/update/urn:li:activity:7489401096851906561/",
+  "post_urn": "urn:li:activity:7489401096851906561", "reaction": "insightful",
+  "comment_text": "Useful framing — thanks for writing it up.", "status": "scheduled",
+  "attempts": 0, "last_error": null, "skip_reason": null,
+  "scheduled_for": "2026-08-02T14:05:00.000Z", "reacted_at": null, "commented_at": null,
+  "priority": 0, "created_at": "2026-08-02T11:20:14.000Z" }
+```
+
+Bulk form — `{ "items": [ { post_url, reaction?, comment? }, … ] }` — reports rejects **by
+URL and reason**, the way `POST /api/events` does, because finding out mid-run that a URL was
+junk is far too late:
+
+```json
+{ "added": 2,
+  "engagements": [ { "id": 8, "…": "…" }, { "id": 9, "…": "…" } ],
+  "rejected": [ { "post_url": "https://lnkd.in/p/deadbeef",
+                  "reason": "shortlink_unresolvable",
+                  "message": "could not expand the shortlink https://lnkd.in/p/deadbeef — open it and paste the full post URL" } ] }
+```
+
+**The bulk form always answers `201`, even when everything was rejected** (`added: 0`) — the
+per-item verdicts are the payload, not the status code. The single form is the one that turns
+a reject into an HTTP error: `400`, or `409` for a duplicate, with the reject's `message` as
+`error`. `{ "items": [] }` is `400 no items supplied`. A non-object entry inside `items` is
+kept and reported as an `invalid_url` reject rather than silently vanishing from the count.
+
+| `reason` | Single-form status | Meaning |
+|---|---|---|
+| `invalid_url` | `400` | `post_url` is not a recognizable LinkedIn post reference (or was empty/missing) |
+| `shortlink_unresolvable` | `400` | a `lnkd.in` link that could not be followed inside the hop/time bounds, or that redirected off `linkedin.com` |
+| `unknown_reaction` | `400` | `reaction` is not one of the six |
+| `comment_too_long` | `400` | `comment` is over 1250 characters |
+| `duplicate` | `409` | this post already has a row; the message names its id and status |
+
+Two items naming the same post inside **one** bulk request resolve correctly: the second is a
+`duplicate` reject against the first one's insert.
+
+Creation runs a planning pass immediately, so a task enqueued at 09:05 gets a real slot
+instead of sitting until the hourly tick — same reasoning as `POST /api/lists`, and with the
+same gates: planning still declines while paused, halted, outside working hours or on a
+non-sending day.
+
+```
+curl -s http://localhost:4400/api/engagements \
+  -H 'content-type: application/json' \
+  -d '{"post_url":"https://lnkd.in/p/dkTR-yYF","reaction":"insightful"}'
+```
+
+```
+curl -s http://localhost:4400/api/engagements \
+  -H 'content-type: application/json' \
+  -d '{"items":[{"post_url":"https://www.linkedin.com/feed/update/urn:li:activity:7489401096851906561/"},
+                {"post_url":"urn:li:activity:7488617458552070144","reaction":"celebrate","comment":"Congrats!"}]}'
+```
+
+### GET /api/engagements?status=X&limit=N
+Engagement rows, **newest first** (`id DESC`, so a limit keeps the newest rather than the
+oldest). `limit` defaults to **200** and is clamped to **500**; anything non-finite, zero or
+negative falls back to the default. `status` is optional and must be one of the seven
+statuses — an unknown one is a `400`, not a silently-dropped filter, because an empty list
+would otherwise read as "no such rows".
+
+```
+curl -s 'http://localhost:4400/api/engagements?status=needs_attention&limit=20'
+```
+
+### GET /api/engagements/:id
+One row. `404` if unknown.
+
+### POST /api/engagements/:id/retry
+Requeue one row: back to `queued` with `scheduled_for`, `last_error` and `skip_reason`
+cleared. `404` if unknown, `409` unless its status is `failed`, `needs_attention` or
+`skipped`.
+
+`needs_attention` is retryable **on purpose**. Parking an unverified comment exists so a human
+can open the post and decide, and retry is how they say "I checked, it did not post". Nothing
+is re-driven twice: the sender's comment step is guarded on `commented_at` and its reaction
+step on `reacted_at`, so a retry after a landed reaction re-drives only what is missing.
+
+Note that the bulk `POST /api/retry` walks the **profiles** table only — engagements are
+retried one row at a time.
+
+### POST /api/engagements/:id/dismiss
+Terminal skip (`skipped`, reason `dismissed`), and also the cancel path for a row that has not
+run yet. `scheduled_for` is cleared rather than left standing, so a dismissed row stops
+answering `/api/status`'s `next_scheduled` question. `404` if unknown.
+
+### Settings
+`engage_weekly_cap` (reactions per rolling 7 days, default 500), `engage_batch_size` (15),
+`engage_batches_per_day` (6), `engage_comment_daily_cap` (published comments per day, 10).
+15 × 6 = 90 reactions a day, 450 a week under the 500 cap. The comment sub-cap is separate
+because 90 comments a day under the operator's own name is a materially different risk from
+90 likes; it is applied at **planning** time as well as at send time, so comment-bearing tasks
+do not sit consuming slots they can never use.
+
 ## Queue
 
 ### GET /api/profiles?status=X&kind=Y
@@ -607,12 +775,22 @@ an event run's place in the day belongs to the planner.
 
 ## Attention (failures)
 
-Both kinds land here, so every row carries its `kind`.
+Both kinds land here, so every row carries its `kind`. **Two pipelines land here too**, so
+every row carries a `source` discriminator as well.
 
-- `GET /api/attention` — failed + needs_attention profiles with their errors:
-  `[{ "id", "profile_url", "kind", "status", "last_error", "attempts", "sent_at", "scheduled_for", "cohort_name" }]`.
-- `POST /api/retry` — requeue every failed / needs_attention profile, both kinds. Response
-  `{ "ok": true, "retried": N }`.
+- `GET /api/attention` — failed + needs_attention rows from the profile and engagement
+  pipelines, with their errors. Two row shapes in one list:
+  - `{ "source": "profile", "id", "profile_url", "kind", "status", "last_error", "attempts", "sent_at", "scheduled_for", "cohort_name" }`
+  - `{ "source": "engagement", "id", "post_url", "post_urn", "reaction", "comment_text", "status", "last_error", "attempts", "scheduled_for", "reacted_at", "commented_at" }`
+
+  **Switch on `source` before doing anything with an `id`.** Ids are per-table, so posting an
+  engagement's id to `/api/profiles/:id/retry` retries whichever profile happens to share that
+  number. The tag is on the profile rows too, not only the new ones — a discriminator only one
+  side carries is one every reader has to guess about. Profiles come first, then engagements,
+  each newest-first; there is no meaningful order to interleave two id spaces into.
+- `POST /api/retry` — requeue every failed / needs_attention **profile**, both kinds. Response
+  `{ "ok": true, "retried": N }`. Engagements are not touched: retry them one row at a time
+  with `POST /api/engagements/:id/retry`.
 - `POST /api/profiles/:id/retry` — requeue one. `404` if unknown. `409` unless its status is
   `failed`, `needs_attention` or `skipped`: retry re-queues for a *fresh* send, so retrying
   a `replied`/`accepted`/`sent` profile would contact the same person twice.
@@ -644,8 +822,10 @@ Both kinds land here, so every row carries its `kind`.
   **Reply tracking** below.
 - `GET /api/settings`, `POST /api/settings` — pacing/limits (allow-listed keys only).
   Message-side keys: `msg_weekly_cap` (default 250), `msg_batch_size` (5),
-  `msg_batches_per_day` (6), `reply_checks_per_day` (2). Values are stored as given — pass
-  numbers, not numeric strings.
+  `msg_batches_per_day` (6), `reply_checks_per_day` (2). Engagement-side keys:
+  `engage_weekly_cap` (500), `engage_batch_size` (15), `engage_batches_per_day` (6),
+  `engage_comment_daily_cap` (10). Values are stored as given — pass numbers, not numeric
+  strings.
 - `GET /api/logs?tail=N`, `GET /api/logs/download` — run log.
 - `POST /api/guardrail/acknowledge` — re-check a halt; resumes if logged in and no
   checkpoint on the current page, otherwise re-trips with a `detail` saying which URL
