@@ -2,7 +2,7 @@ import type { Repos } from '../db/repositories.js';
 import type { CampaignKind, Settings } from '../types.js';
 import { CAMPAIGN_KINDS } from '../core/campaign-kind.js';
 import { planDailyBatches, assignSchedule } from '../core/schedule.js';
-import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
+import { windowStartIso, remainingCapacity, dayStartIso } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
 import { capsFor, engagementCaps, type KindCaps } from '../core/caps.js';
 import {
@@ -185,13 +185,6 @@ function planKind(
     queuedIds: repos.profiles.queuedByPriorityKind(kind).map((p) => p.id),
     setScheduled: (id, iso) => repos.profiles.setScheduled(id, iso),
   });
-}
-
-/** Local midnight for `now`. Local on purpose: mirrors the working-hours window. */
-function dayStartIso(now: Date): string {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
 }
 
 /**
