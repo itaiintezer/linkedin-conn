@@ -47,6 +47,22 @@ function slugFromUrl(url) {
   return m ? m[1] : String(url).replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
 
+/* A post URL, shortened for display the same way an event campaign's is (renderEventGroup).
+   The full URL always stays on the link's href and title — a post is identified by its urn,
+   which is unreadable, so there is no slug to fall back on. */
+function postLabel(url) {
+  if (!url) return '(unknown post)';
+  return String(url).replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+}
+
+/* Reaction names as LinkedIn writes them. Keep in step with REACTIONS
+   (src/core/engagement-action.ts); an unknown value renders as-is rather than vanishing. */
+const REACTION_LABELS = {
+  like: 'Like', celebrate: 'Celebrate', support: 'Support',
+  love: 'Love', insightful: 'Insightful', funny: 'Funny',
+};
+function reactionLabel(r) { return REACTION_LABELS[r] || String(r || 'Like'); }
+
 function fmtTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -204,8 +220,16 @@ function renderEngine(status) {
   // Expired stays invite-only on purpose: a sent DM never expires, only an invite does.
   setText('outExpired', c.expired || 0);
   setText('outSkipped', (c.skipped || 0) + (mc.skipped || 0));
-  const attention = (c.failed || 0) + (c.needs_attention || 0)
+  // Engagements land in the same modal (see /api/attention), so they must be in the same
+  // number — for exactly the reason the message side had to be: the card is the modal's only
+  // entry point and it only becomes clickable when the count is non-zero. A run where the
+  // only casualties are posts would otherwise be invisible AND unreachable.
+  const ec = (status.engagements && status.engagements.counts) || {};
+  const engAttention = (ec.failed ?? 0) + (ec.needs_attention ?? 0);
+  // Split out, because the two bulk buttons below can only reach the profiles.
+  const profileAttention = (c.failed || 0) + (c.needs_attention || 0)
     + (mc.failed || 0) + (mc.needs_attention || 0);
+  const attention = profileAttention + engAttention;
   setText('outAttn', attention);
   const attnCard = document.getElementById('outAttnCard');
   if (attnCard) {
@@ -215,10 +239,14 @@ function renderEngine(status) {
 
   // Show the bulk Retry button only when there's something to retry. Skip while a
   // retry is in flight so the poll doesn't clobber its "Requeued N" feedback.
+  //
+  // Counted on PROFILES only: /api/retry walks the profiles table and nothing else, so a
+  // count that included posts would put a number on this button that pressing it cannot
+  // deliver. Stuck engagements are retried row by row from the modal instead.
   const retryBtn = $('#retryFailed');
   if (retryBtn && !retryBtn.dataset.busy) {
-    retryBtn.hidden = attention === 0;
-    retryBtn.textContent = attention ? `Retry failed (${attention})` : 'Retry failed';
+    retryBtn.hidden = profileAttention === 0;
+    retryBtn.textContent = profileAttention ? `Retry failed (${profileAttention})` : 'Retry failed';
   }
 
   // --- Messages engine: same in-place update discipline, its own counts + caps ---
@@ -314,6 +342,9 @@ function renderEngine(status) {
     if (idle) idle.hidden = !none;
   }
 
+  // --- Post engagements: the fourth conveyor ---
+  renderEngagements(status.engagements);
+
   // --- Now processing ---
   const pill = $('#sendingPill');
   if (pill) {
@@ -327,6 +358,157 @@ function renderEngine(status) {
   }
 }
 
+/**
+ * The engagements engine, from the `engagements` block of the same /api/status poll the
+ * other three read. Same in-place discipline: numbers are written into existing nodes so
+ * the conveyor animation survives a poll.
+ *
+ * TWO rules this function exists to keep:
+ *
+ * 1. `counts` OMITS any status with no rows, so every read goes through `?? 0`. A missing
+ *    key is zero, not "unknown" — but `||` on an absent key and `||` on a real 0 are the
+ *    same, which is why the absent case is worth a test of its own.
+ *
+ * 2. `next_scheduled` is a REAL timestamp or null, and null renders the words "Not
+ *    scheduled" — never a clock time. This is the whole reason /api/status carries
+ *    MIN(scheduled_for) instead of a forecast: the invite-side next-batch pill has a known
+ *    defect where an estimated forecast pins `at = now`, so an unplanned queue advertises
+ *    an imminent batch. Do not reintroduce that here by falling back to a guess.
+ */
+function renderEngagements(engagements) {
+  const e = engagements || {};
+  const c = e.counts || {};
+  const n = (k) => c[k] ?? 0;   // absent status key === zero rows (see rule 1)
+
+  // Weekly fuel: reactions, the unit the weekly cap actually rations.
+  const used = e.weekly_used ?? 0;
+  const cap = e.weekly_cap ?? 0;
+  setText('engFuelSent', used);
+  setText('engFuelCap', cap);
+  const bar = document.getElementById('engFuelBar');
+  if (bar) bar.style.width = `${cap ? Math.min(100, Math.round((used / cap) * 100)) : 0}%`;
+
+  // Comments have their own daily ceiling, so they get their own pill rather than being
+  // folded into a number that would then mean two different things.
+  fillPill('engCommentsTxt', 'comments today', `${e.comments_today ?? 0} / ${e.comment_daily_cap ?? 0}`);
+
+  // Rule 2. Three states and no fourth: a time, "nothing queued", or "Not scheduled".
+  const next = e.next_scheduled || null;
+  const backlog = n('queued') + n('scheduled');
+  if (next) fillPill('engNextTxt', `next ${fmtRelDay(next)}`, fmtClock(next), null);
+  else if (backlog === 0) fillPill('engNextTxt', null, null, 'nothing queued');
+  else fillPill('engNextTxt', null, null, 'Not scheduled');
+
+  setText('engQueued', n('queued'));
+  setText('engScheduled', n('scheduled'));
+  setText('engSent', n('sent'));
+  setText('engScheduledFoot', next ? `from ${fmtClock(next)}` : 'not scheduled');
+
+  // `sending` is a real engagement status, but /api/status's top-level `sending` list is
+  // profiles-only (it maps profile_url), so the count is all this side has to show. A number
+  // is enough for a pipeline that never runs more than one post at a time.
+  const sending = n('sending');
+  const sendPill = $('#engSendingPill');
+  if (sendPill) {
+    sendPill.hidden = sending === 0;
+    if (sending) {
+      const txt = `engaging · ${plural(sending, 'post')}`;
+      setText('engSendingTxt', txt);
+      sendPill.title = `The sender is working through ${txt.replace('engaging · ', '')}`;
+    }
+  }
+
+  const attn = n('needs_attention');
+  const failed = n('failed');
+  const footAttn = $('#engFootAttn');
+  if (footAttn) {
+    footAttn.hidden = attn === 0;
+    if (attn) fillPill('engFootAttn', null, attn, 'parked for a manual look');
+  }
+  const footFailed = $('#engFootFailed');
+  if (footFailed) {
+    footFailed.hidden = failed === 0;
+    if (failed) fillPill('engFootFailed', null, failed, 'failed');
+  }
+  const foot = $('#engEngineFoot');
+  if (foot) foot.hidden = attn === 0 && failed === 0;
+
+  // Never used the pipeline -> stay collapsed, exactly like the other two optional engines.
+  const engEngine = document.getElementById('engEngine');
+  if (engEngine) {
+    const none = Object.values(c).reduce((sum, v) => sum + (v || 0), 0) === 0;
+    engEngine.classList.toggle('is-idle', none);
+    const idle = document.getElementById('engEngineIdle');
+    if (idle) idle.hidden = !none;
+  }
+}
+
+/* How many upcoming posts the card names, and how deep it looks to find them. */
+const ENG_UPNEXT_SHOW = 5;
+const ENG_UPNEXT_FETCH = 100;
+
+/**
+ * The named "Up next" rows, from /api/engagements?status=scheduled.
+ *
+ * That route is `ORDER BY id DESC` — newest ENQUEUED first, which for "what happens next"
+ * is the wrong axis entirely: a post added this morning can be scheduled days after one
+ * added last week. So it is fetched deep and re-sorted here by `scheduled_for` ascending,
+ * which also makes the first row agree with the card's next-scheduled pill (that pill is
+ * MIN(scheduled_for) server-side). Rows with no `scheduled_for` sort last rather than
+ * being dropped — a scheduled row without a time is a bug worth seeing, not hiding.
+ *
+ * On its own request because the counts come from /api/status and this does not: rows carry
+ * URLs and comment text, which is per-row data the status poll has no business shipping.
+ * Runs on the same 15s tick as refreshQueue, so it adds a request per tick, not a timer.
+ */
+async function refreshEngagementUpNext() {
+  const wrap = $('#engUpNext'), list = $('#engUpNextList');
+  if (!wrap || !list) return;
+  try {
+    const rows = await api(`/api/engagements?status=scheduled&limit=${ENG_UPNEXT_FETCH}`);
+    if (!rows.length) { wrap.hidden = true; list.replaceChildren(); return; }
+    const sorted = rows.slice().sort((a, b) => {
+      if (!a.scheduled_for) return 1;
+      if (!b.scheduled_for) return -1;
+      return a.scheduled_for < b.scheduled_for ? -1 : a.scheduled_for > b.scheduled_for ? 1 : 0;
+    });
+    const shown = sorted.slice(0, ENG_UPNEXT_SHOW);
+    const kids = shown.map(renderEngagementUpNextRow);
+    if (sorted.length > shown.length) {
+      kids.push(el('li', { class: 'eng-up-more', text: `+${sorted.length - shown.length} more scheduled` }));
+    }
+    list.replaceChildren(...kids);
+    wrap.hidden = false;
+  } catch (_) { /* transient; next tick retries */ }
+}
+
+const ICON_ENG_COMMENT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function renderEngagementUpNextRow(e) {
+  const when = e.scheduled_for
+    ? el('span', { class: 'eng-up-when', text: `${fmtRelDay(e.scheduled_for)} ~${fmtClock(e.scheduled_for)}` })
+    : el('span', { class: 'eng-up-when is-unscheduled', text: 'no slot yet' });
+  const row = el('li', { class: 'eng-up' },
+    when,
+    el('span', { class: 'eng-up-react', text: reactionLabel(e.reaction) }),
+  );
+  // A row that will also leave a comment is marked: it is the louder half of the action and
+  // it is rationed by a different cap, so "this one comments" has to be visible up front.
+  if (e.comment_text) {
+    const mark = el('span', {
+      class: 'eng-up-comment', role: 'img',
+      'aria-label': 'leaves a comment too', title: e.comment_text,
+    });
+    mark.innerHTML = ICON_ENG_COMMENT;
+    row.appendChild(mark);
+  }
+  row.appendChild(el('a', {
+    class: 'eng-up-url', href: e.post_url, target: '_blank', rel: 'noopener',
+    title: e.post_url || '', text: postLabel(e.post_url),
+  }));
+  return row;
+}
+
 /* The engine has one visual run-state: running, paused (amber), or halted (red).
    Stops the conveyor + pulse animations via CSS and shows a badge on the track.
    One pause state, one guardrail: both engines wear it. */
@@ -337,6 +519,7 @@ function applyEngineState(status) {
     [$('#engine'), $('#engineState'), $('#engineStateTxt')],
     [$('#msgEngine'), $('#msgEngineState'), $('#msgEngineStateTxt')],
     [$('#evEngine'), $('#evEngineState'), $('#evEngineStateTxt')],
+    [$('#engEngine'), $('#engEngineState'), $('#engEngineStateTxt')],
   ]) {
     if (!engine) continue;
     engine.classList.toggle('is-paused', paused || tripped);
@@ -457,9 +640,15 @@ const ICON_KIND_MESSAGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentC
 
 const ICON_KIND_EVENT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4" stroke-linecap="round"/></svg>';
 
+/* A post engagement isn't a campaign KIND — its rows live in their own table and target a
+   post, not a person — but it shares the Attention table with the three that are, so it
+   needs a glyph in the same family. */
+const ICON_KIND_ENGAGE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M7 21V10.5l4.2-7a1.6 1.6 0 0 1 2.9 1.2L13.3 9h4.9a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17 20H7z" stroke-linecap="round" stroke-linejoin="round"/><rect x="3" y="10.5" width="4" height="10.5" rx="1"/></svg>';
+
 const KIND_MARKS = {
   message: { icon: ICON_KIND_MESSAGE, cls: ' message', label: 'Message', title: 'Message to an existing connection' },
   event: { icon: ICON_KIND_EVENT, cls: ' event', label: 'Event invite', title: 'Invitation to a LinkedIn event' },
+  engagement: { icon: ICON_KIND_ENGAGE, cls: ' engagement', label: 'Post engagement', title: 'Reaction (and optional comment) on a post' },
   invite: { icon: ICON_KIND_INVITE, cls: '', label: 'Connection request', title: 'Connection request' },
 };
 
@@ -752,39 +941,116 @@ function openAttentionModal() {
 }
 function closeAttentionModal() { $('#attentionModal').hidden = true; }
 
+/**
+ * Which table an Attention row belongs to.
+ *
+ * /api/attention interleaves TWO tables — profiles and engagements — and their ids are
+ * independent sequences, so the discriminator is the only thing standing between a Retry
+ * button and a write aimed at an unrelated row. Getting this wrong is not a cosmetic bug:
+ * POSTing an engagement's id to /api/profiles/:id/retry re-queues whichever PERSON happens
+ * to share that number, and that person gets contacted again.
+ *
+ * The server tags both sides (see /api/attention), so the tag is normally just read. The
+ * shape fallback covers an untagged row rather than guessing: an engagement carries
+ * post_url and never profile_url, so the two are distinguishable without the tag at all.
+ */
+function attentionRowSource(row) {
+  if (row.source === 'engagement' || row.source === 'profile') return row.source;
+  return row.post_url && !row.profile_url ? 'engagement' : 'profile';
+}
+
+/** The retry/dismiss endpoint for one Attention row. Pure, and tested as such. */
+function attentionActionPath(row, action) {
+  const base = attentionRowSource(row) === 'engagement' ? '/api/engagements' : '/api/profiles';
+  return `${base}/${row.id}/${action}`;
+}
+
+/** How a row names itself in a toast. */
+function attentionRowLabel(row) {
+  return attentionRowSource(row) === 'engagement'
+    ? postLabel(row.post_url)
+    : slugFromUrl(row.profile_url);
+}
+
+function attentionActions(row) {
+  return el('td', { class: 'row-actions' },
+    el('button', { class: 'btn btn-ghost', onclick: (e) => actOnAttentionRow(row, 'retry', e.currentTarget) }, 'Retry'),
+    el('button', { class: 'btn btn-ghost', onclick: (e) => actOnAttentionRow(row, 'dismiss', e.currentTarget) }, 'Dismiss'),
+  );
+}
+
+function attnStatusCell(status) {
+  return el('td', { class: 'status-cell' },
+    el('span', { class: `pill ${status}`, text: String(status).replace('_', ' ') }));
+}
+
+/* A profile row: unchanged from before engagements existed. */
+function renderProfileAttentionRow(p) {
+  return el('tr', {},
+    el('td', { class: 'trunc' }, el('div', { class: 'attn-profile' },
+      kindMark(p.kind),
+      el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', title: p.profile_url || '', text: slugFromUrl(p.profile_url) }),
+    )),
+    el('td', { class: 'mono trunc', title: p.cohort_name || '' }, p.cohort_name || '—'),
+    attnStatusCell(p.status),
+    el('td', { class: 'num mono' }, String(p.attempts ?? 0)),
+    el('td', { class: 'err trunc', title: p.last_error || '' }, p.last_error || '—'),
+    attentionActions(p),
+  );
+}
+
+/**
+ * An engagement row: a POST, not a person, so it fills the shared table's two identity
+ * columns with what it actually has — the post URL, and the reaction it was going to leave.
+ *
+ * "comment pending" is called out on purpose. `needs_attention` on this pipeline usually
+ * means the reaction landed but the comment could not be verified, and that is precisely
+ * the case where the operator must open the post before deciding to retry.
+ */
+function renderEngagementAttentionRow(e) {
+  const pendingComment = !!e.comment_text && !e.commented_at;
+  const detail = el('div', { class: 'attn-engage' },
+    el('span', { class: 'eng-up-react', text: reactionLabel(e.reaction) }),
+  );
+  if (pendingComment) detail.appendChild(el('span', { class: 'attn-comment', text: 'comment pending' }));
+  else if (e.comment_text) detail.appendChild(el('span', { class: 'attn-comment is-done', text: 'comment posted' }));
+
+  return el('tr', {},
+    el('td', { class: 'trunc' }, el('div', { class: 'attn-profile' },
+      kindMark('engagement'),
+      el('a', { href: e.post_url, target: '_blank', rel: 'noopener', title: e.post_url || '', text: postLabel(e.post_url) }),
+    )),
+    el('td', { class: 'trunc' }, detail),
+    attnStatusCell(e.status),
+    el('td', { class: 'num mono' }, String(e.attempts ?? 0)),
+    el('td', { class: 'err trunc', title: e.last_error || '' }, e.last_error || '—'),
+    attentionActions(e),
+  );
+}
+
 async function loadAttention() {
   const body = $('#attentionBody'), empty = $('#attentionEmpty');
   try {
     const rows = await api('/api/attention');
     if (!rows.length) { body.replaceChildren(); empty.hidden = false; return; }
     empty.hidden = true;
-    // Both conveyors land here, so each row carries its kind glyph — same marker the
-    // queue and the shared drill-downs use.
-    body.replaceChildren(...rows.map((p) => el('tr', {},
-      el('td', { class: 'trunc' }, el('div', { class: 'attn-profile' },
-        kindMark(p.kind),
-        el('a', { href: p.profile_url, target: '_blank', rel: 'noopener', title: p.profile_url || '', text: slugFromUrl(p.profile_url) }),
-      )),
-      el('td', { class: 'mono trunc', title: p.cohort_name || '' }, p.cohort_name || '—'),
-      el('td', { class: 'status-cell' }, el('span', { class: `pill ${p.status}`, text: p.status.replace('_', ' ') })),
-      el('td', { class: 'num mono' }, String(p.attempts ?? 0)),
-      el('td', { class: 'err trunc', title: p.last_error || '' }, p.last_error || '—'),
-      el('td', { class: 'row-actions' },
-        el('button', { class: 'btn btn-ghost', onclick: (e) => actOnProfile(p, 'retry', e.currentTarget) }, 'Retry'),
-        el('button', { class: 'btn btn-ghost', onclick: (e) => actOnProfile(p, 'dismiss', e.currentTarget) }, 'Dismiss'),
-      ),
-    )));
+    // Both PIPELINES land here — three campaign kinds of person plus posts — so every row
+    // carries a kind glyph and is rendered by the branch that knows its fields.
+    body.replaceChildren(...rows.map((row) => (attentionRowSource(row) === 'engagement'
+      ? renderEngagementAttentionRow(row)
+      : renderProfileAttentionRow(row))));
   } catch (_) { empty.hidden = false; }
 }
 
-async function actOnProfile(p, action, btn) {
+async function actOnAttentionRow(row, action, btn) {
   const result = $('#attentionResult');
+  const label = attentionRowLabel(row);
   if (btn) { btn.disabled = true; btn.textContent = action === 'retry' ? 'Retrying…' : 'Dismissing…'; }
   try {
-    await api(`/api/profiles/${p.id}/${action}`, { method: 'POST' });
+    await api(attentionActionPath(row, action), { method: 'POST' });
     toast(result, action === 'retry'
-      ? `Requeued ${slugFromUrl(p.profile_url)} — it's back in the queue.`
-      : `Dismissed ${slugFromUrl(p.profile_url)}.`);
+      ? `Requeued ${label} — it's back in the queue.`
+      : `Dismissed ${label}.`);
     await loadAttention();
     await refreshStatus();
   } catch (err) {
@@ -1326,6 +1592,10 @@ async function loadSettings() {
     $('#setEventInviteCap').value = s.event_invite_cap ?? '';
     $('#setEventBucketCeiling').value = s.event_bucket_ceiling ?? '';
     $('#setEventBudget').value = s.event_run_budget_minutes ?? '';
+    $('#setEngageWeeklyCap').value = s.engage_weekly_cap ?? '';
+    $('#setEngageBatchSize').value = s.engage_batch_size ?? '';
+    $('#setEngageBatchesPerDay').value = s.engage_batches_per_day ?? '';
+    $('#setEngageCommentCap').value = s.engage_comment_daily_cap ?? '';
     renderApifyKey(s);
     refreshConnections();
     loadLogs();
@@ -2096,6 +2366,10 @@ function initSettings() {
       event_invite_cap: num('#setEventInviteCap'),
       event_bucket_ceiling: num('#setEventBucketCeiling'),
       event_run_budget_minutes: num('#setEventBudget'),
+      engage_weekly_cap: num('#setEngageWeeklyCap'),
+      engage_batch_size: num('#setEngageBatchSize'),
+      engage_batches_per_day: num('#setEngageBatchesPerDay'),
+      engage_comment_daily_cap: num('#setEngageCommentCap'),
     };
     Object.keys(patch).forEach((k) => patch[k] === undefined && delete patch[k]);
     try {
@@ -2476,7 +2750,7 @@ function initEvents() {
 }
 
 /* ---------- boot ---------- */
-function tick() { refreshStatus(); refreshQueue(); }
+function tick() { refreshStatus(); refreshQueue(); refreshEngagementUpNext(); }
 
 function init() {
   initTabs();

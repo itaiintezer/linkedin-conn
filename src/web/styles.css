@@ -64,6 +64,19 @@
   --indigo-50:   #ecebfa;
   --indigo-glow: rgba(75, 70, 181, 0.20);
 
+  /* --- campaign-kind identity (cyan = post engagements) ---
+     The fourth pipeline, and the last free band on the wheel. Teal (175°) is messages,
+     blue (222°) is the `scheduled` status, indigo (243°) is events; cyan sits at ~198°,
+     in the one gap wide enough to be told apart from both neighbours. Same rule as the
+     other two: it never lands on a station puck, only on the conveyor line, the icons
+     and the chrome. Deliberately NOT plum/violet — those are `sent` and "already
+     connected" — and deliberately not warm, because amber is paused and red is halted. */
+  --cyan:      #0b6f96;
+  --cyan-700:  #095a7a;
+  --cyan-100:  #c2dde9;
+  --cyan-50:   #e3f0f6;
+  --cyan-glow: rgba(11, 111, 150, 0.20);
+
   /* --- type --- */
   --display: "Fraunces", "Iowan Old Style", Georgia, serif;
   --sans:    "Hanken Grotesk", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
@@ -480,6 +493,43 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .station.invited .puck { border-color: var(--brand-100); background: var(--brand-50); }
 .station.invited .n { color: var(--brand-700); }
 
+/* ---------- Post-engagement engine (the fourth conveyor) ----------
+   Same make once more, tinted cyan. One departure worth naming: the "Up next" list under
+   the track. The other three engines pace PEOPLE, and a puck reading "12 scheduled" is
+   checkable against the queue table below. This one paces POSTS, which live off-site — so
+   the next few rows are named, with their reaction and a link, or the number is unfalsifiable.
+   The card is read-only by construction: nothing here writes (see index.html). */
+.engine-eng { margin-top: 16px; }
+.engine-eng .kind-ico { color: var(--cyan); }
+.engine-eng .flowline { background: repeating-linear-gradient(90deg, var(--cyan-100) 0 9px, transparent 9px 20px); }
+.engine-eng .dotflow i { background: var(--cyan); box-shadow: 0 0 0 4px var(--cyan-glow); }
+.engine-eng .fuelbar > i { background: linear-gradient(90deg, var(--cyan), #3f9dc0); }
+.engine-eng .engine-idle-mark { background: var(--cyan-50); color: var(--cyan-700); }
+.engine-eng .station.is-drill:focus-visible .puck { outline-color: var(--cyan); }
+
+.eng-upnext { margin-top: 22px; padding-top: 16px; border-top: 1px dashed var(--line); }
+/* When the foot chips are showing they already draw the divider — don't stack two. */
+.engine-foot:not([hidden]) + .eng-upnext { margin-top: 14px; padding-top: 0; border-top: 0; }
+.eng-upnext-label { font-size: 11.5px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase; color: var(--ink-3); }
+.eng-upnext-list { list-style: none; margin: 9px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.eng-up {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  font-size: 13px; color: var(--ink-2);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px;
+}
+.eng-up-when { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink); flex: none; }
+.eng-up-when.is-unscheduled { font-family: var(--sans); font-weight: 500; color: var(--ink-faint); }
+.eng-up-react {
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.3px; flex: none;
+  background: var(--cyan-50); color: var(--cyan-700); border-radius: 100px; padding: 2px 9px;
+}
+/* A pending comment is the part of a row a human may need to vet, so it is marked, not implied. */
+.eng-up-comment { flex: none; display: inline-grid; place-items: center; color: var(--cyan-700); }
+.eng-up-comment svg { width: 13px; height: 13px; }
+.eng-up-url { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.eng-up-more { font-size: 12px; color: var(--ink-faint); padding: 2px 12px; }
+.engine.is-idle .eng-upnext { display: none; }
+
 .engine-foot {
   display: flex; gap: 8px; flex-wrap: wrap;
   margin-top: 22px; padding-top: 16px; border-top: 1px dashed var(--line);
@@ -505,6 +555,7 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .kind-mark svg { width: 12px; height: 12px; }
 .kind-mark.message { background: var(--teal-50); color: var(--teal-700); }
 .kind-mark.event { background: var(--indigo-50); color: var(--indigo-700); }
+.kind-mark.engagement { background: var(--cyan-50); color: var(--cyan-700); }
 .qg-head .kind-mark { width: 22px; height: 22px; }
 .tag.kind-tag { text-transform: none; letter-spacing: 0.1px; }
 .tag.kind-tag.message { background: var(--teal-50); color: var(--teal-700); }
@@ -532,9 +583,10 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 
 /* Needs-attention table: fixed layout so the long cohort name and error text can't
    blow the columns past the modal (which clipped Error + the Actions buttons under
-   the wrap's overflow:hidden). Widths sum to 100%; greedy text columns truncate. */
-.attn-table { table-layout: fixed; }
-   Profile is 3% wider than the other text columns are, to pay for the kind glyph. */
+   the wrap's overflow:hidden). Widths sum to 100%; greedy text columns truncate.
+   Profile is 3% wider than the other text columns are, to pay for the kind glyph.
+   (The comment above used to be unterminated, which made the CSS parser eat the rule
+   that followed it — harmless only because the rule was a duplicate.) */
 .attn-table { table-layout: fixed; }
 .attn-table .c-profile  { width: 19%; }
 .attn-table .c-cohort   { width: 15%; }
@@ -549,6 +601,11 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
 .attn-table td.trunc > .attn-profile { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .attn-table td.trunc > .attn-profile > a { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .attn-table .attn-profile .kind-mark { width: 18px; height: 18px; border-radius: 5px; }
+/* An engagement row has no cohort, so the second column carries what it does have: the
+   reaction, and whether a comment is still outstanding. */
+.attn-table td.trunc > .attn-engage { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.attn-comment { font-size: 11.5px; font-weight: 600; color: var(--amber); white-space: nowrap; }
+.attn-comment.is-done { color: var(--ink-faint); font-weight: 500; }
 /* Tighter cell padding so the status pill fits on one line and both action buttons
    fit their columns without clipping. */
 .attn-table td.status-cell { padding-left: 10px; padding-right: 10px; }
@@ -867,6 +924,7 @@ body > .modal-overlay {
 .settings-grid .section-divider:first-child { margin-top: 0; }
 .settings-grid .section-divider > span { display: inline-flex; align-items: center; gap: 7px; }
 .settings-grid .section-divider.is-msg .kind-ico { color: var(--teal); }
+.settings-grid .section-divider.is-eng .kind-ico { color: var(--cyan); }
 .settings-note { margin: -6px 0 0; max-width: 56ch; }
 
 /* ---------- Run log ---------- */
