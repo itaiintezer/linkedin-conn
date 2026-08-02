@@ -192,10 +192,17 @@ function planKind(
  * that already reacted today. Subtracting this from the daily target keeps repeated planning
  * runs (startup + hourly) from stacking past the daily cap.
  *
- * A row that reacted today AND is scheduled again would be counted twice. That is not
- * reachable today — nothing re-schedules a row after it reacts — and if a future retry path
- * introduces it, double-counting errs toward planning FEWER engagements, which is the safe
- * direction for a cap.
+ * A row that reacted today AND is scheduled again is counted twice, and that IS reachable:
+ * POST /api/engagements/:id/retry returns a row to `queued` whatever its reacted_at says, so
+ * the planner re-schedules it. Two ordinary paths land there — a `needs_attention` row from
+ * an unverified comment, and a `skipped`/`comments_disabled` row — and both carry a non-null
+ * reacted_at by construction, since each is only reachable past the reaction step. (Retrying
+ * a `dismissed` row that had already reacted does the same.)
+ *
+ * Tolerated, not fixed: the double count errs toward planning FEWER engagements, which is
+ * the safe direction for a cap, and it self-corrects at the next midnight. De-duplicating
+ * would mean intersecting the scheduled set with "reacted today" on every planning run to
+ * buy back a slot or two on a day someone clicked Retry.
  */
 export function engagementsCommittedToday(repos: Repos, now: Date): number {
   return repos.engagements.byStatus('scheduled').length
