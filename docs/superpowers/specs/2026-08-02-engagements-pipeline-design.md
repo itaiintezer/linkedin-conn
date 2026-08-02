@@ -757,3 +757,66 @@ when a post already carries one. Retracting a reaction.
    estimated forecast pins `at = now`). The engagement card must not reproduce that bug —
    it should render "not scheduled" rather than an imminent time when the queue is
    unplanned.
+
+## Live verification of the production driver (2026-08-02)
+
+The findings above were captured with `scripts/probe-post-engage.ts`, which drives Playwright
+directly. This section records the separate exercise of the **shipped** code path —
+`LinkedInDriver.reactToPost` / `.commentOnPost` via `src/browser/post-selectors.ts` — through
+`scripts/verify-post-engage.ts`, against four real posts.
+
+**Confirmed working:**
+
+- Shortlink expansion end to end. Two `lnkd.in/p/…` links resolved through `resolveShortlink`
+  (previously only ever exercised against an injected fake).
+- The **hover flyout**, driven for real: `celebrate` and `insightful` both placed. This was the
+  most fragile part of the feature and had never been executed.
+- The **destructive-click guard**: on a post already carrying our Like, the driver reported
+  `already` and did not click. A click would have removed the reaction.
+- `observedUrn` extraction, and detail-shell container scoping (`div.update-outlet`) resolving
+  to exactly one post container per page.
+- Comment publication and confirmation through `readCommentConfirmation`.
+
+**The URN divergence is the normal case, not the exception.** Three of four posts disagreed
+between the URL and the page, across two different URN types:
+
+| URL URN | page `data-urn` |
+|---|---|
+| `urn:li:share:7489401095899770880` | `urn:li:activity:7489401096851906561` |
+| `urn:li:ugcPost:7488993474344845314` | `urn:li:activity:7488993475170861056` |
+| `urn:li:share:7488905647124590592` | `urn:li:activity:7488905647955263488` |
+| `urn:li:activity:7487584764410019841` | *(same)* |
+
+Run-time reconciliation is therefore load-bearing, not a safety net.
+
+### NEW FINDING — comment attribution by post URN does not work
+
+A comment's `data-id` does **not** carry the container's URN. On the one post whose URL and
+`data-urn` agreed (`urn:li:activity:7487584764410019841`), the comment we posted came back as:
+
+```
+urn:li:comment:(ugcPost:7487584763386560512,7489660459537788928)
+```
+
+A `ugcPost` URN, with a different id, on a post the container calls `activity`. So the
+attribution signal proposed in finding 5 — match `article[data-id^="urn:li:comment:(activity:<postUrn>"` —
+**fails even in the case it was designed for**, and the live run reported `attributedToPost=false`.
+
+Confirmation succeeded only because the driver was built to degrade: it falls back to the
+body-text match plus the composer having cleared, and treats attribution as advisory. That
+fallback was written defensively against a case nobody had observed. It is now the primary path.
+
+**Consequence to keep in mind:** comment confirmation currently rests on "a comment containing
+our text appeared, and the composer cleared" — not on proof the comment is ours on this post.
+Two operators commenting identical text on the same post within the confirmation window could
+in principle cross-confirm. The `• You` badge is read and logged but is English-only, so it is
+not load-bearing. Tightening this needs a language-independent ownership signal; the actor
+`href` on `.comments-comment-meta__actor` is the obvious candidate and was not tested.
+
+### Still unverified
+
+- The remaining three reactions (`support`, `love`, `funny`). The flyout mechanism is proven,
+  so these are low-risk, but the exact aria-labels are untested.
+- `comments_disabled` — no post with commenting restricted was ever available.
+- The `unverified` comment path. By its nature it only appears when confirmation fails, which
+  it did not.
