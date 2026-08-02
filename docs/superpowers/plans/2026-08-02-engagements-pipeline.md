@@ -722,6 +722,26 @@ test('countCommentedSince counts only rows that actually commented', () => {
   expect(repos.engagements.countCommentedSince('2026-08-02T00:00:00.000Z')).toBe(1);
 });
 
+test('reconcileUrn rewrites a row to the URN the driver actually observed', () => {
+  const e = repos.engagements.add(URL, 'urn:li:share:7489401095899770880', 'like', null);
+  expect(repos.engagements.reconcileUrn(e.id, 'urn:li:activity:7489401096851906561'))
+    .toBe('reconciled');
+  expect(repos.engagements.findById(e.id)!.post_urn).toBe('urn:li:activity:7489401096851906561');
+});
+
+test('reconcileUrn reports a duplicate rather than colliding with an existing row', () => {
+  const canonical = repos.engagements.add('u1', 'urn:li:activity:7489401096851906561', 'like', null);
+  const dupe = repos.engagements.add('u2', 'urn:li:share:7489401095899770880', 'like', null);
+  expect(repos.engagements.reconcileUrn(dupe.id, canonical.post_urn)).toBe('duplicate');
+  // The row is NOT rewritten — the caller retires it instead of engaging twice.
+  expect(repos.engagements.findById(dupe.id)!.post_urn).toBe('urn:li:share:7489401095899770880');
+});
+
+test('reconcileUrn is a no-op when the URN already matches', () => {
+  const e = repos.engagements.add(URL, URN, 'like', null);
+  expect(repos.engagements.reconcileUrn(e.id, URN)).toBe('unchanged');
+});
+
 test('countsByStatus reports every status the dashboard renders', () => {
   const a = repos.engagements.add('u1', 'urn:li:activity:1', 'like', null);
   repos.engagements.add('u2', 'urn:li:activity:2', 'like', null);
@@ -827,6 +847,28 @@ export class EngagementRepo {
   countCommentedSince(iso: string): number {
     return (this.db.prepare('SELECT COUNT(*) c FROM engagements WHERE commented_at >= ?')
       .get(iso) as unknown as { c: number }).c;
+  }
+
+  /**
+   * Rewrite a row's URN to the canonical one the driver read off the live post.
+   *
+   * The URN parsed from a URL is only a best-effort identity: LinkedIn's share-link slug
+   * carries a DIFFERENT number from the post's own `data-urn` (observed 2026-08-02 —
+   * slug 7489401095899770880 vs data-urn urn:li:activity:7489401096851906561 for one post).
+   * So two URL forms of one post enqueue as two rows, and this is how that self-heals on
+   * first execution.
+   *
+   * Returns 'reconciled' when the row was updated, 'duplicate' when the canonical URN is
+   * already held by ANOTHER row — in which case this row is the redundant one and the
+   * caller must retire it rather than engaging twice with the same post.
+   */
+  reconcileUrn(id: number, canonicalUrn: string): 'unchanged' | 'reconciled' | 'duplicate' {
+    const row = this.findById(id);
+    if (!row || row.post_urn === canonicalUrn) return 'unchanged';
+    const holder = this.findByUrn(canonicalUrn);
+    if (holder && holder.id !== id) return 'duplicate';
+    this.db.prepare('UPDATE engagements SET post_urn = ? WHERE id = ?').run(canonicalUrn, id);
+    return 'reconciled';
   }
 
   countsByStatus(): Record<string, number> {
@@ -1887,6 +1929,20 @@ async function attemptEngagement(
 
   if (e.reacted_at === null) {
     const outcome = await driver.reactToPost(e.post_url, e.reaction);
+
+    // Reconcile the identity against what the live post actually calls itself. The URN
+    // parsed from a URL is best-effort: a share-link slug carries a different number from
+    // the post's own data-urn, so two URL forms of one post enqueue as two rows. This is
+    // where that self-heals. A `duplicate` verdict means ANOTHER row already holds the
+    // canonical URN — this one is redundant, and engaging again would react twice.
+    if (outcome.observedUrn) {
+      const verdict = repos.engagements.reconcileUrn(e.id, outcome.observedUrn);
+      if (verdict === 'duplicate') {
+        return skipEngagement(repos, e, 'dismissed',
+          'the same post is already engaged under its canonical URN');
+      }
+    }
+
     switch (outcome.result) {
       case 'done':
         repos.engagements.setStatus(e.id, 'sending', { reacted_at: clock().toISOString() });
@@ -2152,7 +2208,13 @@ git commit -m "feat(engagements): recover engagements orphaned by a crash"
 
 ## Task 12: Real driver implementation
 
-Depends on the Task 1 findings. Do not start until that section exists in the spec.
+The Task 1 findings are in the spec under `## Discovery findings (live-verified 2026-08-02)`. **Read that section before writing a line of this task** — it supersedes anything below that contradicts it.
+
+**Three hazards the probe found that are not obvious from the design:**
+
+1. **The reaction click is DESTRUCTIVE, not idempotent.** Clicking the trigger while `aria-pressed="true"` *removes* the existing reaction. The driver must read state first and return `already` — a blind click un-likes the post. This was caught live: the company-page post was already Liked and a naive implementation would have silently removed it.
+2. **The action bar's first button is an identity toggle** (`aria-label="Open menu for switching identity when interacting with this post"`). On an account that administers company pages, clicking it switches the authoring identity. Never select the bar's first button positionally — always by the `aria-pressed` + `aria-label^="React "` predicate.
+3. **The comment submit button does not exist until the editor has text**, has no `aria-label`, and its accessible name is **`Comment`** — not "Post". It must be scoped to `form.comments-comment-box__form`, because the action bar's own button shares that name. The editor is Quill, so drive it with `insertText` rather than per-key typing (emoji are astral-plane).
 
 **Files:**
 - Create: `src/browser/post-selectors.ts`
@@ -2317,10 +2379,18 @@ test('an unparseable post URL is rejected', async () => {
   expect(r.statusCode).toBe(400);
 });
 
-test('a shortlink is rejected with actionable guidance', async () => {
-  const r = await post('/api/engagements', { post_url: 'https://lnkd.in/abc' });
+test('a shortlink that cannot be expanded is rejected with actionable guidance', async () => {
+  // No network in tests: resolveShortlink's fetch is injected, and buildServer must be
+  // given a stub that fails. See the note below the test block.
+  const r = await post('/api/engagements', { post_url: 'https://lnkd.in/dead' });
   expect(r.statusCode).toBe(400);
-  expect(r.json().error).toMatch(/expand/i);
+  expect(r.json().error).toMatch(/full post URL/i);
+});
+
+test('a shortlink that resolves is enqueued under the expanded URL', async () => {
+  const r = await post('/api/engagements', { post_url: 'https://lnkd.in/good' });
+  expect(r.statusCode).toBe(201);
+  expect(r.json().post_urn).toBe(URN);
 });
 
 test('an over-long comment is rejected', async () => {
@@ -2434,6 +2504,20 @@ npx vitest run tests/api/engagements.test.ts
 
 Expected: FAIL — `POST /api/engagements` 404s.
 
+**Injecting the fetch so tests never hit the network.** `resolveShortlink` takes an optional `fetchImpl`. Thread it through `buildServer`'s existing `opts` object — the same injection pattern `apifyClientFactory` already uses, and for the same reason:
+
+```ts
+opts: {
+  incidentsDir?: string;
+  senderOptions?: Pick<SenderOptions, 'sleep' | 'rng'>;
+  apifyClientFactory?: (token: string) => ApifyClient;
+  /** Injected so tests never reach the network. Production uses global fetch. */
+  fetchImpl?: typeof fetch;
+} = {}
+```
+
+The route then calls `resolveShortlink(rawUrl, { fetchImpl: opts.fetchImpl })`. In `tests/api/engagements.test.ts`, pass a stub that 301s `https://lnkd.in/good` to the canonical `/feed/update/<URN>/` URL and fails `https://lnkd.in/dead`. **No test may make a real network request** — verify that by construction.
+
 - [ ] **Step 3a: Add `MAX_COMMENT`**
 
 In `src/core/message.ts`, beside the existing constants:
@@ -2448,7 +2532,9 @@ export const MAX_COMMENT = 1250;
 Extend the imports:
 
 ```ts
-import { normalizeProfileUrl, extractProfileUrls, normalizePostUrl } from '../core/url.js';
+import {
+  normalizeProfileUrl, extractProfileUrls, normalizePostUrl, isShortlink, resolveShortlink,
+} from '../core/url.js';
 import { parseReaction, DEFAULT_REACTION } from '../core/engagement-action.js';
 import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE, MAX_COMMENT } from '../core/message.js';
 import type { BrowserDriver, CampaignKind, EngagementStatus, ProfileStatus, Settings } from '../types.js';
@@ -2468,7 +2554,7 @@ Add the routes. Place them after the events block, before `app.get('/api/metrics
 
   type EngagementReject = {
     post_url: string;
-    reason: 'invalid_url' | 'shortlink_unsupported' | 'duplicate' | 'unknown_reaction' | 'comment_too_long';
+    reason: 'invalid_url' | 'shortlink_unresolvable' | 'duplicate' | 'unknown_reaction' | 'comment_too_long';
     /** Human-readable and already specific — it names the offending reaction or limit.
      *  Carried on the reject so the single-item path can send it verbatim as `error`
      *  without re-parsing anything. */
@@ -2494,10 +2580,6 @@ Add the routes. Place them after the events block, before `app.get('/api/metrics
     }
     const reaction = parsed.reaction ?? DEFAULT_REACTION;
 
-    if (/^https?:\/\/(www\.)?lnkd\.in\//i.test(post_url.trim())) {
-      return { ok: false, reject: { post_url, reason: 'shortlink_unsupported',
-        message: 'shortened links cannot be resolved without a network call — expand the link first' } };
-    }
     const post = normalizePostUrl(post_url);
     if (post === null) {
       return { ok: false, reject: { post_url, reason: 'invalid_url', message: 'not a LinkedIn post URL' } };
@@ -2531,7 +2613,29 @@ Add the routes. Place them after the events block, before `app.get('/api/metrics
     const created: number[] = [];
 
     for (const item of items) {
-      const v = validateEngagement(item);
+      // Expand a lnkd.in shortlink BEFORE validating. This is the one network call on the
+      // enqueue path, and it is deliberate: the probe confirmed lnkd.in is a plain single-hop
+      // 301 with no JS interstitial, and shortlinks turn out to be the common real-world
+      // paste form (a mobile share sheet produces one). resolveShortlink is bounded and
+      // returns null rather than throwing, so a dead or slow link degrades to a named reject.
+      let resolved = item;
+      const rawUrl = ((item ?? {}) as Record<string, unknown>).post_url;
+      if (isShortlink(rawUrl)) {
+        const expanded = await resolveShortlink(rawUrl as string);
+        if (expanded === null) {
+          const reject = {
+            post_url: String(rawUrl),
+            reason: 'shortlink_unresolvable' as const,
+            message: 'that shortened link could not be expanded — paste the full post URL',
+          };
+          if (!bulk) return reply.code(400).send({ error: reject.message });
+          rejected.push(reject);
+          continue;
+        }
+        resolved = { ...(item as Record<string, unknown>), post_url: expanded };
+      }
+
+      const v = validateEngagement(resolved);
       if (!v.ok) {
         if (!bulk) return reply.code(400).send({ error: v.reject.message });
         rejected.push(v.reject);

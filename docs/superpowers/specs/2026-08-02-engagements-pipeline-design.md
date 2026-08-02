@@ -336,24 +336,53 @@ whichever did not run yet. The `engagements` table itself needs no migration:
 |---|---|
 | `https://www.linkedin.com/feed/update/urn:li:activity:7123…/` | URN is literally in the path |
 | `https://www.linkedin.com/posts/<slug>-activity-7123…-AbCd` | numeric id follows `-activity-` in the slug; rebuild as `urn:li:activity:<id>` |
+| `https://www.linkedin.com/posts/<slug>-share-7489…-VbZT` | **the common real-world form**; id follows `-share-`; rebuild as `urn:li:share:<id>` |
 | `…?updateId=urn%3Ali%3Aactivity%3A7123…` | URL-decode the query parameter |
 | bare `urn:li:activity:7123…` | accepted as-is |
-| `https://lnkd.in/<code>` | **rejected** with reason `shortlink_unsupported` |
+| `https://lnkd.in/<code>` | expanded by `resolveShortlink` before parsing (see below) |
 
 The URN type is captured, not assumed: `urn:li:activity:`, `urn:li:ugcPost:` and
 `urn:li:share:` are all preserved verbatim in `post_urn`. `post_url` is always rewritten to
 the canonical `https://www.linkedin.com/feed/update/<urn>/` form.
 
-Shortlinks are rejected rather than silently followed: resolving one requires an HTTP
-redirect, which turns a pure parse into a network call on the enqueue path. The error
-message tells the caller to expand the link first.
+### Shortlinks are expanded, not rejected (revised 2026-08-02)
 
-**Known gap.** For the same post, an `activity` URN and a `ugcPost` URN are different
-numbers, so two URLs in different forms could each enqueue. Unlikely in practice — share
-links are overwhelmingly the `activity` form. The probe (below) must record whether the
-post container exposes a canonical URN attribute; if it does, the driver reconciles at run
-time and the gap closes. If it does not, the gap is accepted and documented, because the
-alternative is a network round-trip per enqueue.
+The original design rejected `lnkd.in` links to keep the enqueue path free of network
+calls. That did not survive contact with reality: the very first URL supplied in testing was
+a shortlink, and a mobile share sheet produces one by default. The probe settled the
+feasibility question — `lnkd.in` answers a **plain HTTP 301, one hop, no JS interstitial** —
+so expansion costs one cheap unauthenticated request, not a browser.
+
+The pure/impure split is preserved rather than abandoned:
+
+- `normalizePostUrl` stays pure and synchronous, and still returns `null` for a shortlink.
+- `isShortlink(raw)` and `resolveShortlink(raw, { fetchImpl })` are separate. The resolver is
+  bounded (5s timeout, ≤3 redirects), refuses to follow to a non-`linkedin.com` host, and
+  returns `null` rather than throwing, so a dead link degrades to a named reject.
+- The API expands before validating. `fetchImpl` is injected through `buildServer`, the same
+  way `apifyClientFactory` is, so no test ever reaches the network.
+
+`isShortlink` matches the host the way `hostOf` does rather than with a scheme-anchored
+regex — a bare `lnkd.in/p/…` with no scheme is exactly what gets pasted, and a
+scheme-anchored test would miss it and produce a misleading "not a LinkedIn post URL".
+
+### The URL's id is not the post's id (observed 2026-08-02)
+
+**This is no longer a hypothetical gap.** For one real post, the share-link slug carried
+`7489401095899770880` while the post's own `data-urn` read
+`urn:li:activity:7489401096851906561` — different numbers for the same post. So the URN
+parsed from any URL is a **best-effort identity**, and two URL forms of one post will
+enqueue as two rows.
+
+The probe confirmed the post container exposes `data-urn` on `div[role="article"]`, so the
+resolution is **run-time reconciliation**: `reactToPost` returns the canonical URN as
+`observedUrn`, and the sender calls `EngagementRepo.reconcileUrn` before doing anything
+else. If another row already holds that canonical URN, this row is the redundant one and is
+retired rather than engaged with a second time.
+
+Enqueue stays offline and cheap; the duplicate is transient and self-heals on first
+execution. The alternative — opening every post in the authenticated browser at enqueue —
+would take the single browser lock and fight the sender for it.
 
 ## Scheduling
 
@@ -560,7 +589,7 @@ finding out mid-run that a URL was junk is far too late.
   "rejected": [ { "post_url": "…", "reason": "invalid_url" } ] }
 ```
 
-Reject reasons: `invalid_url`, `shortlink_unsupported`, `duplicate`, `unknown_reaction`,
+Reject reasons: `invalid_url`, `shortlink_unresolvable`, `duplicate`, `unknown_reaction`,
 `comment_too_long`. Single-item creation returns 400 (or 409 for `duplicate`) instead.
 
 Boundary validation:
@@ -613,7 +642,7 @@ proven unchanged before engagement behaviour is added.
 ## Out of scope
 
 Reposts and follows. Post discovery of any kind — only explicitly supplied URLs.
-`lnkd.in` expansion. Editing or deleting a comment once posted. Comment templates or
+Editing or deleting a comment once posted. Comment templates or
 variable substitution. Grouping, labels or cohorts for engagements. Reaction replacement
 when a post already carries one. Retracting a reaction.
 
