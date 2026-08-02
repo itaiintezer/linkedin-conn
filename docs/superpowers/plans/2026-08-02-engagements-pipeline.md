@@ -1850,6 +1850,27 @@ function failEngagement(
   return recordFailure(repos, outcome.error ?? 'unknown', clock());
 }
 
+/**
+ * Fold this row onto the identity the live post reports, once the reaction is recorded.
+ *
+ * Returns a terminal AttemptResult when the row turns out to be redundant — another row
+ * already holds the canonical URN, so continuing would react and comment on the same post
+ * twice. Returns null to carry on.
+ *
+ * `reconcileUrn` throws on a missing row (deliberately — 'unchanged' would be an
+ * affirmative false claim about identity). That cannot fire here in practice, since the
+ * row was loaded moments ago in a single-process app, and if it ever did the reaction is
+ * already stamped, so nothing is lost silently.
+ */
+function reconcileAfterReaction(
+  repos: Repos, e: Engagement, outcome: EngagementOutcome,
+): AttemptResult | null {
+  if (!outcome.observedUrn) return null;
+  if (repos.engagements.reconcileUrn(e.id, outcome.observedUrn) !== 'duplicate') return null;
+  return skipEngagement(repos, e, 'dismissed',
+    'the same post is already engaged under its canonical URN');
+}
+
 /** A checkpoint halts the whole engine, not one pipeline — the LinkedIn account is the
  *  shared resource. Same shape as handleCheckpoint for profiles. */
 function handleEngagementCheckpoint(
@@ -1930,18 +1951,12 @@ async function attemptEngagement(
   if (e.reacted_at === null) {
     const outcome = await driver.reactToPost(e.post_url, e.reaction);
 
-    // Reconcile the identity against what the live post actually calls itself. The URN
-    // parsed from a URL is best-effort: a share-link slug carries a different number from
-    // the post's own data-urn, so two URL forms of one post enqueue as two rows. This is
-    // where that self-heals. A `duplicate` verdict means ANOTHER row already holds the
-    // canonical URN — this one is redundant, and engaging again would react twice.
-    if (outcome.observedUrn) {
-      const verdict = repos.engagements.reconcileUrn(e.id, outcome.observedUrn);
-      if (verdict === 'duplicate') {
-        return skipEngagement(repos, e, 'dismissed',
-          'the same post is already engaged under its canonical URN');
-      }
-    }
+    // ORDER MATTERS: the switch below runs FIRST so a landed reaction is stamped into
+    // reacted_at before anything else can fail. Reconciliation happens after, in
+    // `reconcileAfterReaction`. Doing it the other way round — reconciling between the
+    // click and the stamp — puts the one throwing call (reconcileUrn throws on a missing
+    // row) on the exact path where a real reaction is already live and unrecorded, which
+    // would leave the row stuck in `sending` with a placed reaction nobody knows about.
 
     switch (outcome.result) {
       case 'done':
@@ -1970,6 +1985,13 @@ async function attemptEngagement(
       default:
         return { halted: failEngagement(repos, e, outcome, clock), contacted: true };
     }
+
+    // The reaction is now recorded, so it is safe to touch identity. Reconcile against what
+    // the live post calls itself: the URN parsed from a URL is best-effort, and a
+    // share-link slug carries a different number from the post's own data-urn, so two URL
+    // forms of one post enqueue as two rows. This is where that self-heals.
+    const retired = reconcileAfterReaction(repos, e, outcome);
+    if (retired) return retired;
   }
 
   if (e.comment_text !== null && e.commented_at === null) {
