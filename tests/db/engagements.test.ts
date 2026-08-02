@@ -113,6 +113,59 @@ test('countCommentedSince counts only rows that actually commented', () => {
   expect(repos.engagements.countCommentedSince('2026-08-02T00:00:00.000Z')).toBe(1);
 });
 
+// ── The timestamp-format CHECKs ─────────────────────────────────────────────────────────
+// countReactedSince / countCommentedSince compare these columns as TEXT, which is only a
+// chronological comparison while every value is the one fixed-width shape toISOString()
+// produces. send_log.at is the live proof of the alternative: it holds the datetime('now')
+// space-form and silently drops out of EventRepo.countSentSince's `>=`. These pin the shape
+// in the schema so a future writer cannot reintroduce that bug here.
+
+test('a real toISOString() value is accepted into both timestamp columns', () => {
+  const iso = new Date().toISOString();
+  const e = repos.engagements.add(URL, URN, 'like', 'hello');
+  repos.engagements.setStatus(e.id, 'sent', { reacted_at: iso, commented_at: iso });
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.reacted_at).toBe(iso);
+  expect(row.commented_at).toBe(iso);
+});
+
+test('NULL is accepted in both timestamp columns — an un-run task has neither', () => {
+  const e = repos.engagements.add(URL, URN, 'like', null);
+  expect(e.reacted_at).toBeNull();
+  expect(e.commented_at).toBeNull();
+  // And explicitly clearing them back to NULL is legal too (the retry path).
+  repos.engagements.setStatus(e.id, 'queued', { reacted_at: null, commented_at: null });
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.reacted_at).toBeNull();
+  expect(row.commented_at).toBeNull();
+});
+
+test("the datetime('now') space-form is rejected — this is the send_log bug", () => {
+  const e = repos.engagements.add(URL, URN, 'like', 'hello');
+  expect(() => repos.engagements.setStatus(e.id, 'sent', { reacted_at: '2026-07-31 16:50:00' }))
+    .toThrow(/CHECK constraint failed/);
+  expect(() => repos.engagements.setStatus(e.id, 'sent', { commented_at: '2026-07-31 16:50:00' }))
+    .toThrow(/CHECK constraint failed/);
+  expect(repos.engagements.findById(e.id)!.reacted_at).toBeNull();
+});
+
+test('a local-offset timestamp is rejected — the window maths assumes UTC', () => {
+  const e = repos.engagements.add(URL, URN, 'like', 'hello');
+  expect(() => repos.engagements.setStatus(e.id, 'sent', { reacted_at: '2026-08-02T12:00:00+03:00' }))
+    .toThrow(/CHECK constraint failed/);
+  expect(() => repos.engagements.setStatus(e.id, 'sent', { commented_at: '2026-08-02T12:00:00+03:00' }))
+    .toThrow(/CHECK constraint failed/);
+});
+
+test('a seconds-precision ISO form and an empty string are rejected too', () => {
+  // Not fixed-width, so it sorts wrong against a .sss value sharing its second.
+  const e = repos.engagements.add(URL, URN, 'like', null);
+  expect(() => repos.engagements.setStatus(e.id, 'sent', { reacted_at: '2026-08-02T12:00:00Z' }))
+    .toThrow(/CHECK constraint failed/);
+  expect(() => repos.engagements.setStatus(e.id, 'sent', { reacted_at: '' }))
+    .toThrow(/CHECK constraint failed/);
+});
+
 test('reconcileUrn rewrites a row to the URN the driver actually observed', () => {
   const e = repos.engagements.add(URL, 'urn:li:share:7489401095899770880', 'like', null);
   expect(repos.engagements.reconcileUrn(e.id, 'urn:li:activity:7489401096851906561'))

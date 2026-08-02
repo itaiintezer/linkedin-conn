@@ -335,8 +335,25 @@ CREATE TABLE IF NOT EXISTS engagements (
   scheduled_for TEXT,
   -- Partial progress, deliberately NOT one sent_at: the task does two things in sequence
   -- and a retry after a failed comment must not re-drive the reaction.
-  reacted_at TEXT,
-  commented_at TEXT,
+  --
+  -- The CHECKs pin the exact shape toISOString() produces (YYYY-MM-DDTHH:MM:SS.sssZ), NULL
+  -- still allowed. This is a scar, not decoration. countReactedSince / countCommentedSince
+  -- compare these columns with `>= ?` against an ISO string, and TEXT >= TEXT is only a
+  -- chronological comparison while EVERY value is that one fixed-width shape. send_log.at
+  -- is the live proof of what happens otherwise: it is written by the datetime('now')
+  -- default, so it holds '2026-07-31 16:50:00', and EventRepo.countSentSince compares it to
+  -- windowStartIso() -> '2026-07-25T16:50:00.000Z'. Byte 10 is ' ' (0x20) vs 'T' (0x54), so
+  -- on a shared date prefix the comparison is silently FALSE and real sends vanish from the
+  -- weekly counter. A CHECK cannot be added by ALTER TABLE in SQLite, so it had to land
+  -- before this table existed in anyone's database.
+  reacted_at TEXT CHECK (
+    reacted_at IS NULL
+    OR reacted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  ),
+  commented_at TEXT CHECK (
+    commented_at IS NULL
+    OR commented_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  ),
   priority INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
