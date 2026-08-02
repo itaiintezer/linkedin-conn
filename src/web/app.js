@@ -690,7 +690,11 @@ function noteButton(note) {
   const has = !!(note && note.trim());
   const text = has ? note : 'No note — bare request';
   const btn = el('button', {
-    class: 'note-btn' + (has ? '' : ' empty'),
+    // `is-empty`, NOT `empty`: `.empty` is the page-level empty-state block
+    // (padding: 48px 20px). Same specificity as `.note-btn` and declared later, so it
+    // won the padding cascade and — box-sizing being border-box — clamped the glyph's
+    // height:30px up to its own padding, blowing every note-less queue row out to ~114px.
+    class: 'note-btn' + (has ? '' : ' is-empty'),
     type: 'button',
     'aria-label': has ? `Note: ${note}` : 'No note — bare request',
     onmouseenter: function () { showNotePop(this, text); },
