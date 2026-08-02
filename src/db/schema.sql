@@ -300,10 +300,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS connections_fts USING fts5(doc);
 -- optionally with a comment.
 --
 -- Deliberately NOT a CampaignKind. `profiles` is person-shaped — first_name,
--- accepted_at, thread_url, UNIQUE(profile_url, kind) — and a post is not a
--- person. Separate table; shared pause / guardrail / working-hours /
--- browser-mutex rails, and drained by the SAME sender tick as invites and
--- messages (unlike event invites, which need a reserved window of their own).
+-- accepted_at, thread_url — and a post is not a person. The hard blocker is
+-- profiles.cohort_id: NOT NULL REFERENCES cohorts(id), and an engagement has
+-- no cohort to belong to. Note that UNIQUE(profile_url, kind) is NOT the
+-- obstacle here that it is for event invites: one post, one engagement is
+-- precisely what that constraint would give us. The FK is what rules it out.
+-- Separate table; shared pause / guardrail / working-hours / browser-mutex
+-- rails, and drained by the SAME sender tick as invites and messages (unlike
+-- event invites, which need a reserved window of their own).
 --
 -- CAREFUL: CREATE TABLE IF NOT EXISTS back-fills the whole table on every
 -- openDatabase, but it is a no-op once the table exists. A column added here
