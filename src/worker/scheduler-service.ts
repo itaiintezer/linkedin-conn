@@ -4,7 +4,7 @@ import { CAMPAIGN_KINDS } from '../core/campaign-kind.js';
 import { planDailyBatches, assignSchedule } from '../core/schedule.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
-import { capsFor } from '../core/caps.js';
+import { capsFor, type KindCaps } from '../core/caps.js';
 import {
   conflictsWithReservation, filterReservedSlots, type ReservationWindow,
 } from '../core/reservations.js';
@@ -69,29 +69,49 @@ export function estimatedBatchRuntimeMs(s: Settings, batchSize: number): number 
   return Math.max(1, batchSize) * gap;
 }
 
-function planKind(
-  repos: Repos, s: Settings, now: Date, kind: CampaignKind, windowEnd: Date,
-  rng: () => number, reserved: ReservationWindow[] = [],
+/**
+ * One queue's worth of planning: pick today's slots, route around reservations, clamp to
+ * the weekly/daily/slot budget, and assign.
+ *
+ * Extracted from planKind so a third pipeline (engagements) reuses it rather than owning a
+ * second near-copy of the slot maths. Takes no Repos: every database read is the adapter's
+ * job, which also makes this directly unit-testable.
+ *
+ * ORDERING MATTERS. The three early returns happen BEFORE any rng value is drawn, so an
+ * empty or capped-out queue costs zero draws and never shifts another queue's rng
+ * sequence. planAndAssignToday shares one rng across every queue. Do not reorder them.
+ */
+export interface QueueSpec {
+  /** Log label: 'invite' | 'message' | 'engagement'. */
+  name: string;
+  caps: KindCaps;
+  /** Already spent in the rolling weekly window. */
+  sentInWindow: number;
+  /** Remaining for today. */
+  dailyRemaining: number;
+  /** Queued row ids in priority order, already clamped by any queue-specific rule. */
+  queuedIds: number[];
+  setScheduled(id: number, iso: string): void;
+}
+
+export function planQueue(
+  s: Settings, now: Date, windowEnd: Date, rng: () => number,
+  reserved: ReservationWindow[], spec: QueueSpec,
 ): void {
-  const caps = capsFor(s, kind);
-  const sentInWindow = repos.events.countSentSince(windowStartIso(now), kind);
-  const weeklyRemaining = remainingCapacity(caps.weeklyCap, sentInWindow);
+  const weeklyRemaining = remainingCapacity(spec.caps.weeklyCap, spec.sentInWindow);
   if (weeklyRemaining <= 0) return;
 
   // Pace by day, not just by week: the weekly cap is a backstop, but the intended daily
   // volume is batchesPerDay * batchSize. Without this, a single day could spend the
   // entire weekly allowance at once (and a late-day run would pile it onto one slot).
-  const batchSize = Math.max(1, caps.batchSize);
-  const dailyBudget = dailyRemainingFor(repos, s, now, kind);
-  if (dailyBudget <= 0) return;
+  const batchSize = Math.max(1, spec.caps.batchSize);
+  if (spec.dailyRemaining <= 0) return;
 
-  // Check the queue before drawing any rng values: an empty per-kind queue should cost
-  // zero rng draws, so one kind's emptiness never shifts the other kind's rng sequence.
-  const queuedAll = repos.profiles.queuedByPriorityKind(kind);
-  if (queuedAll.length === 0) return;
+  // Check the queue before drawing any rng values — see the ORDERING note above.
+  if (spec.queuedIds.length === 0) return;
 
   const allTimes = planDailyBatches(now, {
-    startHour: s.workday_start_hour, endHour: s.workday_end_hour, count: caps.batchesPerDay,
+    startHour: s.workday_start_hour, endHour: s.workday_end_hour, count: spec.caps.batchesPerDay,
   }, rng);
   // Route around held windows BEFORE the empty-times fallback, so the fallback cannot
   // reintroduce a collision the filter just removed.
@@ -101,10 +121,10 @@ function planKind(
   if (times.length === 0) {
     // Inside the window but every random slot fell before now (or every one collided with
     // a reservation): pick a random time in the remaining window [now, end) so the send
-    // still lands within working hours (not the old "now + 60s", which could fire after
-    // hours). Retry a bounded number of times to dodge reservations; if the window is so
-    // congested that we cannot find a free instant, leave the queue alone rather than
-    // scheduling into a reservation — the next hourly tick tries again.
+    // still lands within working hours. Retry a bounded number of times to dodge
+    // reservations; if the window is so congested that we cannot find a free instant, leave
+    // the queue alone rather than scheduling into a reservation — the next hourly tick
+    // tries again.
     let at: Date | null = null;
     for (let i = 0; i < 12; i++) {
       const candidate = new Date(
@@ -118,16 +138,39 @@ function planKind(
   // Cap by (future slots * batch_size) so no single slot ever receives more than
   // batch_size — the assigner would otherwise clamp the overflow onto the last slot.
   const slotCapacity = times.length * batchSize;
-  const budget = Math.min(weeklyRemaining, dailyBudget, slotCapacity);
+  const budget = Math.min(weeklyRemaining, spec.dailyRemaining, slotCapacity);
   if (budget <= 0) return;
 
-  const queued = queuedAll.slice(0, budget);
+  const queued = spec.queuedIds.slice(0, budget);
   if (queued.length === 0) return;
 
-  const assignments = assignSchedule(queued.map((p) => p.id), times, batchSize);
-  for (const a of assignments) repos.profiles.setScheduled(a.id, a.when.toISOString());
+  const assignments = assignSchedule(queued, times, batchSize);
+  for (const a of assignments) spec.setScheduled(a.id, a.when.toISOString());
 
-  log.debug('scheduler', 'assigned slots', { kind, count: assignments.length, slots: times.length, budget });
+  log.debug('scheduler', 'assigned slots', {
+    queue: spec.name, count: assignments.length, slots: times.length, budget,
+  });
+}
+
+/**
+ * Adapter: one CampaignKind's queue of profiles.
+ *
+ * Note this now reads the daily budget and the queue eagerly, where the old inline version
+ * computed them lazily after the weekly check. That costs up to two extra indexed reads when
+ * a cap is already exhausted and changes nothing observable — neither read touches rng.
+ */
+function planKind(
+  repos: Repos, s: Settings, now: Date, kind: CampaignKind, windowEnd: Date,
+  rng: () => number, reserved: ReservationWindow[] = [],
+): void {
+  planQueue(s, now, windowEnd, rng, reserved, {
+    name: kind,
+    caps: capsFor(s, kind),
+    sentInWindow: repos.events.countSentSince(windowStartIso(now), kind),
+    dailyRemaining: dailyRemainingFor(repos, s, now, kind),
+    queuedIds: repos.profiles.queuedByPriorityKind(kind).map((p) => p.id),
+    setScheduled: (id, iso) => repos.profiles.setScheduled(id, iso),
+  });
 }
 
 /**
