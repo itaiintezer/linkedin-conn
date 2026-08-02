@@ -661,8 +661,17 @@ failure streak: a selector break halts the engine loudly instead of silently no-
 | `POST` | `/api/engagements` | `{ post_url, reaction?, comment? }`, or `{ items: [...] }` for bulk |
 | `GET` | `/api/engagements` | `?status=&limit=` |
 | `GET` | `/api/engagements/:id` | |
-| `POST` | `/api/engagements/:id/retry` | 409 unless the row is `failed` or `needs_attention` |
+| `POST` | `/api/engagements/:id/retry` | 409 unless the row is `failed`, `needs_attention` or `skipped`; clears `commented_at` |
 | `POST` | `/api/engagements/:id/dismiss` | terminal `skipped`/`dismissed`; also the cancel path for a queued row |
+
+`skipped` is in the retryable set on purpose, and it is what makes **dismiss undoable**:
+dismiss produces `skipped`/`dismissed`, so retry is the way back. It also covers the two
+skips a human may disagree with — a `not_found` that was really a transient 404, and a
+`comments_disabled` inferred from structure rather than wording.
+
+Retry clears `commented_at` along with `scheduled_for`, `last_error` and `skip_reason`, and
+deliberately leaves `reacted_at`: see the comment-budget note under Capacity for why the
+column is set on an unverified comment in the first place.
 
 Creation calls `planAndAssignToday` immediately, so a task enqueued at 09:05 gets a real
 slot instead of sitting until the hourly tick — same reasoning as `/api/profiles`.
