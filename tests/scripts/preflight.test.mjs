@@ -8,6 +8,7 @@ import {
   checkDiskSpace,
   checkNetwork,
   checkNodeVersion,
+  checkGit,
   checkNpm,
   checkPlatform,
   checkPort,
@@ -110,6 +111,21 @@ describe('checkNpm', () => {
     const r = checkNpm('11.8.0');
     expect(r.severity).toBe('ok');
     expect(r.message).toContain('11.8.0');
+  });
+});
+
+describe('checkGit', () => {
+  test('missing git only warns — the app runs fine without it, only updating needs it', () => {
+    const r = checkGit(null);
+    expect(r.severity).toBe('warn');
+    expect(r.message).toContain('npm run update');
+    expect(r.fix).toContain('git-scm.com');
+  });
+
+  test('passes and reports the version when git is present', () => {
+    const r = checkGit('git version 2.47.0');
+    expect(r.severity).toBe('ok');
+    expect(r.message).toContain('2.47.0');
   });
 });
 
@@ -219,6 +235,7 @@ describe('checksForStage', () => {
     expect(ids).toContain('sqlite');
     expect(ids).toContain('platform');
     expect(ids).toContain('npm');
+    expect(ids).toContain('git');
     expect(ids).toContain('writable');
   });
 

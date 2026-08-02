@@ -42,7 +42,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT ?? 4400);
 
 const STAGE_CHECKS = {
-  install: ['node', 'sqlite', 'npm', 'platform', 'writable', 'disk', 'browser', 'network'],
+  install: ['node', 'sqlite', 'npm', 'git', 'platform', 'writable', 'disk', 'browser', 'network'],
   start: ['node', 'sqlite', 'platform', 'writable', 'port', 'browser'],
 };
 
@@ -92,6 +92,21 @@ export function checkNpm(version) {
     'npm',
     'npm was not found on your PATH.',
     'npm ships with Node.js — reinstall Node from https://nodejs.org and reopen your terminal.',
+  );
+}
+
+/**
+ * Warn, not fail: The Machine runs perfectly well from a folder that was never cloned. What
+ * you lose without git is `npm run update`, which is worth saying out loud at install time
+ * rather than discovering months later when an update is actually needed.
+ */
+export function checkGit(version) {
+  if (version) return ok('git', 'git', version);
+  return warn(
+    'git',
+    'git',
+    'not found — The Machine will run, but `npm run update` needs it.',
+    'Install it when convenient — macOS: `xcode-select --install`; Windows: https://git-scm.com/download/win; Linux: your package manager. Without it, updating means downloading a fresh copy by hand.',
   );
 }
 
@@ -226,6 +241,21 @@ function probeNpm() {
   return m ? m[1] : null;
 }
 
+function probeGit() {
+  // execFileSync is safe here where it isn't for npm: git is a real executable on every
+  // platform, not a .cmd shim Node refuses to run without a shell.
+  try {
+    const out = execFileSync('git', ['--version'], {
+      encoding: 'utf8',
+      timeout: 20_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
 function probeWritable(dir) {
   try {
     fs.accessSync(dir, fs.constants.W_OK);
@@ -284,6 +314,7 @@ export async function runChecks(stage = 'all') {
   // A too-old Node already explains the node:sqlite failure; don't say it twice.
   if (wanted.has('sqlite') && nodeOk) results.push(checkSqlite(probeSqlite()));
   if (wanted.has('npm')) results.push(checkNpm(probeNpm()));
+  if (wanted.has('git')) results.push(checkGit(probeGit()));
   if (wanted.has('platform')) results.push(checkPlatform(process.platform, process.arch));
   if (wanted.has('writable')) results.push(checkWritable(probeWritable(ROOT), ROOT));
   if (wanted.has('disk')) results.push(checkDiskSpace(probeFreeBytes(homedir())));
