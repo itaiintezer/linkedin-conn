@@ -21,6 +21,14 @@
  * window are always its first k, so any shift at all moves them and the snapshot moves with
  * it. Exhausting the sequence throws rather than wrapping, because wrapping is precisely
  * what reintroduces the hole. Keep both properties if you ever touch this.
+ *
+ * THE ZONE IS LOAD-BEARING TOO, and it is pinned in vitest.config.ts (`env: { TZ: 'UTC' }`),
+ * not here. `plan()` passes a LOCAL date literal and the planner slices the LOCAL workday,
+ * but the snapshot records absolute UTC instants — so without the pin the whole file is
+ * green on a UTC+3 machine and four-times red on a UTC one. Do not "fix" that by running
+ * `vitest -u`: rewriting these snapshots is exactly how the rng-ordering guard above gets
+ * silently destroyed. Every recorded instant must sit inside the local workday window
+ * (08:00-20:00) and after the 08:00 `now`.
  */
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
