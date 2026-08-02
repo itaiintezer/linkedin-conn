@@ -1,4 +1,4 @@
-import type { Page } from 'playwright-core';
+import type { Page, Locator } from 'playwright-core';
 import type {
   BrowserDriver, SendOutcome, SendOptions, LoginSnapshot, CheckpointScan, InboxRow,
   ConnectionCard, EventStepOutcome, BucketRunRequest, BucketRunResult,
@@ -7,6 +7,11 @@ import type {
 import { attendEvent, openEvent, runBucket } from './event-invite-driver.js';
 import { CloakSession } from './cloak-session.js';
 import { SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl } from './linkedin-selectors.js';
+import {
+  PSEL, reactionEntry, existingReactionFrom, commentNeedle, urnNumericId,
+  POST_LOAD_TIMEOUT_MS, FLYOUT_TIMEOUT_MS, REACTED_TIMEOUT_MS, SUBMIT_ARM_TIMEOUT_MS,
+  COMMENT_CONFIRM_TIMEOUT_MS,
+} from './post-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 import { firstNameFrom } from '../core/first-name.js';
@@ -652,20 +657,362 @@ export class LinkedInDriver implements BrowserDriver {
     return runBucket(await this.session.page(), req);
   }
 
-  // --- Post engagements ---
-  // PLACEHOLDER until Task 12 wires up the probe-derived selectors. Navigating is real so
-  // the URL handling is exercised; the controls are not driven, and this reports
-  // `unavailable` rather than silently claiming success.
-  async reactToPost(postUrl: string, _reaction: Reaction): Promise<EngagementOutcome> {
+  // --- Post engagements ---------------------------------------------------------------
+  // Selectors: browser/post-selectors.ts. All of them were captured live and then proven by
+  // performing a real Like and a real comment (2026-08-02).
+
+  /**
+   * Place a reaction on a post.
+   *
+   * THE TRIGGER IS A TOGGLE: clicking it while `aria-pressed="true"` REMOVES the reaction.
+   * So state is read FIRST and an existing reaction reports `already` without a click. This
+   * is not theoretical — the company post probed on 2026-08-02 was already Liked, and a
+   * blind click would have silently un-liked it.
+   *
+   * `like` clicks the trigger directly; every other reaction needs the flyout, which opens on
+   * HOVER (no click, no long-press). The flyout entries do not reflect current state, which is
+   * the second reason the `already` check reads the trigger and never an entry.
+   *
+   * `observedUrn` is reported on every outcome that has it: the id in a post URL can differ
+   * from the post's own URN (observed live), and the sender reconciles the row from this.
+   */
+  async reactToPost(postUrl: string, reaction: Reaction): Promise<EngagementOutcome> {
     const page = await this.session.page();
-    await page.goto(postUrl, { waitUntil: 'domcontentloaded' });
-    return { result: 'unavailable', error: 'reaction driving not implemented yet' };
+    let observedUrn: string | undefined;
+    const urn = () => (observedUrn ? { observedUrn } : {});
+    try {
+      await page.goto(postUrl, { waitUntil: 'domcontentloaded' });
+      await sleep(rand(2500, 4500));
+      if (isNotFoundUrl(page.url())) return { result: 'not_found' };
+      {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+      }
+
+      const post = page.locator(PSEL.postContainer).first();
+      await post.waitFor({ state: 'attached', timeout: POST_LOAD_TIMEOUT_MS }).catch(() => {});
+      if (await post.count()) {
+        observedUrn = (await post.getAttribute('data-urn').catch(() => null)) ?? undefined;
+      }
+
+      // 1) STATE FIRST — before hovering, before clicking anything.
+      const reacted = post.locator(PSEL.reactTriggerReacted).first();
+      if (await reacted.count()) {
+        const label = await reacted.getAttribute('aria-label').catch(() => null);
+        const existing = existingReactionFrom(label);
+        log.info('engage', 'post already carries a reaction — not clicking (a click would REMOVE it)',
+          { postUrl, label, existing: existing ?? '(unrecognised label)' });
+        return { result: 'already', ...(existing ? { existingReaction: existing } : {}), ...urn() };
+      }
+
+      // The ONLY click target: an `aria-pressed="false"` button inside the bar's react
+      // wrapper. The identity toggle (which would switch the authoring identity to a company
+      // page) carries no aria-pressed and is not inside that wrapper, so it cannot resolve
+      // here — and nothing in this method is positional.
+      const trigger = post.locator(PSEL.reactTriggerUnreacted).first();
+      if (!(await trigger.count())) {
+        return { ...(await this.engagementUnavailable(page, post, 'no react trigger on the post')), ...urn() };
+      }
+
+      if (reaction === 'like') {
+        await trigger.scrollIntoViewIfNeeded().catch(() => {});
+        await trigger.click();
+      } else {
+        const entry = await this.openReactionFlyout(page, post, reaction);
+        if (!entry) {
+          return {
+            ...(await this.engagementUnavailable(page, post, `reaction flyout did not offer ${reaction}`)),
+            ...urn(),
+          };
+        }
+        await entry.click();
+      }
+      await sleep(rand(1500, 3000));
+
+      // 2) LinkedIn's own state is the confirmation — never the click.
+      try {
+        await post.locator(PSEL.reactTriggerReacted).first()
+          .waitFor({ state: 'attached', timeout: REACTED_TIMEOUT_MS });
+        log.info('engage', 'reaction placed', { postUrl, reaction, observedUrn: observedUrn ?? null });
+        return { result: 'done', ...urn() };
+      } catch {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+        // Safe to report as retryable: placing the same reaction twice is idempotent, and a
+        // second pass reports `already` rather than toggling it off.
+        return { ...(await this.engagementErrorOutcome(page, 'reaction did not register')), ...urn() };
+      }
+    } catch (e) {
+      const scan = await this.scanCheckpoint(page);
+      if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+      return { ...(await this.engagementErrorOutcome(page, (e as Error).message)), ...urn() };
+    }
   }
 
-  async commentOnPost(postUrl: string, _text: string): Promise<EngagementOutcome> {
+  /**
+   * Hover the react trigger and resolve one reaction's flyout entry, or null.
+   *
+   * The flyout mounts on hover: `reactions-menu` appears in no pre-hover page dump and is gone
+   * again once the pointer leaves, so this waits for the ENTRY to become visible rather than
+   * trusting the container's state classes. The entry selector requires the aria-label and
+   * LinkedIn's own icon enum to agree, so a resolved entry is provably the requested reaction.
+   */
+  private async openReactionFlyout(page: Page, post: Locator, reaction: Reaction): Promise<Locator | null> {
+    const trigger = post.locator(PSEL.reactTriggerUnreacted).first();
+    await trigger.scrollIntoViewIfNeeded().catch(() => {});
+    await trigger.hover();
+    const sel = reactionEntry(reaction);
+
+    const scoped = post.locator(sel).first();
+    const visible = await scoped.waitFor({ state: 'visible', timeout: FLYOUT_TIMEOUT_MS })
+      .then(() => true).catch(() => false);
+    if (visible) return scoped;
+
+    // Fallback for a flyout portalled out of the post subtree (not observed, but the dumps
+    // only prove the entries exist while open, not where they mount). Still safe: the same
+    // two-signal selector cannot resolve to a different reaction, and only one flyout can be
+    // open because only one trigger was hovered. Required to be unambiguous.
+    const wide = page.locator(sel);
+    if (await wide.count() === 1
+      && await wide.first().isVisible().catch(() => false)) {
+      log.warn('engage', 'reaction flyout resolved outside the post container', { reaction });
+      return wide.first();
+    }
+    return null;
+  }
+
+  /**
+   * Post a comment.
+   *
+   * Verified live end-to-end with an astral-plane `👀`, which is why the editor is driven with
+   * `insertText` rather than per-key typing.
+   *
+   * NEVER returns a bare `error` once submit has been clicked. An ambiguous comment is
+   * `unverified`, which parks the row for a human; an `error` there would invite a retry that
+   * publishes the comment a second time under the operator's name.
+   */
+  async commentOnPost(postUrl: string, text: string): Promise<EngagementOutcome> {
     const page = await this.session.page();
-    await page.goto(postUrl, { waitUntil: 'domcontentloaded' });
-    return { result: 'unavailable', error: 'comment driving not implemented yet' };
+    let observedUrn: string | undefined;
+    let submitted = false; // once true, an ambiguous outcome is `unverified`, never `error`
+    const urn = () => (observedUrn ? { observedUrn } : {});
+    try {
+      await page.goto(postUrl, { waitUntil: 'domcontentloaded' });
+      await sleep(rand(2500, 4500));
+      if (isNotFoundUrl(page.url())) return { result: 'not_found' };
+      {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+      }
+
+      const post = page.locator(PSEL.postContainer).first();
+      await post.waitFor({ state: 'attached', timeout: POST_LOAD_TIMEOUT_MS }).catch(() => {});
+      if (await post.count()) {
+        observedUrn = (await post.getAttribute('data-urn').catch(() => null)) ?? undefined;
+      }
+
+      // Comments restricted by the author. PROVISIONAL on both branches — no restricted post
+      // was ever probed, so the structural signal is unknown. Both capture evidence so a real
+      // one can be read from the incident instead of guessed at.
+      if (await page.locator(PSEL.commentsDisabledText).first().count()) {
+        const ev = await captureEvidence(page, 'engage-comments-disabled', { signal: 'wording', postUrl });
+        log.info('engage', 'comments appear to be disabled (wording signal)', { postUrl });
+        return {
+          result: 'comments_disabled', ...urn(),
+          evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+        };
+      }
+
+      // On a post detail page (both /feed/update/ and /posts/… shapes) the composer is inline;
+      // from the feed the action bar's Comment button has to open it first.
+      const editor = post.locator(PSEL.commentEditor).first();
+      if (!(await editor.count())) {
+        const commentBtn = post.locator(PSEL.commentButton).first();
+        if (await commentBtn.count()) {
+          await commentBtn.click().catch(() => {});
+          await sleep(rand(1500, 3000));
+        } else if (await post.locator(PSEL.actionBar).count()) {
+          // The bar RENDERED and offers no comment control at all. That is a positive
+          // structural statement about this post, not selector rot — so it is the one
+          // comments_disabled verdict we are willing to reach without a wording signal.
+          const ev = await captureEvidence(page, 'engage-comments-disabled',
+            { signal: 'no comment control in a rendered action bar', postUrl });
+          log.info('engage', 'no comment affordance on a rendered action bar — treating as disabled',
+            { postUrl });
+          return {
+            result: 'comments_disabled', ...urn(),
+            evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+          };
+        }
+      }
+      if (!(await editor.count())) {
+        // Composer absent with no explanation. Deliberately `unavailable`, not
+        // comments_disabled: unavailable counts toward the failure streak, so composer
+        // selector rot halts the engine loudly instead of silently retiring every comment.
+        return { ...(await this.engagementUnavailable(page, post, 'comment composer never appeared')), ...urn() };
+      }
+
+      // Quill: insertText in one shot. Per-key typing mangles astral-plane characters.
+      await editor.scrollIntoViewIfNeeded().catch(() => {});
+      await editor.click();
+      await sleep(rand(600, 1400));
+      await page.keyboard.insertText(text);
+      await sleep(rand(1200, 2200));
+
+      // The submit button does not exist until the editor has text — its presence IS the
+      // armed signal, so this wait doubles as "did the text register".
+      const submit = post.locator(PSEL.commentSubmit).first();
+      const armed = await submit.waitFor({ state: 'visible', timeout: SUBMIT_ARM_TIMEOUT_MS })
+        .then(() => true).catch(() => false);
+      if (!armed) {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+        // Unambiguous: the only publish path is that button, and it never appeared, so
+        // nothing was posted. `error` (not `unverified`) is honest here.
+        return {
+          ...(await this.engagementErrorOutcome(page, 'comment submit control never appeared after typing')),
+          ...urn(),
+        };
+      }
+
+      submitted = true; // IRREVERSIBLE from here
+      await submit.click();
+      await sleep(rand(3000, 5000));
+
+      // Confirmation, from two independent signals (plus a third that is logged):
+      //   1. a comment row whose body carries our text, attributed to this post through the
+      //      post urn embedded in its own data-id whenever that attribution is possible;
+      //   2. the composer having cleared (verified reliable: the editor read "" immediately);
+      //   3. the row's `• You` badge — corroborating only, because it is English text.
+      const needle = commentNeedle(text);
+      const postId = urnNumericId(observedUrn);
+      const deadline = Date.now() + COMMENT_CONFIRM_TIMEOUT_MS;
+      let seen = await this.readCommentConfirmation(page, needle, postId);
+      while (!(seen.cleared && seen.matched) && Date.now() < deadline) {
+        await sleep(1000);
+        seen = await this.readCommentConfirmation(page, needle, postId);
+      }
+      if (seen.cleared && seen.matched) {
+        log.info('engage', 'comment posted', {
+          postUrl, commentId: seen.commentId, ownBadge: seen.ownBadge, attributedToPost: seen.attributed,
+        });
+        return { result: 'done', ...urn() };
+      }
+
+      // A checkpoint detected HERE is deliberately not reported as `checkpoint`: that verdict
+      // halts the pass without recording the comment, and the comment may be live. The next
+      // task's reaction step scans before it clicks anything, so the guardrail still trips one
+      // task later — while this row parks instead of risking a duplicate.
+      const scan = await this.scanCheckpoint(page);
+      const why = scan.hit
+        ? `comment not confirmed and a checkpoint appeared at ${scan.url}`
+        : `comment not confirmed (cleared=${seen.cleared}, inThread=${seen.matched})`;
+      const ev = await captureEvidence(page, 'engage-comment-unverified', { error: why, postUrl });
+      log.warn('engage', 'comment could not be verified — parking it', { postUrl, why });
+      return {
+        result: 'unverified', error: why, ...urn(),
+        evidence: { pageUrl: page.url(), matched: scan.matched, screenshot: ev?.screenshot ?? null },
+      };
+    } catch (e) {
+      const message = (e as Error).message;
+      if (submitted) {
+        // The click landed; whatever broke afterwards, the comment may be published.
+        const ev = await captureEvidence(page, 'engage-comment-unverified', { error: message, postUrl });
+        log.warn('engage', 'comment threw after submit — parking it', { postUrl, error: message });
+        return {
+          result: 'unverified', error: message, ...urn(),
+          evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+        };
+      }
+      const scan = await this.scanCheckpoint(page);
+      if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+      return { ...(await this.engagementErrorOutcome(page, message)), ...urn() };
+    }
+  }
+
+  /**
+   * One read of the thread + composer. Kept in a single evaluate so both signals describe the
+   * same instant.
+   *
+   * Attribution is demanded when it is available and skipped when it provably is not: if any
+   * comment row in this thread embeds our post id, a matching row MUST be one of them;
+   * if none do (the container reported a non-`activity` URN while comment ids use `activity`),
+   * the text match plus a cleared composer stands alone and `attributed` says so. Without that
+   * fallback a URN-type mismatch would park every single comment.
+   *
+   * Same two constraints as the message-send confirmation: normalize BOTH sides (the rendered
+   * thread collapses whitespace), and declare no named inner function — under tsx/esbuild,
+   * keep-names rewrites a named inner binding to `__name(fn, "fn")`, which does not exist
+   * inside the page.
+   */
+  private async readCommentConfirmation(
+    page: Page, needle: string, postId: string | null,
+  ): Promise<{ matched: boolean; cleared: boolean; commentId: string | null; ownBadge: boolean; attributed: boolean }> {
+    return page.evaluate(({ rowSel, bodySel, metaSel, editorSel, needle: want, postId: want2 }) => {
+      const marker = want2 === null ? null : `(activity:${want2},`;
+      const rows = Array.from(document.querySelectorAll(rowSel)).map((el) => ({
+        dataId: el.getAttribute('data-id') || '',
+        body: (el.querySelector(bodySel)?.textContent || '').replace(/\s+/g, ' ').trim(),
+        meta: (el.querySelector(metaSel)?.textContent || '').replace(/\s+/g, ' ').trim(),
+      }));
+      const textHits = want.length > 0 ? rows.filter((r) => r.body.includes(want)) : [];
+      const attributable = marker !== null && rows.some((r) => r.dataId.includes(marker));
+      const hit = attributable
+        ? textHits.find((r) => r.dataId.includes(marker as string))
+        : textHits[0];
+      const editors = Array.from(document.querySelectorAll(editorSel))
+        .map((e) => (e.textContent || '').replace(/\s+/g, ' ').trim());
+      return {
+        matched: !!hit,
+        commentId: hit ? hit.dataId : null,
+        // English text, so corroborating only — never load-bearing for the verdict.
+        ownBadge: !!hit && /•\s*You\b/.test(hit.meta),
+        attributed: !!hit && attributable,
+        // Cleared when no composer still holds the text we typed.
+        cleared: want.length > 0 && !editors.some((t) => t.includes(want)),
+      };
+    }, {
+      rowSel: PSEL.commentEntity, bodySel: PSEL.commentBody, metaSel: PSEL.commentMeta,
+      editorSel: PSEL.commentEditor, needle, postId,
+    });
+  }
+
+  /** A checkpoint verdict for an engagement step. Same capture as checkpointOutcome; a
+   *  separate method because the two result unions do not overlap. */
+  private async engagementCheckpointOutcome(page: Page, scan: CheckpointScan): Promise<EngagementOutcome> {
+    const ev = await captureEvidence(page, 'checkpoint', { matched: scan.matched, via: scan.via, during: 'engagement' });
+    return {
+      result: 'checkpoint',
+      error: `checkpoint detected at ${scan.url}`,
+      evidence: { pageUrl: scan.url, matched: scan.matched, screenshot: ev?.screenshot ?? null },
+    };
+  }
+
+  /** A failed engagement step, snapshotted. Counts toward the failure streak, so it has to be
+   *  diagnosable after the fact. */
+  private async engagementErrorOutcome(page: Page, error: string): Promise<EngagementOutcome> {
+    const ev = await captureEvidence(page, 'engage-failed', { error });
+    return { result: 'error', error, evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null } };
+  }
+
+  /**
+   * A control we expected was not on the page. `unavailable` counts toward the failure streak
+   * on purpose: the reaction flyout is the most fragile element in this feature, and a
+   * selector break must halt the engine loudly rather than silently no-op. The extras record
+   * whether the surrounding surface rendered, which is what separates "this post is odd" from
+   * "our selectors rotted".
+   */
+  private async engagementUnavailable(page: Page, post: Locator, error: string): Promise<EngagementOutcome> {
+    const ev = await captureEvidence(page, 'engage-unavailable', {
+      error,
+      hasPostContainer: (await post.count()) > 0,
+      hasActionBar: (await post.locator(PSEL.actionBar).count()) > 0,
+      hasIdentityToggle: (await post.locator(PSEL.identityToggleNeverClick).count()) > 0,
+      hasReactTrigger: (await post.locator(PSEL.reactTrigger).count()) > 0,
+      hasCommentForm: (await post.locator(PSEL.commentForm).count()) > 0,
+    });
+    log.warn('engage', 'control unavailable', { url: page.url(), error });
+    return { result: 'unavailable', error, evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null } };
   }
 
   async close(): Promise<void> { await this.session.close(); }
