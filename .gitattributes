@@ -1,0 +1,11 @@
+# Keep the working tree LF on every platform.
+#
+# Git for Windows installs with core.autocrlf=true, which checks files out as CRLF. The Node
+# tooling here (vitest rewriting snapshots, in particular) writes LF, so on Windows the tree
+# would drift back to LF and git would then report those files as permanently modified —
+# `git status` dirty with an empty `git diff`. That is confusing on its own, and it makes
+# `npm run update` refuse to run, since it declines to pull over local edits.
+#
+# Every blob in this repo is already stored LF, so this changes no committed content; it only
+# stops the checkout from converting to CRLF. text=auto still leaves real binaries alone.
+* text=auto eol=lf

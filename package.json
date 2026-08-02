@@ -8,6 +8,7 @@
   },
   "scripts": {
     "preflight": "node scripts/preflight.mjs --stage=all",
+    "update": "node scripts/update.mjs",
     "preinstall": "node scripts/preflight.mjs --stage=install",
     "postinstall": "node scripts/install-browser.mjs",
     "install-browser": "node scripts/install-browser.mjs",
