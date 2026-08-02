@@ -4,7 +4,7 @@ import { CAMPAIGN_KINDS } from '../core/campaign-kind.js';
 import { planDailyBatches, assignSchedule } from '../core/schedule.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 import { dailyRemainingFor } from '../core/daily-budget.js';
-import { capsFor, type KindCaps } from '../core/caps.js';
+import { capsFor, engagementCaps, type KindCaps } from '../core/caps.js';
 import {
   conflictsWithReservation, filterReservedSlots, type ReservationWindow,
 } from '../core/reservations.js';
@@ -21,11 +21,20 @@ export const OVERDUE_GRACE_MS = 10 * 60 * 1000;
  */
 export function requeueOverdue(repos: Repos, now: Date, graceMs: number = OVERDUE_GRACE_MS): number {
   const cutoff = now.getTime() - graceMs;
-  const stale = repos.profiles.byStatus('scheduled')
-    .filter((p) => p.scheduled_for !== null && new Date(p.scheduled_for).getTime() < cutoff);
+  const isStale = (at: string | null) => at !== null && new Date(at).getTime() < cutoff;
+
+  const stale = repos.profiles.byStatus('scheduled').filter((p) => isStale(p.scheduled_for));
   for (const p of stale) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
-  if (stale.length > 0) log.info('scheduler', 'requeued overdue profiles for re-scheduling', { count: stale.length });
-  return stale.length;
+
+  const staleEng = repos.engagements.byStatus('scheduled').filter((e) => isStale(e.scheduled_for));
+  for (const e of staleEng) repos.engagements.setStatus(e.id, 'queued', { scheduled_for: null });
+
+  const total = stale.length + staleEng.length;
+  if (total > 0) {
+    log.info('scheduler', 'requeued overdue rows for re-scheduling',
+      { profiles: stale.length, engagements: staleEng.length });
+  }
+  return total;
 }
 
 export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = Math.random): void {
@@ -55,6 +64,11 @@ export function planAndAssignToday(repos: Repos, now: Date, rng: () => number = 
   for (const kind of CAMPAIGN_KINDS) {
     planKind(repos, s, now, kind, windowEnd, rng, reserved);
   }
+
+  // The fourth pipeline. Not in the loop above because engagements are deliberately not a
+  // CampaignKind — but they share the same window, the same reservations and the same
+  // planner.
+  planEngagements(repos, s, now, windowEnd, rng, reserved);
 }
 
 /**
@@ -173,6 +187,67 @@ function planKind(
   });
 }
 
+/** Local midnight for `now`. Local on purpose: mirrors the working-hours window. */
+function dayStartIso(now: Date): string {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+/**
+ * How many engagements today's quota has already committed: rows still scheduled plus rows
+ * that already reacted today. Subtracting this from the daily target keeps repeated planning
+ * runs (startup + hourly) from stacking past the daily cap.
+ *
+ * A row that reacted today AND is scheduled again would be counted twice. That is not
+ * reachable today — nothing re-schedules a row after it reacts — and if a future retry path
+ * introduces it, double-counting errs toward planning FEWER engagements, which is the safe
+ * direction for a cap.
+ */
+export function engagementsCommittedToday(repos: Repos, now: Date): number {
+  return repos.engagements.byStatus('scheduled').length
+    + repos.engagements.countReactedSince(dayStartIso(now));
+}
+
+/**
+ * Adapter: the engagement queue.
+ *
+ * The daily comment cap is applied HERE, not only in the sender. Without it, comment-bearing
+ * tasks would be planned every day, deferred every day by the sender, and would consume slot
+ * capacity that reaction-only tasks could have used. A task over the budget is held WHOLE —
+ * never planned reaction-only — so it cannot straddle two days in a partial state.
+ *
+ * Every read below (the queue and two COUNTs) is rng-free, so an empty engagement queue still
+ * costs zero draws — see the ORDERING note on planQueue.
+ */
+function planEngagements(
+  repos: Repos, s: Settings, now: Date, windowEnd: Date,
+  rng: () => number, reserved: ReservationWindow[] = [],
+): void {
+  const caps = engagementCaps(s);
+  let commentsLeft = Math.max(0,
+    s.engage_comment_daily_cap - repos.engagements.countCommentedSince(dayStartIso(now)));
+
+  const queuedIds: number[] = [];
+  for (const e of repos.engagements.queuedByPriority()) {
+    if (e.comment_text !== null) {
+      if (commentsLeft <= 0) continue;
+      commentsLeft--;
+    }
+    queuedIds.push(e.id);
+  }
+
+  const dailyTarget = Math.max(0, caps.batchesPerDay * Math.max(1, caps.batchSize));
+  planQueue(s, now, windowEnd, rng, reserved, {
+    name: 'engagement',
+    caps,
+    sentInWindow: repos.engagements.countReactedSince(windowStartIso(now)),
+    dailyRemaining: Math.max(0, dailyTarget - engagementsCommittedToday(repos, now)),
+    queuedIds,
+    setScheduled: (id, iso) => repos.engagements.setScheduled(id, iso),
+  });
+}
+
 /**
  * Full rebuild: return EVERY scheduled profile to the queue (clearing its slot), then
  * re-flow the whole backlog into fresh policy-compliant batches. Called at startup so a
@@ -185,6 +260,9 @@ function planKind(
 export function resortSchedule(repos: Repos, now: Date, rng: () => number = Math.random): void {
   for (const p of repos.profiles.byStatus('scheduled')) {
     repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
+  }
+  for (const e of repos.engagements.byStatus('scheduled')) {
+    repos.engagements.setStatus(e.id, 'queued', { scheduled_for: null });
   }
   planAndAssignToday(repos, now, rng);
 }
