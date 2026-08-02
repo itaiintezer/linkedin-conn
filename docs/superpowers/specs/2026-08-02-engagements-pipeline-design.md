@@ -25,6 +25,170 @@ and control happen over the HTTP API; the dashboard gets a read-only card.
 | Selector discovery | Survey prior art (GitHub LinkedIn-automation projects) for the algorithm, then a live DOM probe decides the actual selectors. |
 | UI | Read-only dashboard card. All writes over the API. |
 
+## Discovery findings (live-verified 2026-08-02)
+
+Captured against the real logged-in session with `scripts/probe-post-engage.ts`, read-only
+(navigate + hover + one non-publishing keystroke probe of the composer). Two posts were
+probed: an **individual member's post** (`urn:li:activity:7489401096851906561`, reached from
+a `lnkd.in` shortlink) and a **company-page post** (`urn:li:activity:7488617458552070144`).
+Raw HTML dumps live under `data/incidents/2026-08-02T08-2*-post-engage/` (gitignored).
+
+**Scope caveat, stated plainly.** The three authorized live engagements (Like + `👀` comment
+on the individual post, Like on the company post) were **not performed** — the harness's
+permission classifier refused the command that drives them. So findings 3 and 5 below are
+derived from a *cross-post A/B* (one post un-reacted, one already reacted) rather than a
+before/after on a single post, and no comment authored by us was ever observed in a thread.
+Everything else is directly observed. The two gaps are marked **UNVERIFIED** inline.
+
+The surface is the **classic Ember/artdeco feed UI**, not the hashed-class React UI the
+profile top card uses. Class names here are readable BEM (`react-button__trigger`,
+`comments-comment-box__form`), and `ember####` ids are per-render — never select on them.
+Both posts rendered `<html lang="en">`, so the `lang`-cookie pin is holding.
+
+1. **Like button.** Post-level react trigger:
+
+   ```
+   button[aria-pressed][aria-label^="React "], button[aria-pressed][aria-label^="Unreact "]
+   ```
+
+   Scope it to the post container `div[data-urn][role="article"]`. Two collisions the
+   scoping and the `aria-pressed` predicate exist to defeat:
+   - every **comment** has its own like button, labelled
+     `React Like to <Name>’s comment` / `Unreact Like to <Name>’s comment` — excluded
+     because the post-level label is the bare form;
+   - the **flyout entry** for Like carries the identical bare `aria-label="React Like"` but
+     has **no `aria-pressed`** — excluded by the attribute-presence predicate.
+
+   Also present but *not* the target: a zero-size
+   `button[aria-label="Open reactions menu"][aria-expanded]` (the keyboard affordance for
+   the flyout) and the identity toggle, `aria-label="Open menu for switching identity when
+   interacting with this post"`. The latter matters — see finding 9.
+
+2. **The flyout opens on hover of the Like trigger.** No click, no long-press. It settles
+   well within 2.5 s. It is a sibling `span` that is always in the DOM and becomes visible
+   by class (`reactions-menu reactions-menu--active reactions-menu--v2-visible`); it is
+   **not** a `role="menu"` and its items are **not** `role="menuitem"` — plain
+   `<button type="button" tabindex="-1">`. Each of the six is addressable by exact
+   aria-label, and each contains an `<img>` carrying LinkedIn's own enum:
+
+   | reaction | selector | `data-test-reactions-icon-type` | `alt` |
+   |---|---|---|---|
+   | like | `button[aria-label="React Like"]` | `LIKE` | `like` |
+   | celebrate | `button[aria-label="React Celebrate"]` | `PRAISE` | `celebrate` |
+   | support | `button[aria-label="React Support"]` | `APPRECIATION` | `support` |
+   | love | `button[aria-label="React Love"]` | `EMPATHY` | `love` |
+   | insightful | `button[aria-label="React Insightful"]` | `INTEREST` | `insightful` |
+   | funny | `button[aria-label="React Funny"]` | `ENTERTAINMENT` | `funny` |
+
+   Prefer `data-test-reactions-icon-type` as the *identity* (a `data-*` attribute, and
+   language-independent) and the aria-label as the *click target*. Note the enum names do
+   not match the display names — `PRAISE`/`APPRECIATION`/`EMPATHY`/`INTEREST`/`ENTERTAINMENT`
+   — so the driver needs an explicit map, not a case transform. Each button also holds a
+   redundant `span.reactions-menu__reaction-description` with the plain display name.
+
+   The flyout entries do **not** reflect current state: on the already-reacted post, the
+   Like entry still read `React Like`. Only the trigger knows.
+
+3. **`REACTED_STATE` — the trigger flips three things at once** (observed by comparing the
+   un-reacted post to the already-reacted one; **UNVERIFIED** as a before/after transition
+   on one post):
+
+   | | not reacted | reacted (Like) |
+   |---|---|---|
+   | `aria-pressed` | `"false"` | `"true"` |
+   | `aria-label` | `React Like` | `Unreact Like` |
+   | class | `… react-button__trigger` | `… react-button__trigger react-button--active` |
+   | icon | `data-test-icon="thumbs-up-outline-small"` | (filled variant) |
+
+   **`aria-pressed` is the signal to use** — semantic, boolean, and unambiguous. The
+   aria-label doubles as the *which* reaction (`Unreact <Reaction>`), which is exactly what
+   `EngagementOutcome.existingReaction` needs on an `already` result. Note the consequence:
+   clicking the trigger when `aria-pressed="true"` **removes** the reaction. The driver must
+   read state first and return `already` rather than clicking — a blind click is destructive,
+   not idempotent.
+
+4. **Comment box and submit control.** On a `/feed/update/` detail page the composer is
+   rendered inline, no click needed (the `button[aria-label="Comment"]` in the action bar is
+   only required from the feed):
+   - form: `form.comments-comment-box__form`
+   - box: `div.ql-editor[contenteditable="true"][role="textbox"]`, with
+     `aria-label="Text editor for creating content"`,
+     `data-placeholder="Add a comment…"` and `data-test-ql-editor-contenteditable="true"`.
+     It is a Quill editor, so content is `<p>…</p>`; drive it with `insertText`, not
+     per-key typing (the `👀` target is astral-plane).
+   - **submit: the button does not exist in the DOM until the editor has text.** Its
+     presence *is* the armed signal — there is no disabled-then-enabled transition to wait
+     on. When it appears it carries **no `aria-label`**; its only accessible name is the
+     inner text **`Comment`** — *not* "Post". Class
+     `comments-comment-box__submit-button--cr`. It must be scoped to
+     `form.comments-comment-box__form`, because the action bar's own button is *also* named
+     `Comment`.
+
+   This one was worth the probe: the plausible-from-memory selector (`button` named `Post`)
+   matches nothing at all.
+
+5. **Confirming a posted comment.** Each comment in the thread is
+   `article.comments-comment-entity[data-id="urn:li:comment:(activity:<postId>,<commentId>)"]`
+   — the post URN is embedded in the comment's own id, so a comment can be attributed to its
+   post without trusting page context. Inside: author name in
+   `.comments-comment-meta__description-title`, author profile URL on the
+   `.comments-comment-meta__actor` anchor's `href`, body in
+   `span.comments-comment-item__main-content`, age in a `<time>`.
+
+   The verification signal is therefore: an `article[data-id^="urn:li:comment:(activity:<postUrn>"`
+   whose actor href is our own profile and whose main-content text equals the sent text —
+   plus the composer having cleared. **UNVERIFIED**: no comment of ours was posted, so the
+   own-comment variant (which may add Edit/Delete options the others lack) was never seen.
+   Confirm on first real run before trusting the author match.
+
+6. **Comments-disabled posts: not tested.** Neither probed post had comments off, and none
+   was hunted down. The structural difference is therefore **unknown** — not guessed here.
+   The likely shape (composer absent while the action bar's Comment button remains, or the
+   whole `comments-comment-box__form` missing) must be confirmed against a real restricted
+   post before `comments_disabled` is implemented. Until then the driver should treat
+   "composer absent after clicking Comment" as `comments_disabled` only provisionally, and
+   log the DOM.
+
+7. **Yes — the post exposes its canonical URN.** The post container is
+   `div[data-urn="urn:li:activity:…"][role="article"]`, wrapped by
+   `div[aria-label="Update container"]` inside `main[aria-label="Feed detail update"]`.
+   The attribute name is **`data-urn`**, and it was present and correct on both posts.
+   **The activity-vs-ugcPost gap can therefore be closed at run time**: the driver reads
+   `data-urn` off the container and returns it as `observedUrn`, and the caller reconciles.
+   This is not theoretical — see finding 8, where the URL and the container disagree.
+
+8. **Shortlink resolution — `lnkd.in` is a plain HTTP 301, and the URL lies about the URN.**
+   `https://lnkd.in/p/dkTR-yYF` answered `301` straight to
+   `https://www.linkedin.com/posts/lolly-andreoli-075684b2_youre-invited-to-preview-what-sai-can-do-share-7489401095899770880-VbZT/?utm_source=share&…`.
+   One hop, no JS, no interstitial — so a server-side `fetch(..., { redirect: 'manual' })`
+   could resolve shortlinks later without a browser, if we ever decide the network call on
+   the enqueue path is worth it.
+
+   The far more important half: that slug's token is **`-share-`, not `-activity-`**, and
+   its id (`7489401095899770880`) is **a different number** from the `data-urn` the page
+   actually rendered (`urn:li:activity:7489401096851906561`). Two consequences for
+   `normalizePostUrl`:
+   - the current `/\/posts\/[^/?#]*-activity-(\d+)/i` returns `null` for a perfectly ordinary
+     share link. The character class must accept `-(activity|share|ugcPost)-`;
+   - even once it does, the URN it builds (`urn:li:share:7489401095899770880`) will **not**
+     equal the canonical activity URN, so the same post enqueued from a share link and from
+     a `/feed/update/` link dedupes as two rows. The "known gap" in *URL and URN
+     normalization* below is **observed, not hypothetical** — and finding 7 is its fix:
+     write `observedUrn` back and dedupe on it after the first visit.
+
+9. **Individual vs company-page post: the action bar is identical** — same
+   `div.feed-shared-social-action-bar`, same four controls (`React Like` / `Comment` /
+   Repost / `Send in a private message`), same flyout, same `data-urn` container. **No
+   driver branching is required.**
+
+   One shared hazard, unrelated to which post it is: both bars begin with
+   `button[aria-label="Open menu for switching identity when interacting with this post"]`,
+   because this account administers pages. It renders the *member's* photo, so reactions
+   and comments currently go out as the member — but a stray click there would switch the
+   authoring identity to a company page for subsequent actions. The driver must never touch
+   it, and should assert the trigger it clicks is the react button, not the first button in
+   the bar.
+
 ## Why not a fourth `CampaignKind`
 
 `CAMPAIGN_KINDS` means "a person-directed campaign living in the `profiles` table". Three
