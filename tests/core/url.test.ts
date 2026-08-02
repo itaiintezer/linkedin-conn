@@ -40,6 +40,15 @@ test('posts/<slug>-activity-<id> form: the id is rebuilt into an activity URN', 
     });
 });
 
+test('the /posts/ path wins over a stray URN elsewhere in the URL', () => {
+  expect(normalizePostUrl(
+    'https://www.linkedin.com/posts/jane_x-activity-7111111111111111111-AbCd#urn:li:activity:7222222222222222222',
+  )?.urn).toBe('urn:li:activity:7111111111111111111');
+  expect(normalizePostUrl(
+    'https://www.linkedin.com/posts/jane_x-activity-7111111111111111111-AbCd?ref=urn%3Ali%3Aactivity%3A7222222222222222222',
+  )?.urn).toBe('urn:li:activity:7111111111111111111');
+});
+
 test('updateId query parameter is URL-decoded', () => {
   expect(normalizePostUrl('https://www.linkedin.com/feed/?updateId=urn%3Ali%3Aactivity%3A7123456789012345678'))
     .toEqual({
