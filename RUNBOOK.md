@@ -283,4 +283,72 @@ Two things that will otherwise surprise you:
   running, "no matches" may just mean those people haven't been looked up yet — it tells you
   so rather than pretending nobody matched.
 
+## 11. Checking post engagements against the real LinkedIn
+Reactions and comments are the one pipeline whose actions are **public and irreversible** — a
+comment appears under your name to real people. `scripts/verify-post-engage.ts` runs the exact
+code the engine runs, one post at a time, with you watching. Do this after LinkedIn changes
+its layout, after anyone touches the engagement selectors, and before trusting the pipeline
+with a queue.
+
+**Stop The Machine first.** The LinkedIn browser profile only opens in one place at a time.
+Press **Ctrl+C** in the terminal running `npm start` and wait for the prompt. The script
+refuses to start while the app is answering on port 4400, and it never kills anything for you.
+
+**1. Dry run — the safe one. Always start here.**
+
+```
+npx tsx scripts/verify-post-engage.ts "<post URL>" --dry
+```
+
+Opens the post and reports what a live run *would* do. It clicks nothing and doesn't even
+hover, so it publishes nothing. Look for `PASS the post, its action bar and its react trigger
+all resolve`, and for an `observedUrn` — that's the post's own id, and it's normal for it to
+differ from the id in a share link.
+
+**2. Place a reaction.**
+
+```
+npx tsx scripts/verify-post-engage.ts "<post URL>" --reaction celebrate
+```
+
+`--reaction` takes `like`, `celebrate`, `support`, `love`, `insightful` or `funny`, and
+defaults to `like`. A misspelling is refused by name rather than quietly becoming a `like`.
+Anything other than `like` has to open the hover flyout, which is the most fragile part of the
+feature — it's worth verifying with a non-`like` reaction rather than a `like`.
+
+**3. Run the same command again.** It should report:
+
+```
+PASS already — the post carries celebrate and the driver did not click
+```
+
+That is the intended, tested behaviour, not a failure. LinkedIn's reaction control is a
+**toggle**: clicking it a second time would *remove* the reaction you just placed. The driver
+reads the button's state before touching it and stops. This is the guard that lets reactions
+retry safely.
+
+**4. Post a comment.** This publishes. Use a post you own, or one where a test comment is
+harmless, and delete it afterwards by hand.
+
+```
+npx tsx scripts/verify-post-engage.ts "<post URL>" --reaction celebrate --comment "👀"
+```
+
+The reaction runs first (reporting `already` if step 2 landed), then the comment.
+
+**Reading the result.** Every step prints the raw outcome and then one plain line. The script
+exits non-zero if any line says FAIL, so it can be run from another script.
+
+- **PASS reaction placed** / **PASS already** — the reaction path works.
+- **PASS comment posted AND confirmed** — the comment was found in the thread under your name.
+- **FAIL … got unavailable** — a control we expected wasn't on the page. Usually LinkedIn moved
+  something; re-run `scripts/probe-post-engage.ts` against the same post and compare what it
+  dumps with `src/browser/post-selectors.ts`.
+- **FAIL comment could not be confirmed** — the comment **may still be live**. Open the post and
+  look before you run anything again; a second run would publish it twice. (The engine does the
+  same thing: it parks the task in **Needs attention** rather than retrying.)
+- **CHECKPOINT** — LinkedIn challenged the account. The script stops immediately and never goes
+  on to the comment. Solve the challenge in the browser window and treat the run as telling you
+  nothing.
+
 Click any row to see everything The Machine knows about that person.

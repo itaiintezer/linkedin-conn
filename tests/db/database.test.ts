@@ -378,3 +378,67 @@ test('runMigrations adds the event settings columns to a legacy settings table',
   expect(row.event_run_budget_minutes).toBe(20);
   expect(row.event_shard_threshold).toBe(900);
 });
+
+// --- Post engagements ------------------------------------------------------------
+
+test('a fresh database has the engagements table with the expected shape', () => {
+  const db = openDatabase(':memory:');
+  const cols = (db.prepare('PRAGMA table_info(engagements)').all() as { name: string }[])
+    .map((c) => c.name);
+  // Exact, not arrayContaining: PRAGMA table_info returns declaration order, so this is
+  // stable — and it must fail when a 15th column appears. That is the tripwire for the
+  // trap schema.sql documents above the table: CREATE TABLE IF NOT EXISTS back-fills a
+  // missing table but is a no-op once it exists, so a column added here later is silently
+  // absent on every existing database until someone writes it a guarded ALTER.
+  expect(cols).toEqual([
+    'id', 'post_url', 'post_urn', 'reaction', 'comment_text', 'status', 'attempts',
+    'last_error', 'skip_reason', 'scheduled_for', 'reacted_at', 'commented_at',
+    'priority', 'created_at',
+  ]);
+});
+
+test('one engagement per post is a hard constraint', () => {
+  const db = openDatabase(':memory:');
+  const ins = "INSERT INTO engagements (post_url, post_urn, reaction) VALUES ('u', 'urn:li:activity:1', 'like')";
+  db.exec(ins);
+  expect(() => db.exec(ins)).toThrow(/UNIQUE/);
+});
+
+test('post_url is deliberately NOT unique — the urn is the identity', () => {
+  const db = openDatabase(':memory:');
+  // Same display url, two different posts. Re-shares depend on this being legal, and
+  // post_url is display/navigation only — adding UNIQUE to it would break them silently.
+  db.exec("INSERT INTO engagements (post_url, post_urn, reaction) VALUES ('u', 'urn:li:activity:1', 'like')");
+  expect(() =>
+    db.exec("INSERT INTO engagements (post_url, post_urn, reaction) VALUES ('u', 'urn:li:activity:2', 'love')"),
+  ).not.toThrow();
+  expect((db.prepare('SELECT COUNT(*) c FROM engagements').get() as { c: number }).c).toBe(2);
+});
+
+test('the engage_* settings columns exist with their documented defaults', () => {
+  const db = openDatabase(':memory:');
+  const s = db.prepare('SELECT * FROM settings WHERE id = 1').get() as unknown as Record<string, number>;
+  expect(s.engage_weekly_cap).toBe(500);
+  expect(s.engage_batch_size).toBe(15);
+  expect(s.engage_batches_per_day).toBe(6);
+  expect(s.engage_comment_daily_cap).toBe(10);
+});
+
+// Asserts all four defaults, so the ALTERs in runMigrations are pinned independently of
+// the ones declared in schema.sql — the two are separate literals and can drift.
+test('a settings table predating the engage_* columns is migrated', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), weekly_cap INTEGER NOT NULL DEFAULT 100);');
+  db.exec('INSERT INTO settings (id) VALUES (1);');
+  runMigrations(db);
+  const s = db.prepare('SELECT * FROM settings WHERE id = 1').get() as Record<string, unknown>;
+  expect(s.engage_weekly_cap).toBe(500);
+  expect(s.engage_batch_size).toBe(15);
+  expect(s.engage_batches_per_day).toBe(6);
+  expect(s.engage_comment_daily_cap).toBe(10);
+});
+
+test('runMigrations is idempotent', () => {
+  const db = openDatabase(':memory:');
+  expect(() => { runMigrations(db); runMigrations(db); }).not.toThrow();
+});

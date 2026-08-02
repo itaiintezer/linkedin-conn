@@ -127,7 +127,7 @@
         </div>
         <div class="panel-actions">
           <span class="refresh-dot" id="refreshDot" title="auto-refresh"></span>
-          <button class="btn" id="retryFailed" title="Requeue failed / needs-attention profiles" hidden>Retry failed</button>
+          <button class="btn" id="retryFailed" title="Requeue failed / needs-attention profiles (posts retry from the Needs-attention list)" hidden>Retry failed</button>
           <button class="btn" id="runNow" title="Send one batch right now">Run batch now</button>
           <button class="btn btn-amber" id="pauseToggle">Pause</button>
         </div>
@@ -357,6 +357,91 @@
           <span class="engine-idle-label">Event invites</span>
           <span class="engine-idle-sub">No event campaigns yet — invite the connections you already have to a LinkedIn event.</span>
           <button class="btn btn-ghost engine-idle-cta" type="button" id="evEngineIdleCta">Start one</button>
+        </div>
+      </div>
+
+      <!-- Post engagements: the fourth conveyor, and the only one whose target is a POST
+           rather than a person. READ-ONLY on purpose — work enters this pipeline through
+           POST /api/engagements, so this card states and never asks; there is no form.
+
+           Three stations, for the same reason the event engine has three: a reaction has no
+           observable acceptance. Two caps instead of one, because a comment is a louder act
+           than a reaction and is rationed separately (engage_comment_daily_cap). And an
+           "Up next" list under the track, because the unit here is a single post the
+           operator can open and check — a station number alone can't be verified. -->
+      <div class="engine engine-eng is-idle" id="engEngine" aria-label="Post engagement engine status">
+        <div class="engine-top">
+          <div class="engine-fuel">
+            <div class="fuel-meta">
+              <span class="label">
+                <span class="kind-ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 21V10.5l4.2-7a1.6 1.6 0 0 1 2.9 1.2L13.3 9h4.9a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17 20H7z" stroke-linecap="round" stroke-linejoin="round"/><rect x="3" y="10.5" width="4" height="10.5" rx="1"/></svg>
+                </span>
+                This week · reactions
+              </span>
+              <div class="fuel-val">
+                <span class="bignum" id="engFuelSent">0</span>
+                <span class="fuel-cap">/ <span id="engFuelCap">0</span> reactions</span>
+              </div>
+            </div>
+            <div class="fuelbar" aria-hidden="true"><i id="engFuelBar" style="width:0%"></i></div>
+          </div>
+          <div class="engine-pills">
+            <span class="epill epill-sending" id="engSendingPill" hidden>
+              <span class="sending-dot" aria-hidden="true"></span>
+              <span id="engSendingTxt">engaging…</span>
+            </span>
+            <span class="epill">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span id="engCommentsTxt">—</span>
+            </span>
+            <span class="epill">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+              <span id="engNextTxt">—</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="engine-state" id="engEngineState" hidden>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+          <span id="engEngineStateTxt">Paused</span>
+        </div>
+
+        <div class="track">
+          <div class="flowline" aria-hidden="true"></div>
+          <div class="dotflow" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <div class="station queued">
+            <div class="puck"><span class="n" id="engQueued">0</span></div>
+            <span class="nm">Queued<small>awaiting a slot</small></span>
+          </div>
+          <div class="station sched">
+            <div class="puck"><span class="n" id="engScheduled">0</span></div>
+            <span class="nm">Scheduled<small id="engScheduledFoot">not scheduled</small></span>
+          </div>
+          <div class="station invited">
+            <div class="puck"><span class="n" id="engSent">0</span></div>
+            <span class="nm">Engaged<small>reaction landed</small></span>
+          </div>
+        </div>
+
+        <!-- The two ways a row gets stuck. Amber, not rounded away: a parked engagement is
+             waiting on a human to open the post and decide. -->
+        <div class="engine-foot" id="engEngineFoot" hidden>
+          <span class="foot-chip is-warn" id="engFootAttn" hidden></span>
+          <span class="foot-chip is-warn" id="engFootFailed" hidden></span>
+        </div>
+
+        <div class="eng-upnext" id="engUpNext" hidden>
+          <span class="eng-upnext-label">Up next</span>
+          <ul class="eng-upnext-list" id="engUpNextList"></ul>
+        </div>
+
+        <div class="engine-idle" id="engEngineIdle">
+          <span class="engine-idle-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 21V10.5l4.2-7a1.6 1.6 0 0 1 2.9 1.2L13.3 9h4.9a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17 20H7z" stroke-linecap="round" stroke-linejoin="round"/><rect x="3" y="10.5" width="4" height="10.5" rx="1"/></svg>
+          </span>
+          <span class="engine-idle-label">Post engagements</span>
+          <span class="engine-idle-sub">No posts queued yet — they arrive via <code>POST /api/engagements</code>.</span>
         </div>
       </div>
 
@@ -652,6 +737,20 @@
         <div class="field"><label for="setEventBudget">Run budget <span class="hint">minutes</span></label><input id="setEventBudget" type="number" min="1" max="120" /></div>
         <p class="hint span-all settings-note">An event run reserves this many minutes of the day for itself, and the send planner routes connection requests and messages around the window. Locations are worked densest-first; whoever is left over rolls into the next day&rsquo;s run.</p>
 
+        <div class="section-divider span-all is-eng">
+          <span>
+            <span class="kind-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 21V10.5l4.2-7a1.6 1.6 0 0 1 2.9 1.2L13.3 9h4.9a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17 20H7z" stroke-linecap="round" stroke-linejoin="round"/><rect x="3" y="10.5" width="4" height="10.5" rx="1"/></svg>
+            </span>
+            Post engagements
+          </span>
+        </div>
+        <div class="field"><label for="setEngageWeeklyCap">Weekly cap <span class="hint">reactions</span></label><input id="setEngageWeeklyCap" type="number" min="0" /></div>
+        <div class="field"><label for="setEngageBatchSize">Batch size <span class="hint">reactions</span></label><input id="setEngageBatchSize" type="number" min="1" /></div>
+        <div class="field"><label for="setEngageBatchesPerDay">Batches / day <span class="hint">reactions</span></label><input id="setEngageBatchesPerDay" type="number" min="0" /></div>
+        <div class="field"><label for="setEngageCommentCap">Comments / day <span class="hint">capped separately</span></label><input id="setEngageCommentCap" type="number" min="0" /></div>
+        <p class="hint span-all settings-note">A reaction is cheap; a comment is public and attributable, so it gets its own daily ceiling. Once today&rsquo;s comment budget is spent the engine keeps reacting and leaves the comment for another day &mdash; it never drops one silently.</p>
+
         <div class="section-divider span-all"><span>Both engines</span></div>
         <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" min="0" max="23" /></div>
         <div class="field"><label for="setEnd">Workday end hour</label><input id="setEnd" type="number" min="0" max="23" /></div>
@@ -781,10 +880,13 @@
       <div class="modal-head">
         <div>
           <h3>Needs attention</h3>
-          <p class="modal-sub">Profiles that failed or need a manual look</p>
+          <p class="modal-sub">Profiles and posts that failed or need a manual look</p>
         </div>
         <div class="modal-head-actions">
-          <button class="btn" id="attentionRetryAll" title="Requeue everything here">Retry all</button>
+          <!-- Bulk retry is /api/retry, which walks the PROFILES table only. Engagements are
+               retried one row at a time — the label below is driven by the profile-side count
+               so the button never promises to requeue posts it cannot reach. -->
+          <button class="btn" id="attentionRetryAll" title="Requeue every failed profile (posts retry row by row)">Retry all profiles</button>
           <button class="modal-close" id="attentionClose" type="button" aria-label="Close">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
           </button>
@@ -799,7 +901,9 @@
               <col class="c-attempts" /><col class="c-error" /><col class="c-actions" />
             </colgroup>
             <thead>
-              <tr><th>Profile</th><th>Cohort</th><th>Status</th><th class="num">Attempts</th><th>Error</th><th>Actions</th></tr>
+              <!-- Two row shapes share this table (see /api/attention): a profile fills
+                   Profile + Cohort, a post fills Post + Reaction. -->
+              <tr><th>Profile / post</th><th>Cohort / reaction</th><th>Status</th><th class="num">Attempts</th><th>Error</th><th>Actions</th></tr>
             </thead>
             <tbody id="attentionBody"></tbody>
           </table>

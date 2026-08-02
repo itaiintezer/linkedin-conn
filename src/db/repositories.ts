@@ -8,6 +8,7 @@ import type { ReservationWindow } from '../core/reservations.js';
 import {
   EventCampaignRepo, EventBucketRepo, EventInviteeRepo, EventRunRepo,
 } from './event-repos.js';
+import { EngagementRepo } from './engagement-repo.js';
 
 const PROFILE_COLUMNS = new Set([
   'first_name', 'full_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
@@ -25,6 +26,8 @@ const SETTINGS_COLUMNS = new Set([
   'expiry_days',
   'events_per_day', 'event_invite_cap', 'event_bucket_ceiling',
   'event_run_budget_minutes', 'event_shard_threshold',
+  'engage_weekly_cap', 'engage_batch_size', 'engage_batches_per_day',
+  'engage_comment_daily_cap',
 ]);
 
 export class CohortRepo {
@@ -639,6 +642,8 @@ export class Repos {
   eventBuckets: EventBucketRepo;
   eventInvitees: EventInviteeRepo;
   eventRuns: EventRunRepo;
+  /** Post engagements — the fourth pipeline. */
+  engagements: EngagementRepo;
   constructor(public db: DB) {
     this.cohorts = new CohortRepo(db);
     this.profiles = new ProfileRepo(db);
@@ -651,5 +656,6 @@ export class Repos {
     this.eventBuckets = new EventBucketRepo(db);
     this.eventInvitees = new EventInviteeRepo(db);
     this.eventRuns = new EventRunRepo(db);
+    this.engagements = new EngagementRepo(db);
   }
 }

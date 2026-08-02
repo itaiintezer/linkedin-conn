@@ -1,5 +1,7 @@
 export const MAX_NOTE = 300;
 export const MAX_MESSAGE = 2000;
+/** LinkedIn's comment limit. */
+export const MAX_COMMENT = 1250;
 
 /**
  * Choose the note source by precedence (custom message -> cohort template -> none),

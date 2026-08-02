@@ -3,7 +3,10 @@ import type { BrowserDriver } from '../types.js';
 import { Mutex } from '../core/mutex.js';
 import { type ApifyClient, HttpApifyClient } from '../core/apify-client.js';
 import { runEnrichment, isEnrichmentRunning } from './enrichment.js';
-import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending } from './scheduler-service.js';
+import {
+  planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending,
+  recoverOrphanedEngagements,
+} from './scheduler-service.js';
 import { runSenderOnce, type SenderOptions } from './sender.js';
 import { runAcceptanceCheck } from './acceptance-checker.js';
 import { runReplyCheck } from './reply-checker.js';
@@ -261,6 +264,9 @@ export class Orchestrator {
     // process has nothing genuinely in flight (the browser is in-process), so any 'sending'
     // row is orphaned. Returning it to 'queued' first lets the re-sort re-flow it into a slot.
     recoverOrphanedSending(this.repos);
+    // Same reasoning for engagements — but a three-way split, because a task that already
+    // reacted must not react again and a task that may have commented must not comment again.
+    recoverOrphanedEngagements(this.repos);
     // Same reasoning for enrichment: the worker is in-process, so a fresh process has
     // nothing genuinely in flight. Any row still marked `enriching` was stranded by a hard
     // kill, and without this it would never be claimed again — silently missing from search

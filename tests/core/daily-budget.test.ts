@@ -14,7 +14,9 @@ function settings(over: Partial<Settings> = {}): Settings {
     note_quota_exhausted: 0, min_delay_ms: 20000, max_delay_ms: 90000,
     paused: 0, pause_reason: null, onboarded: 1, failure_threshold: 3, expiry_days: 0,
     events_per_day: 1, event_invite_cap: 500, event_bucket_ceiling: 10,
-    event_run_budget_minutes: 20, event_shard_threshold: 900, ...over,
+    event_run_budget_minutes: 20, event_shard_threshold: 900,
+    engage_weekly_cap: 500, engage_batch_size: 15, engage_batches_per_day: 6,
+    engage_comment_daily_cap: 10, ...over,
   };
 }
 

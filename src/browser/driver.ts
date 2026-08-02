@@ -2,6 +2,7 @@ import type {
   BrowserDriver, SendOutcome, SendResult, SendEvidence, SendOptions, LoginSnapshot,
   CheckpointScan, InboxRow, ConnectionCard, EventPageInfo, EventStepOutcome,
   EventStepStatus, BucketRunRequest, BucketRunResult,
+  EngagementOutcome, EngagementResult, Reaction,
 } from '../types.js';
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 export type { BrowserDriver };
@@ -36,6 +37,19 @@ export class FakeDriver implements BrowserDriver {
   connectionCards: ConnectionCard[] = [];
   /** When set, readConnectionCards throws (read-failure paths). */
   connectionCardsError: string | null = null;
+  /** Scripted per-URL reaction outcomes; default 'done'. */
+  reactScripted = new Map<string, EngagementResult>();
+  /** Scripted per-URL comment outcomes; default 'done'. */
+  commentScripted = new Map<string, EngagementResult>();
+  /** Records the reactions this fake "placed". */
+  reactLog: { url: string; reaction: Reaction }[] = [];
+  /** Records the comments this fake "posted". */
+  commentLog: { url: string; text: string }[] = [];
+  /** Reported alongside an `already` reaction outcome. */
+  existingReaction = 'like';
+  /** Canonical URN this fake "reads" off the post container. Left undefined by default so
+   *  tests opt in to exercising the reconciliation path. */
+  observedUrn: string | undefined = undefined;
 
   browserOpen() { return this.open; }
   async readLoginState(): Promise<LoginSnapshot> {
@@ -148,6 +162,30 @@ export class FakeDriver implements BrowserDriver {
       tickedUrns: ticked,
       submitted: !req.dryRun && ticked.length > 0,
     };
+  }
+
+  // --- Post engagements ---
+  async reactToPost(postUrl: string, reaction: Reaction): Promise<EngagementOutcome> {
+    this.open = true;
+    this.reactLog.push({ url: postUrl, reaction });
+    const result = this.reactScripted.get(postUrl) ?? 'done';
+    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable')
+      ? this.evidence : undefined;
+    return {
+      result,
+      ...(result === 'already' ? { existingReaction: this.existingReaction } : {}),
+      ...(this.observedUrn ? { observedUrn: this.observedUrn } : {}),
+      ...(evidence ? { evidence } : {}),
+    };
+  }
+
+  async commentOnPost(postUrl: string, text: string): Promise<EngagementOutcome> {
+    this.open = true;
+    this.commentLog.push({ url: postUrl, text });
+    const result = this.commentScripted.get(postUrl) ?? 'done';
+    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable')
+      ? this.evidence : undefined;
+    return { result, ...(evidence ? { evidence } : {}) };
   }
 
   async close() { this.open = false; }

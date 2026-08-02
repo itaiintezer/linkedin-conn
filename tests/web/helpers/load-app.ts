@@ -23,6 +23,11 @@ export interface AppInternals {
   renderEngine: (status: Record<string, unknown>) => void;
   applyEngineState: (status: Record<string, unknown>) => void;
   loadAttention: () => Promise<void>;
+  /** Pure: which table+endpoint an Attention row's Retry/Dismiss must target. */
+  attentionActionPath: (row: Record<string, unknown>, action: string) => string;
+  attentionRowSource: (row: Record<string, unknown>) => 'profile' | 'engagement';
+  renderEngagements: (engagements: Record<string, unknown> | null | undefined) => void;
+  refreshEngagementUpNext: () => Promise<void>;
   kindMark: (kind: string) => HTMLElement;
   refreshConnections: () => Promise<void>;
   initConnections: () => void;
@@ -68,7 +73,7 @@ export function loadApp(): AppInternals {
   const src = readFileSync(join(WEB_DIR, 'app.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, applyEnrichHaltUi, initSearch, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, init };`,
+    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, applyEnrichHaltUi, initSearch, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }

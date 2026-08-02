@@ -1,9 +1,12 @@
 import type { Repos } from '../db/repositories.js';
-import type { BrowserDriver, Profile, Settings, CampaignKind, SendOutcome } from '../types.js';
+import type {
+  BrowserDriver, Profile, Settings, CampaignKind, SendOutcome,
+  Engagement, EngagementOutcome, EngagementSkipReason,
+} from '../types.js';
 import { selectNoteSource } from '../core/message.js';
-import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
+import { windowStartIso, remainingCapacity, dayStartIso } from '../core/rate-limit.js';
 import { pickDue } from '../core/schedule.js';
-import { capsFor } from '../core/caps.js';
+import { capsFor, engagementCaps } from '../core/caps.js';
 import { isTripped, tripCheckpoint, tripLoginLost, recordFailure, recordSuccess } from './guardrail.js';
 import { log } from '../core/log.js';
 
@@ -106,6 +109,94 @@ function handleError(repos: Repos, p: Profile, outcome: SendOutcome, clock: () =
   return recordFailure(repos, outcome.error ?? 'unknown', clock());
 }
 
+// --- Post engagements ------------------------------------------------------------------
+
+/** One human-readable line per engagement, mirroring logVerdict for profiles. */
+function logEngagementVerdict(e: Engagement, verdict: string): void {
+  log.info('sender', 'engagement verdict', { engagement: e.id, url: e.post_url, verdict });
+}
+
+/**
+ * Terminal skip that does NOT COUNT TOWARD the failure streak — a per-post fact that can
+ * never succeed on retry (post deleted, commenting disabled).
+ *
+ * `reactionLanded` says whether a reaction of ours is provably on the post by the time we
+ * skip. When it is, the skip RESETS the streak: LinkedIn just accepted a real action from
+ * us, which is exactly the evidence recordSuccess exists to consume, and a run that keeps
+ * landing reactions must not accumulate its way to a repeated_failures halt.
+ *
+ * It is a parameter rather than an unconditional call because the distinction is the bug
+ * this file already got wrong once (see the `contacted` gate at the end of
+ * attemptEngagement): a skip on a path that never placed anything — a post that 404s before
+ * we touch it — is no evidence the browser is healthy and must leave the streak alone.
+ */
+function skipEngagement(
+  repos: Repos, e: Engagement, reason: EngagementSkipReason, detail: string,
+  reactionLanded: boolean,
+): AttemptResult {
+  repos.engagements.setStatus(e.id, 'skipped', { last_error: null, skip_reason: reason });
+  if (reactionLanded) recordSuccess(repos);
+  logEngagementVerdict(e, `skipped: ${detail}`);
+  return { halted: false, contacted: true };
+}
+
+/** Skip that DOES count toward the failure streak — the control was missing, which usually
+ *  means a selector broke rather than anything being wrong with this post. */
+function skipEngagementCounted(
+  repos: Repos, e: Engagement, outcome: EngagementOutcome, clock: () => Date, label: string,
+): boolean {
+  repos.engagements.setStatus(e.id, 'skipped', { last_error: null, skip_reason: 'unavailable' });
+  const shot = outcome.evidence?.screenshot;
+  const detail = `${label}${shot ? ` — screenshot: /incidents/${shot}` : ''}`;
+  logEngagementVerdict(e, `skipped: ${detail}`);
+  return recordFailure(repos, detail, clock());
+}
+
+function failEngagement(
+  repos: Repos, e: Engagement, outcome: EngagementOutcome, clock: () => Date,
+): boolean {
+  const shot = outcome.evidence?.screenshot;
+  repos.engagements.setStatus(e.id, 'failed', { last_error: outcome.error ?? 'unknown' });
+  logEngagementVerdict(e, `failed: ${outcome.error ?? 'unknown'}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
+  return recordFailure(repos, outcome.error ?? 'unknown', clock());
+}
+
+/**
+ * Fold this row onto the identity the live post reports, once the reaction is recorded.
+ *
+ * Returns a terminal AttemptResult when the row turns out to be redundant — another row
+ * already holds the canonical URN, so continuing would engage the same post twice.
+ * Returns null to carry on.
+ */
+function reconcileAfterReaction(
+  repos: Repos, e: Engagement, outcome: EngagementOutcome,
+): AttemptResult | null {
+  if (!outcome.observedUrn) return null;
+  if (repos.engagements.reconcileUrn(e.id, outcome.observedUrn) !== 'duplicate') return null;
+  // Only ever called with a reaction just recorded, so the streak resets: the row is
+  // redundant, but the reaction it placed is real and LinkedIn accepted it.
+  return skipEngagement(repos, e, 'dismissed',
+    'the same post is already engaged under its canonical URN', true);
+}
+
+/** A checkpoint halts the whole engine, not one pipeline — the LinkedIn account is the
+ *  shared resource. Same shape as handleCheckpoint for profiles. */
+function handleEngagementCheckpoint(
+  repos: Repos, e: Engagement, outcome: EngagementOutcome, clock: () => Date,
+): void {
+  const ev = outcome.evidence;
+  const detail = ev
+    ? `Checkpoint/captcha page at ${ev.pageUrl}`
+      + (ev.matched ? ` (matched "${ev.matched}")` : '')
+      + (ev.screenshot ? ` — screenshot: /incidents/${ev.screenshot}` : '')
+    : undefined;
+  repos.engagements.setStatus(e.id, 'needs_attention', {
+    last_error: ev?.matched ? `checkpoint (matched "${ev.matched}")` : 'checkpoint',
+  });
+  logEngagementVerdict(e, `needs attention: checkpoint / captcha${detail ? ` — ${detail}` : ''}`);
+  tripCheckpoint(repos, clock(), detail);
+}
+
 export async function runSenderOnce(
   repos: Repos, driver: BrowserDriver, now: Date, opts: SenderOptions = {},
 ): Promise<void> {
@@ -127,7 +218,8 @@ export async function runSenderOnce(
   // Capacity + due work are computed from the DB only — so idle ticks never open the browser.
   const invDue = dueForKind(repos, now, 'invite');
   const msgDue = dueForKind(repos, now, 'message');
-  if (invDue.length === 0 && msgDue.length === 0) return; // nothing due -> stay dark
+  const engDue = dueEngagements(repos, now);
+  if (invDue.length === 0 && msgDue.length === 0 && engDue.length === 0) return; // stay dark
 
   // Cached-login gate (no browser): login only ever happens through our own browser, so
   // the cache is authoritative. Not logged in is transient — skip, the dashboard surfaces it.
@@ -148,9 +240,16 @@ export async function runSenderOnce(
     if (halted) return;
     // Both passes attempted something in this tick: the last invite send and the first
     // message send are still two consecutive actions against LinkedIn, so pace them too.
-    if (msgDue.length > 0) await delay();
+    if (msgDue.length > 0 || engDue.length > 0) await delay();
   }
-  if (msgDue.length > 0) await runMessagePass(repos, driver, msgDue, clock, delay);
+  if (msgDue.length > 0) {
+    // The message pass's halt verdict is load-bearing now that a third pass follows it: a
+    // checkpoint or streak trip there must not let engagements keep driving the browser.
+    const halted = await runMessagePass(repos, driver, msgDue, clock, delay);
+    if (halted) return;
+    if (engDue.length > 0) await delay();
+  }
+  if (engDue.length > 0) await runEngagementPass(repos, driver, engDue, clock, delay);
 }
 
 /** Due, capacity-clamped profiles for one kind (DB only, no browser). */
@@ -336,4 +435,182 @@ async function attemptMessage(
     default:
       return { halted: handleError(repos, p, outcome, clock), contacted: true };
   }
+}
+
+/**
+ * Due, capacity-clamped engagements (DB only, no browser).
+ *
+ * The comment budget is re-checked here as a backstop for the planner's own limit. A
+ * comment-bearing task over budget is dropped from the batch WHOLE — never run
+ * reaction-only — so one task cannot straddle two days in a partial state.
+ *
+ * That filter runs AFTER pickDue has clamped to batchSize, so a batch can come out smaller
+ * than batchSize while reaction-only tasks sit due behind the dropped ones. Deliberate: the
+ * alternative is to refill from the tail, which reorders the queue out of scheduled_for
+ * order and lets a later task jump an earlier one. Under-filling only slows the drain (the
+ * held rows stay `scheduled` and lead the next tick); it can never over-send.
+ */
+function dueEngagements(repos: Repos, now: Date): Engagement[] {
+  const s = repos.settings.get();
+  const caps = engagementCaps(s);
+  const reactedInWindow = repos.engagements.countReactedSince(windowStartIso(now));
+  const remaining = remainingCapacity(caps.weeklyCap, reactedInWindow);
+  if (remaining <= 0) return [];
+
+  const scheduled = repos.engagements.byStatus('scheduled');
+  const due = pickDue(scheduled, now, Math.min(remaining, caps.batchSize));
+
+  let commentsLeft = Math.max(0,
+    s.engage_comment_daily_cap - repos.engagements.countCommentedSince(dayStartIso(now)));
+  return due.filter((e) => {
+    if (e.comment_text === null) return true;
+    if (commentsLeft <= 0) return false;
+    commentsLeft--;
+    return true;
+  });
+}
+
+/** One engagement batch. Returns true if a halt-worthy verdict stopped the pass.
+ *  `delay` paces consecutive LinkedIn contacts — see runInvitePass for the same contract. */
+async function runEngagementPass(
+  repos: Repos, driver: BrowserDriver, due: Engagement[], clock: () => Date, delay: () => Promise<void>,
+): Promise<boolean> {
+  for (let i = 0; i < due.length; i++) {
+    const { halted, contacted } = await attemptEngagement(repos, driver, due[i], clock, delay);
+    if (halted) return true;
+    if (contacted && i < due.length - 1) await delay();
+  }
+  return false;
+}
+
+/**
+ * One post's engagement: react, then comment if the task carries one.
+ *
+ * The reaction step is guarded on `reacted_at === null`, so a task retried after a failed
+ * comment never re-drives the reaction. That guard, and the split reacted_at/commented_at
+ * timestamps behind it, are the whole reason this pipeline does not use a single sent_at.
+ *
+ * `contacted` tracks whether this attempt actually drove the browser — a resumed task can
+ * skip straight past the reaction, and a step we did not perform must neither be paced
+ * (delay) nor counted as evidence the browser is healthy (recordSuccess).
+ */
+async function attemptEngagement(
+  repos: Repos, driver: BrowserDriver, e: Engagement, clock: () => Date, delay: () => Promise<void>,
+): Promise<AttemptResult> {
+  repos.engagements.setStatus(e.id, 'sending', { attempts: e.attempts + 1 });
+  log.debug('sender', 'attempting engagement', { engagement: e.id, url: e.post_url });
+  let contacted = false;
+
+  if (e.reacted_at === null) {
+    contacted = true;
+    const outcome = await driver.reactToPost(e.post_url, e.reaction);
+
+    // ORDER MATTERS: stamp a landed reaction BEFORE touching identity. reconcileUrn throws
+    // on a missing row, and running it between the click and the stamp would put that throw
+    // on the one path where a real reaction is already live and unrecorded.
+    switch (outcome.result) {
+      case 'done':
+        repos.engagements.setStatus(e.id, 'sending', { reacted_at: clock().toISOString() });
+        break;
+      case 'already':
+        // A reaction of ours we never recorded — placed by hand, or orphaned by a crash.
+        // We do NOT replace it with the requested one: overwriting a reaction the operator
+        // placed themselves is a side effect nobody asked for.
+        //
+        // reacted_at is stamped with NOW even though the reaction predates this run: it is
+        // both the retry guard and the weekly-cap unit, and neither works unset. The fact
+        // that we found rather than placed it lives in the verdict line below.
+        repos.engagements.setStatus(e.id, 'sending', { reacted_at: clock().toISOString() });
+        logEngagementVerdict(e, `reaction already present (${outcome.existingReaction ?? 'unknown'}) — left as is`);
+        break;
+      case 'not_found':
+        // Nothing of ours is on the post — there is no post. The one skip path that leaves
+        // the failure streak exactly where it found it.
+        return skipEngagement(repos, e, 'not_found', 'post no longer exists (LinkedIn 404)', false);
+      case 'unavailable':
+      case 'comments_disabled': // not reachable from a reaction; the union is shared
+        return {
+          halted: skipEngagementCounted(repos, e, outcome, clock, 'reaction control unavailable'),
+          contacted: true,
+        };
+      case 'checkpoint':
+        handleEngagementCheckpoint(repos, e, outcome, clock);
+        return { halted: true, contacted: true };
+      case 'unverified': // comment-only in practice; treated as retryable here
+      case 'error':
+      default:
+        return { halted: failEngagement(repos, e, outcome, clock), contacted: true };
+    }
+
+    const retired = reconcileAfterReaction(repos, e, outcome);
+    if (retired) return retired;
+  }
+
+  if (e.comment_text !== null && e.commented_at === null) {
+    // The reaction and the comment are two consecutive LinkedIn contacts — but only when the
+    // reaction happened in THIS attempt. A resumed comment is simply the next contact of the
+    // tick, and the gap before it was already spent by runEngagementPass.
+    if (contacted) await delay();
+    contacted = true;
+    const outcome = await driver.commentOnPost(e.post_url, e.comment_text);
+    switch (outcome.result) {
+      case 'done':
+        repos.engagements.setStatus(e.id, 'sent', { commented_at: clock().toISOString() });
+        recordSuccess(repos);
+        logEngagementVerdict(e, `reacted (${e.reaction}) and commented`);
+        return { halted: false, contacted: true };
+      // Both of these are reached only past the reaction step, so the row's reaction is
+      // provably on the post (placed in this attempt or stamped by an earlier one) and the
+      // skip resets the streak.
+      case 'comments_disabled':
+        return skipEngagement(repos, e, 'comments_disabled',
+          'commenting is disabled on this post (the reaction landed)', true);
+      case 'not_found':
+        return skipEngagement(repos, e, 'not_found', 'post no longer exists (LinkedIn 404)', true);
+      case 'unverified':
+        // NEVER auto-retry: the comment may already be published under the operator's name.
+        //
+        // commented_at IS stamped here, on a comment nothing confirmed. THE BUDGET MUST
+        // COUNT SUBMITS, NOT CONFIRMATIONS: the submit click is irreversible and happens
+        // strictly before the confirmation read, so an unverified comment is one that may
+        // well be live — and engage_comment_daily_cap is metered purely by commented_at.
+        // Leaving it NULL meant a driver that stops confirming (a renamed comment-row
+        // class is enough) found the full budget intact on every batch of the day, and
+        // `unverified` deliberately trips no failure streak, so nothing else would notice.
+        // Erring the other way costs at most one under-counted slot; erring this way
+        // removes the cap exactly when the DOM rots.
+        //
+        // The stamp also engages the comment guard below (`commented_at === null`), which
+        // is why POST /api/engagements/:id/retry clears it: that endpoint means "I checked,
+        // it did not post", and clearing the stamp is both the budget refund and what lets
+        // the retry actually re-comment.
+        repos.engagements.setStatus(e.id, 'needs_attention', {
+          commented_at: clock().toISOString(),
+          last_error: 'comment could not be verified — it may have posted; check the post before retrying',
+        });
+        logEngagementVerdict(e, 'needs attention: comment unverified');
+        return { halted: false, contacted: true };
+      case 'unavailable':
+        return {
+          halted: skipEngagementCounted(repos, e, outcome, clock, 'comment box unavailable'),
+          contacted: true,
+        };
+      case 'checkpoint':
+        handleEngagementCheckpoint(repos, e, outcome, clock);
+        return { halted: true, contacted: true };
+      case 'already':
+      case 'error':
+      default:
+        return { halted: failEngagement(repos, e, outcome, clock), contacted: true };
+    }
+  }
+
+  // Everything this task asked for is on the post: the reaction landed (now or on an earlier
+  // tick) and either there is no comment or it is already published — both are genuinely
+  // 'sent'. recordSuccess is gated on `contacted`: a row that completed without driving the
+  // browser is no evidence LinkedIn is reachable, so it must not clear a failure streak.
+  repos.engagements.setStatus(e.id, 'sent', {});
+  if (contacted) recordSuccess(repos);
+  logEngagementVerdict(e, contacted ? `reacted (${e.reaction})` : 'already complete — nothing left to do');
+  return { halted: false, contacted };
 }

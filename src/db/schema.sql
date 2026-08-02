@@ -90,7 +90,15 @@ CREATE TABLE IF NOT EXISTS settings (
   event_run_budget_minutes INTEGER NOT NULL DEFAULT 20,
   -- The picker hard-caps at 1000 rows in a stable order, so anything past it is
   -- permanently invisible under that filter. Buckets at/over this get sub-sharded.
-  event_shard_threshold INTEGER NOT NULL DEFAULT 900
+  event_shard_threshold INTEGER NOT NULL DEFAULT 900,
+  -- Post engagements. Own caps, with deliberately bigger batches than an invite: a
+  -- reaction is a far cheaper action than a connection request. 15 x 6 = 90/day.
+  engage_weekly_cap INTEGER NOT NULL DEFAULT 500,
+  engage_batch_size INTEGER NOT NULL DEFAULT 15,
+  engage_batches_per_day INTEGER NOT NULL DEFAULT 6,
+  -- Comments are capped separately and far lower: 90 published comments a day under the
+  -- operator's own name is a materially different risk from 90 likes.
+  engage_comment_daily_cap INTEGER NOT NULL DEFAULT 10
 );
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -286,3 +294,68 @@ CREATE INDEX IF NOT EXISTS idx_reservations_window ON reservations(from_ts, to_t
 -- would couple every connections write to fts rowid bookkeeping, and one text document per
 -- person is small enough that the duplication is not worth that coupling.
 CREATE VIRTUAL TABLE IF NOT EXISTS connections_fts USING fts5(doc);
+
+-- ============================================================================
+-- Post engagements (2026-08-02). The fourth pipeline: react to a LinkedIn post,
+-- optionally with a comment.
+--
+-- Deliberately NOT a CampaignKind. `profiles` is person-shaped — first_name,
+-- accepted_at, thread_url — and a post is not a person. The hard blocker is
+-- profiles.cohort_id: NOT NULL REFERENCES cohorts(id), and an engagement has
+-- no cohort to belong to. Note that UNIQUE(profile_url, kind) is NOT the
+-- obstacle here that it is for event invites: one post, one engagement is
+-- precisely what that constraint would give us. The FK is what rules it out.
+-- Separate table; shared pause / guardrail / working-hours / browser-mutex
+-- rails, and drained by the SAME sender tick as invites and messages (unlike
+-- event invites, which need a reserved window of their own).
+--
+-- CAREFUL: CREATE TABLE IF NOT EXISTS back-fills the whole table on every
+-- openDatabase, but it is a no-op once the table exists. A column added here
+-- LATER is silently absent on existing databases and needs its own guarded
+-- ALTER in runMigrations — the same trap documented for event_buckets.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS engagements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- Canonical https://www.linkedin.com/feed/update/<urn>/ — display and navigation only.
+  post_url TEXT NOT NULL,
+  -- THE identity. The same post is reachable as /feed/update/, /posts/<slug>-activity-…
+  -- and ?updateId=…, so deduping on post_url would dedupe nothing.
+  post_urn TEXT NOT NULL UNIQUE,
+  -- Always present. LinkedIn permits exactly one reaction per member per post, which is
+  -- the same rule the UNIQUE above enforces.
+  reaction TEXT NOT NULL,
+  -- Optional. When set it is ALWAYS delivered alongside the reaction — there is no
+  -- comment-only engagement.
+  comment_text TEXT,
+  status TEXT NOT NULL DEFAULT 'queued',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  -- not_found | unavailable | comments_disabled | dismissed
+  skip_reason TEXT,
+  scheduled_for TEXT,
+  -- Partial progress, deliberately NOT one sent_at: the task does two things in sequence
+  -- and a retry after a failed comment must not re-drive the reaction.
+  --
+  -- The CHECKs pin the exact shape toISOString() produces (YYYY-MM-DDTHH:MM:SS.sssZ), NULL
+  -- still allowed. This is a scar, not decoration. countReactedSince / countCommentedSince
+  -- compare these columns with `>= ?` against an ISO string, and TEXT >= TEXT is only a
+  -- chronological comparison while EVERY value is that one fixed-width shape. send_log.at
+  -- is the live proof of what happens otherwise: it is written by the datetime('now')
+  -- default, so it holds '2026-07-31 16:50:00', and EventRepo.countSentSince compares it to
+  -- windowStartIso() -> '2026-07-25T16:50:00.000Z'. Byte 10 is ' ' (0x20) vs 'T' (0x54), so
+  -- on a shared date prefix the comparison is silently FALSE and real sends vanish from the
+  -- weekly counter. A CHECK cannot be added by ALTER TABLE in SQLite, so it had to land
+  -- before this table existed in anyone's database.
+  reacted_at TEXT CHECK (
+    reacted_at IS NULL
+    OR reacted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  ),
+  commented_at TEXT CHECK (
+    commented_at IS NULL
+    OR commented_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  ),
+  priority INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_engagements_status ON engagements(status);
+CREATE INDEX IF NOT EXISTS idx_engagements_reacted ON engagements(reacted_at);

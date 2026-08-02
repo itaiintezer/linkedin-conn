@@ -162,7 +162,7 @@ bucket, so a bucket already in flight always finishes.
 matches, checks the counter, then throws the selection away. Use it to see real reach
 before committing.
 
-On the **dashboard** it gets a conveyor of its own beside the other two, with two honest
+On the **dashboard** it gets a conveyor of its own beside the others, with two honest
 departures: the gauge counts today's *runs* against `events_per_day` rather than sends, and
 there are three stations instead of four — LinkedIn tells us nothing about who accepted an
 event invitation, so there is no fourth number to fill. The locations that will not fit
@@ -177,6 +177,58 @@ location, because it competes with the cohorts for the same browser and the same
 | `event_bucket_ceiling` | 10 | Locations worked per run |
 | `event_run_budget_minutes` | 20 | Window reserved per run |
 | `event_shard_threshold` | 900 | Roster size above which a bucket is sub-sharded |
+
+## Post engagements
+
+The fourth pipeline, and the only one whose target is a **post** rather than a person: react
+to a LinkedIn post, optionally with a comment. Like event invites it uses its own table and
+its own caps rather than cohorts and campaign kinds — a post is not a person, and `profiles`
+is person-shaped down to `first_name` and `accepted_at`. What it *does* share is everything
+that keeps the account safe: the same working hours, the same weekday rule, the same send
+delays, the same pause, the same guardrail, and the same single browser. An engagement can
+never run while a send, a reply check, a roster sync or an event run is using the browser.
+
+Work arrives over the API — `POST /api/engagements` with a post URL, an optional reaction
+(`like`, `celebrate`, `support`, `love`, `insightful` or `funny`; `like` if you don't say) and
+an optional comment. A `lnkd.in` shortlink is expanded for you. There is no enqueue form: the
+dashboard card is read-only and states rather than asks.
+
+One row per post, keyed on the post's **URN** rather than its URL, so the same post pasted as
+a `/feed/update/` link and as a share link is one task and not two. LinkedIn allows exactly
+one reaction per person per post, which is the same rule.
+
+Three things it deliberately will not do:
+
+- **A comment always rides with a reaction.** There is no comment-only engagement.
+- **A reaction is never replaced.** If the post already carries one of yours, The Machine says
+  so and leaves it alone — the Like control is a toggle, so "switching" a reaction means
+  clicking it off first, and removing a reaction you placed by hand is not a side effect
+  anybody asked for.
+- **A comment never retries itself.** If the comment cannot be confirmed in the thread under
+  your name, the task parks in **Needs attention** for you to look at, because a duplicate
+  published comment is visible to real people and cannot be cleanly unsent. Reactions retry
+  freely — the driver reads the button's state before touching it, so a second pass reports
+  "already reacted" instead of undoing the first.
+
+Its pacing is much looser than the invite pacing, because a reaction is a far cheaper action
+than a connection request: 15 per batch × 6 batches a day (~90/day), capped at 500 per rolling
+7 days. **Comments are capped separately at 10 a day** — 90 published comments a day under
+your own name is a materially different reputational risk from 90 likes, and the comment
+budget is applied when the day is planned rather than only at send time, so comment-bearing
+tasks don't sit occupying slots they can never use.
+
+On the **dashboard** it gets the fourth conveyor: this week's reactions against
+`engage_weekly_cap`, today's comments against their own cap, and three stations rather than
+four — LinkedIn tells you nothing about how a reaction was received, so there is no funnel to
+fill. Parked and failed rows show as amber chips beneath the track, and **Up next** lists the
+posts themselves so you can open one and check it.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `engage_weekly_cap` | 500 | Reactions per rolling 7 days |
+| `engage_batch_size` | 15 | Engagements per batch |
+| `engage_batches_per_day` | 6 | Batches per day |
+| `engage_comment_daily_cap` | 10 | Published comments per day |
 
 ## Connections
 
@@ -337,6 +389,8 @@ card forces a pass immediately.
   draft; `POST /api/events/:id/arm` to commit it, `/dry-run` to rehearse it.
 - `POST /api/events/:id/invitees` `{ profile_urls }` — add people to a draft and re-rank
   its locations. `409` once armed.
+- `POST /api/engagements` `{ post_url, reaction?, comment? }` — queue a post engagement (or
+  `{ items: [...] }` for many); `GET /api/engagements` to read them back.
 
 Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 
@@ -364,4 +418,6 @@ npm test
 ## Maintenance
 
 LinkedIn changes its HTML periodically. All selectors live in
-`src/browser/linkedin-selectors.ts` — update them there if sends start failing.
+`src/browser/linkedin-selectors.ts` (with the event picker's in `event-selectors.ts` and the
+post reaction bar and comment box in `post-selectors.ts`) — update them there if sends start
+failing.

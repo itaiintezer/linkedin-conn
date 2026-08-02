@@ -1,0 +1,60 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`an empty invite queue costs zero rng draws, so the message plan is unshifted 1`] = `
+[
+  "message https://www.linkedin.com/in/m0 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m1 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m2 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m3 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m4 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m5 @ 2026-08-03T09:19:12.000Z",
+  "message https://www.linkedin.com/in/m6 @ 2026-08-03T09:19:12.000Z",
+]
+`;
+
+exports[`invite-only plan is unchanged 1`] = `
+[
+  "invite https://www.linkedin.com/in/i0 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i1 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i2 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i3 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i4 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i5 @ 2026-08-03T09:19:12.000Z",
+  "invite https://www.linkedin.com/in/i6 @ 2026-08-03T09:19:12.000Z",
+  "invite https://www.linkedin.com/in/i7 @ 2026-08-03T09:19:12.000Z",
+  "invite https://www.linkedin.com/in/i8 @ 2026-08-03T09:19:12.000Z",
+]
+`;
+
+exports[`message-only plan is unchanged 1`] = `
+[
+  "message https://www.linkedin.com/in/m0 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m1 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m2 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m3 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m4 @ 2026-08-03T08:36:00.000Z",
+  "message https://www.linkedin.com/in/m5 @ 2026-08-03T09:19:12.000Z",
+  "message https://www.linkedin.com/in/m6 @ 2026-08-03T09:19:12.000Z",
+  "message https://www.linkedin.com/in/m7 @ 2026-08-03T09:19:12.000Z",
+  "message https://www.linkedin.com/in/m8 @ 2026-08-03T09:19:12.000Z",
+]
+`;
+
+exports[`mixed plan is unchanged — this is the rng-ordering guard 1`] = `
+[
+  "invite https://www.linkedin.com/in/i0 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i1 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i2 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i3 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i4 @ 2026-08-03T08:36:00.000Z",
+  "invite https://www.linkedin.com/in/i5 @ 2026-08-03T09:19:12.000Z",
+  "invite https://www.linkedin.com/in/i6 @ 2026-08-03T09:19:12.000Z",
+  "message https://www.linkedin.com/in/m0 @ 2026-08-03T12:04:48.000Z",
+  "message https://www.linkedin.com/in/m1 @ 2026-08-03T12:04:48.000Z",
+  "message https://www.linkedin.com/in/m2 @ 2026-08-03T12:04:48.000Z",
+  "message https://www.linkedin.com/in/m3 @ 2026-08-03T12:04:48.000Z",
+  "message https://www.linkedin.com/in/m4 @ 2026-08-03T12:04:48.000Z",
+  "message https://www.linkedin.com/in/m5 @ 2026-08-03T13:02:24.000Z",
+  "message https://www.linkedin.com/in/m6 @ 2026-08-03T13:02:24.000Z",
+]
+`;

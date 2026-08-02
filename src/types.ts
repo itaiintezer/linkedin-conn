@@ -8,6 +8,12 @@ export type { CheckpointScan };
 import type { CampaignKind } from './core/campaign-kind.js';
 export type { CampaignKind };
 
+// Derived from the REACTIONS list so the runtime validator and this type can never drift.
+// Imported as well as re-exported: `export type { X } from` alone would not bring the name
+// into this file's scope, and the Engagement interface below uses it.
+import type { Reaction } from './core/engagement-action.js';
+export type { Reaction };
+
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
   | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
@@ -81,6 +87,10 @@ export interface Settings {
   event_bucket_ceiling: number;
   event_run_budget_minutes: number;
   event_shard_threshold: number;
+  engage_weekly_cap: number;
+  engage_batch_size: number;
+  engage_batches_per_day: number;
+  engage_comment_daily_cap: number;
 }
 
 // --- Event invites -----------------------------------------------------------------
@@ -191,6 +201,65 @@ export interface EventInvitee {
   note: string | null;
 }
 
+// --- Post engagements -----------------------------------------------------------------
+
+/** Its own union, NOT an alias of ProfileStatus: an engagement can never be accepted,
+ *  replied or expired, and a shared type would invite code that pretends otherwise. */
+export type EngagementStatus =
+  | 'queued' | 'scheduled' | 'sending' | 'sent' | 'skipped' | 'failed' | 'needs_attention';
+
+/** Why a skipped engagement was skipped (terminal — the engine never retries these). */
+export type EngagementSkipReason =
+  | 'not_found' | 'unavailable' | 'comments_disabled' | 'dismissed';
+
+export interface Engagement {
+  id: number;
+  post_url: string;
+  post_urn: string;
+  reaction: Reaction;
+  /** null for a reaction-only task. When set, always delivered WITH the reaction. */
+  comment_text: string | null;
+  status: EngagementStatus;
+  attempts: number;
+  last_error: string | null;
+  skip_reason: EngagementSkipReason | null;
+  scheduled_for: string | null;
+  reacted_at: string | null;
+  commented_at: string | null;
+  priority: number;
+  created_at: string;
+}
+
+/**
+ * What one engagement step did.
+ *
+ * `unverified` is COMMENT-ONLY: reactToPost never returns it, because an unconfirmed
+ * reaction is safe to retry and so reports `error` instead. An unconfirmed COMMENT may
+ * already be published under the operator's name, so it gets its own result that the sender
+ * turns into needs_attention rather than a retry.
+ *
+ * `comments_disabled` is split from `unavailable` deliberately: an author who restricted
+ * commenting is a per-post terminal fact, and folding it into `unavailable` would march a
+ * batch of such posts toward a repeated_failures halt.
+ */
+export type EngagementResult =
+  | 'done' | 'already' | 'not_found' | 'unavailable'
+  | 'comments_disabled' | 'unverified' | 'checkpoint' | 'error';
+
+export interface EngagementOutcome {
+  result: EngagementResult;
+  /** Set on `already`: the reaction found on the post. Logged, never persisted.
+   *  Deliberately `string`, not `Reaction`: it is read verbatim out of a live aria-label
+   *  ("Unreact <X>"), so it may be a reaction we do not model. Narrowing it here would
+   *  force the driver to drop the value exactly when it is most surprising. */
+  existingReaction?: string;
+  /** Canonical URN read off the post container's data-urn, when present. The sender
+   *  reconciles the row's identity from this — the URL's id is only best-effort. */
+  observedUrn?: string;
+  error?: string;
+  evidence?: SendEvidence;
+}
+
 export type SendResult =
   | 'sent' | 'already' | 'unavailable' | 'note_quota' | 'checkpoint' | 'error'
   | 'email_required' | 'not_found' | 'weekly_limit' | 'not_connected';
@@ -249,6 +318,15 @@ export interface BrowserDriver {
    *  `dryRun`. Opens AND closes its own picker, so buckets share no modal state and the
    *  caller needs no teardown call. */
   runEventBucket(req: BucketRunRequest): Promise<BucketRunResult>;
+
+  // --- Post engagements ---
+  /** Place a reaction on a post. MUST read current state first and report `already`
+   *  rather than clicking: the trigger is a toggle, so a blind click on an
+   *  already-reacted post REMOVES the reaction. */
+  reactToPost(postUrl: string, reaction: Reaction): Promise<EngagementOutcome>;
+  /** Post a comment. Reports `unverified` rather than `error` when it cannot confirm the
+   *  comment landed — the caller must NOT retry that. */
+  commentOnPost(postUrl: string, text: string): Promise<EngagementOutcome>;
 
   close(): Promise<void>;
 }

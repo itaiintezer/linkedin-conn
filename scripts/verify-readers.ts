@@ -9,7 +9,10 @@ try {
   console.log('includes liron:', pending.includes('https://www.linkedin.com/in/liron-lalezary'));
   console.log('sample pending:', pending.slice(0, 6));
 
-  const conns = await d.readRecentConnections();
+  // readRecentConnections was replaced by readConnectionCards in the roster-sync cutover —
+  // one scroll-loaded read returning { url, name } per card. This call had been dangling
+  // ever since, and went unnoticed because tsconfig did not include `scripts/`. It does now.
+  const conns = await d.readConnectionCards();
   console.log('connections:', conns.length);
   console.log('sample connections:', conns.slice(0, 6));
 } catch (e) {

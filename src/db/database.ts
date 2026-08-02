@@ -102,6 +102,20 @@ export function runMigrations(db: DB): void {
   // by anything — limits always came from weekly_cap/batch_size. Removed 2026-07-28; drop
   // the dead column so the schema matches the code. Must run after the onboarded back-fill
   // above, which is the last thing that read it.
+  //
+  // CAREFUL, read this before adding a THIRD drop anywhere in this function. DROP COLUMN
+  // is implemented as a text edit of the stored CREATE TABLE statement, and when the
+  // target is the table's LAST column SQLite scans backwards for the preceding comma
+  // WITHOUT skipping `--` comments. So a comma anywhere in the comment block directly
+  // above the last column makes it cut at the wrong offset and produce unparseable SQL;
+  // the ALTER then fails with "error in table <t> after drop column: incomplete input",
+  // which names neither the column nor the comment. Verified on SQLite 3.51.2 (Node
+  // v24.13.1) — dropping settings.event_shard_threshold fails today for exactly this
+  // reason, defeated by the comma in "in a stable order," on the line above it.
+  //
+  // Both drops in this function target mid-table columns, which is the only reason they
+  // are safe. A drop that targets a trailing column is not, and CI will not catch it if
+  // the fixture happens to be comma-free: this is a production-database failure mode.
   if (cols.includes('account_type')) {
     db.exec('ALTER TABLE settings DROP COLUMN account_type');
   }
@@ -166,7 +180,8 @@ export function runMigrations(db: DB): void {
   // acceptance_checks_per_day paced the old twice-daily connections scrape. Since the
   // phase-3 cutover the acceptance pass is a pure DB read that runs every tick, and nothing
   // reads this column — a setting the API accepted and then ignored. Dropped for the same
-  // reason account_type was above.
+  // reason account_type was above. Mid-table, so the DROP COLUMN hazard documented beside
+  // that drop does not apply here either.
   if (cols.includes('acceptance_checks_per_day')) {
     db.exec('ALTER TABLE settings DROP COLUMN acceptance_checks_per_day');
   }
@@ -229,6 +244,23 @@ export function runMigrations(db: DB): void {
   // gets sub-sharded into child geos. 900 leaves headroom for roster/LinkedIn drift.
   if (cols.length > 0 && !cols.includes('event_shard_threshold')) {
     db.exec('ALTER TABLE settings ADD COLUMN event_shard_threshold INTEGER NOT NULL DEFAULT 900');
+  }
+
+  // --- Post engagements (2026-08-02) ---
+  // The engagements table is back-filled by schema.sql's CREATE TABLE IF NOT EXISTS.
+  // Settings columns are not: one guard each, so an interruption between ALTERs cannot
+  // permanently skip whichever did not run yet.
+  if (cols.length > 0 && !cols.includes('engage_weekly_cap')) {
+    db.exec('ALTER TABLE settings ADD COLUMN engage_weekly_cap INTEGER NOT NULL DEFAULT 500');
+  }
+  if (cols.length > 0 && !cols.includes('engage_batch_size')) {
+    db.exec('ALTER TABLE settings ADD COLUMN engage_batch_size INTEGER NOT NULL DEFAULT 15');
+  }
+  if (cols.length > 0 && !cols.includes('engage_batches_per_day')) {
+    db.exec('ALTER TABLE settings ADD COLUMN engage_batches_per_day INTEGER NOT NULL DEFAULT 6');
+  }
+  if (cols.length > 0 && !cols.includes('engage_comment_daily_cap')) {
+    db.exec('ALTER TABLE settings ADD COLUMN engage_comment_daily_cap INTEGER NOT NULL DEFAULT 10');
   }
 
   // profiles: kind/full_name/thread_url/replied_at + UNIQUE(profile_url) -> UNIQUE(profile_url, kind).
