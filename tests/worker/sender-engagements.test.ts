@@ -283,6 +283,58 @@ test('a genuine reaction DOES reset the failure streak', async () => {
   expect(repos.appState.get().failure_streak).toBe(0);
 });
 
+// A skip is not a failure, but it is not nothing either: the three below all follow a
+// reaction LinkedIn accepted, which is precisely the evidence recordSuccess consumes. A run
+// that keeps landing reactions must not accumulate its way to a repeated_failures halt just
+// because each task then retired for a per-post reason.
+
+test('a comments_disabled skip after a landed reaction resets the failure streak', async () => {
+  const e = seed(1, 'hello');
+  driver.commentScripted.set(e.url, 'comments_disabled');
+  repos.appState.incFailureStreak();
+  repos.appState.incFailureStreak();
+  await run(NOW);
+  expect(repos.engagements.findById(e.id)!.skip_reason).toBe('comments_disabled');
+  expect(repos.engagements.findById(e.id)!.reacted_at).not.toBeNull();
+  expect(repos.appState.get().failure_streak).toBe(0);
+});
+
+test('retiring a duplicate row after a real reaction resets the failure streak', async () => {
+  const canonical = repos.engagements.add('u-canon', 'urn:li:activity:5555', 'like', null);
+  repos.engagements.setStatus(canonical.id, 'sent', { reacted_at: REACTED_EARLIER });
+  const dupe = seed(1);
+  driver.observedUrn = 'urn:li:activity:5555';
+  repos.appState.incFailureStreak();
+  await run(NOW);
+  expect(repos.engagements.findById(dupe.id)!.skip_reason).toBe('dismissed');
+  expect(repos.appState.get().failure_streak).toBe(0);
+});
+
+test('a not_found skip that never placed anything leaves the streak alone', async () => {
+  // The counterpart, and the reason this is a per-call-site decision rather than a blanket
+  // recordSuccess: the post 404s before we touch it, so nothing here says the browser is
+  // healthy. Clearing the streak on it would let a run of dead URLs paper over real
+  // failures accumulating between them.
+  const e = seed(1);
+  driver.reactScripted.set(e.url, 'not_found');
+  repos.appState.incFailureStreak();
+  repos.appState.incFailureStreak();
+  await run(NOW);
+  expect(repos.engagements.findById(e.id)!.skip_reason).toBe('not_found');
+  expect(repos.appState.get().failure_streak).toBe(2);
+});
+
+test('a not_found on the COMMENT step still resets it — the reaction did land', async () => {
+  const e = seed(1, 'hello');
+  driver.commentScripted.set(e.url, 'not_found');
+  repos.appState.incFailureStreak();
+  await run(NOW);
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.skip_reason).toBe('not_found');
+  expect(row.reacted_at).not.toBeNull();
+  expect(repos.appState.get().failure_streak).toBe(0);
+});
+
 // --- Crash recovery --------------------------------------------------------------------
 // The sender marks a row 'sending' before driving the browser, so an abrupt exit strands it
 // there forever. Recovery has to GUESS from the timestamps, and the guess is three-way

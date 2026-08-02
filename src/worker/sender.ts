@@ -116,12 +116,26 @@ function logEngagementVerdict(e: Engagement, verdict: string): void {
   log.info('sender', 'engagement verdict', { engagement: e.id, url: e.post_url, verdict });
 }
 
-/** Terminal skip that does NOT touch the failure streak — a per-post fact that can never
- *  succeed on retry (post deleted, commenting disabled). */
+/**
+ * Terminal skip that does NOT COUNT TOWARD the failure streak — a per-post fact that can
+ * never succeed on retry (post deleted, commenting disabled).
+ *
+ * `reactionLanded` says whether a reaction of ours is provably on the post by the time we
+ * skip. When it is, the skip RESETS the streak: LinkedIn just accepted a real action from
+ * us, which is exactly the evidence recordSuccess exists to consume, and a run that keeps
+ * landing reactions must not accumulate its way to a repeated_failures halt.
+ *
+ * It is a parameter rather than an unconditional call because the distinction is the bug
+ * this file already got wrong once (see the `contacted` gate at the end of
+ * attemptEngagement): a skip on a path that never placed anything — a post that 404s before
+ * we touch it — is no evidence the browser is healthy and must leave the streak alone.
+ */
 function skipEngagement(
   repos: Repos, e: Engagement, reason: EngagementSkipReason, detail: string,
+  reactionLanded: boolean,
 ): AttemptResult {
   repos.engagements.setStatus(e.id, 'skipped', { last_error: null, skip_reason: reason });
+  if (reactionLanded) recordSuccess(repos);
   logEngagementVerdict(e, `skipped: ${detail}`);
   return { halted: false, contacted: true };
 }
@@ -159,8 +173,10 @@ function reconcileAfterReaction(
 ): AttemptResult | null {
   if (!outcome.observedUrn) return null;
   if (repos.engagements.reconcileUrn(e.id, outcome.observedUrn) !== 'duplicate') return null;
+  // Only ever called with a reaction just recorded, so the streak resets: the row is
+  // redundant, but the reaction it placed is real and LinkedIn accepted it.
   return skipEngagement(repos, e, 'dismissed',
-    'the same post is already engaged under its canonical URN');
+    'the same post is already engaged under its canonical URN', true);
 }
 
 /** A checkpoint halts the whole engine, not one pipeline — the LinkedIn account is the
@@ -508,7 +524,9 @@ async function attemptEngagement(
         logEngagementVerdict(e, `reaction already present (${outcome.existingReaction ?? 'unknown'}) — left as is`);
         break;
       case 'not_found':
-        return skipEngagement(repos, e, 'not_found', 'post no longer exists (LinkedIn 404)');
+        // Nothing of ours is on the post — there is no post. The one skip path that leaves
+        // the failure streak exactly where it found it.
+        return skipEngagement(repos, e, 'not_found', 'post no longer exists (LinkedIn 404)', false);
       case 'unavailable':
       case 'comments_disabled': // not reachable from a reaction; the union is shared
         return {
@@ -541,11 +559,14 @@ async function attemptEngagement(
         recordSuccess(repos);
         logEngagementVerdict(e, `reacted (${e.reaction}) and commented`);
         return { halted: false, contacted: true };
+      // Both of these are reached only past the reaction step, so the row's reaction is
+      // provably on the post (placed in this attempt or stamped by an earlier one) and the
+      // skip resets the streak.
       case 'comments_disabled':
         return skipEngagement(repos, e, 'comments_disabled',
-          'commenting is disabled on this post (the reaction landed)');
+          'commenting is disabled on this post (the reaction landed)', true);
       case 'not_found':
-        return skipEngagement(repos, e, 'not_found', 'post no longer exists (LinkedIn 404)');
+        return skipEngagement(repos, e, 'not_found', 'post no longer exists (LinkedIn 404)', true);
       case 'unverified':
         // NEVER auto-retry: the comment may already be published under the operator's name.
         //
