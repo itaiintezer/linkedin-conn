@@ -1003,16 +1003,24 @@ function renderProfileAttentionRow(p) {
  * An engagement row: a POST, not a person, so it fills the shared table's two identity
  * columns with what it actually has — the post URL, and the reaction it was going to leave.
  *
- * "comment pending" is called out on purpose. `needs_attention` on this pipeline usually
+ * The comment's state is called out on purpose. `needs_attention` on this pipeline usually
  * means the reaction landed but the comment could not be verified, and that is precisely
  * the case where the operator must open the post before deciding to retry.
+ *
+ * Which is why a parked row NEVER reads "comment posted". commented_at is stamped on an
+ * unverified comment too — it records the irreversible submit click so the daily comment
+ * cap counts it (see the `unverified` branch in worker/sender.ts) — so on a parked row the
+ * timestamp means "may be live", not "confirmed". Reading it as posted would tell the
+ * operator the one thing this row exists to say cannot be assumed.
  */
 function renderEngagementAttentionRow(e) {
-  const pendingComment = !!e.comment_text && !e.commented_at;
+  const unverifiedComment = !!e.comment_text && e.status === 'needs_attention';
+  const pendingComment = !!e.comment_text && !e.commented_at && !unverifiedComment;
   const detail = el('div', { class: 'attn-engage' },
     el('span', { class: 'eng-up-react', text: reactionLabel(e.reaction) }),
   );
-  if (pendingComment) detail.appendChild(el('span', { class: 'attn-comment', text: 'comment pending' }));
+  if (unverifiedComment) detail.appendChild(el('span', { class: 'attn-comment', text: 'comment unverified' }));
+  else if (pendingComment) detail.appendChild(el('span', { class: 'attn-comment', text: 'comment pending' }));
   else if (e.comment_text) detail.appendChild(el('span', { class: 'attn-comment is-done', text: 'comment posted' }));
 
   return el('tr', {},

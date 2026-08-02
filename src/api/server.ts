@@ -911,6 +911,13 @@ export function buildServer(
    * human can open the post and decide, and retry is how they say "I checked, it did not
    * post". The sender's comment step is guarded on commented_at, so a retry after a landed
    * reaction re-drives only what is missing.
+   *
+   * Which is why this CLEARS commented_at and not reacted_at. The sender stamps
+   * commented_at on an unverified comment too — the submit click already happened, so it
+   * must cost a slot of engage_comment_daily_cap. "I checked, it did not post" is exactly
+   * the statement that unwinds that: it refunds the budget slot AND re-opens the comment
+   * guard so the retry re-posts. reacted_at survives on purpose — the reaction is confirmed
+   * and re-driving it is the one thing retry must never do.
    */
   const RETRYABLE_ENGAGEMENT_STATUSES = new Set<EngagementStatus>([
     'failed', 'needs_attention', 'skipped',
@@ -926,7 +933,7 @@ export function buildServer(
       });
     }
     repos.engagements.setStatus(id, 'queued', {
-      scheduled_for: null, last_error: null, skip_reason: null,
+      scheduled_for: null, last_error: null, skip_reason: null, commented_at: null,
     });
     return { ok: true };
   });

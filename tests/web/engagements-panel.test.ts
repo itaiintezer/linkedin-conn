@@ -64,7 +64,7 @@ const attnProfile = (o: Record<string, unknown> = {}) => ({
   last_error: 'Connect button not found', sent_at: null, scheduled_for: null, ...o,
 });
 
-test('an engagement row shows the post, the reaction and a pending comment', async () => {
+test('an engagement row shows the post, the reaction and an unverified comment', async () => {
   stubFetchRoutes({ '/api/attention': { body: [attnEngagement()] } });
   await app.loadAttention();
 
@@ -73,7 +73,7 @@ test('an engagement row shows the post, the reaction and a pending comment', asy
   const txt = tr!.textContent ?? '';
   expect(txt).toContain('linkedin.com/feed/update/urn:li:activity:7318');
   expect(txt).toContain('Insightful');
-  expect(txt).toContain('comment pending');
+  expect(txt).toContain('comment unverified');
   expect(txt).toContain('comment not found after posting');
   // The post URL is a real link, so the operator can go and look before retrying.
   expect(tr!.querySelector('a')?.getAttribute('href'))
@@ -82,12 +82,35 @@ test('an engagement row shows the post, the reaction and a pending comment', asy
   expect(tr!.querySelector('.kind-mark')?.className).toContain('engagement');
 });
 
-test('a landed comment is not reported as pending', async () => {
+test('a parked row with commented_at stamped is UNVERIFIED, never reported as posted', async () => {
+  // The post-fix shape of the commonest parked row: the submit click landed, so
+  // commented_at is stamped (it costs a slot of the daily cap), but nothing confirmed it.
+  // Calling that "posted" would tell the operator not to bother looking — which is the
+  // entire reason the row is in this table.
   stubFetchRoutes({ '/api/attention': { body: [attnEngagement({ commented_at: '2026-08-02T09:01:00.000Z' })] } });
   await app.loadAttention();
   const txt = byId('attentionBody').textContent ?? '';
-  expect(txt).toContain('comment posted');
+  expect(txt).toContain('comment unverified');
+  expect(txt).not.toContain('comment posted');
   expect(txt).not.toContain('comment pending');
+});
+
+test('a confirmed comment on a row that is not parked reads as posted', async () => {
+  // The renderer is a pure function of the row, not of which statuses /api/attention
+  // currently selects: a confirmed comment outside the parked state still reads correctly.
+  stubFetchRoutes({ '/api/attention': { body: [attnEngagement({
+    status: 'failed', commented_at: '2026-08-02T09:01:00.000Z',
+  })] } });
+  await app.loadAttention();
+  const txt = byId('attentionBody').textContent ?? '';
+  expect(txt).toContain('comment posted');
+  expect(txt).not.toContain('comment unverified');
+});
+
+test('a failed row whose comment never ran still reads as pending', async () => {
+  stubFetchRoutes({ '/api/attention': { body: [attnEngagement({ status: 'failed' })] } });
+  await app.loadAttention();
+  expect(byId('attentionBody').textContent ?? '').toContain('comment pending');
 });
 
 test('clicking Retry on an engagement row posts to the engagements endpoint', async () => {

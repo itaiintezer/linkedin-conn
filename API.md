@@ -711,14 +711,21 @@ curl -s 'http://localhost:4400/api/engagements?status=needs_attention&limit=20'
 One row. `404` if unknown.
 
 ### POST /api/engagements/:id/retry
-Requeue one row: back to `queued` with `scheduled_for`, `last_error` and `skip_reason`
-cleared. `404` if unknown, `409` unless its status is `failed`, `needs_attention` or
-`skipped`.
+Requeue one row: back to `queued` with `scheduled_for`, `last_error`, `skip_reason` and
+`commented_at` cleared. `404` if unknown, `409` unless its status is `failed`,
+`needs_attention` or `skipped`.
 
 `needs_attention` is retryable **on purpose**. Parking an unverified comment exists so a human
 can open the post and decide, and retry is how they say "I checked, it did not post". Nothing
 is re-driven twice: the sender's comment step is guarded on `commented_at` and its reaction
 step on `reacted_at`, so a retry after a landed reaction re-drives only what is missing.
+
+Clearing `commented_at` is what makes that statement true. The sender stamps it on an
+**unverified** comment as well as a confirmed one — the submit click is irreversible, so it
+has to cost a slot of `engage_comment_daily_cap` whether or not the confirmation read
+succeeded — so on a parked row the timestamp means "may be live". Retry unwinds exactly that:
+it refunds the budget slot and re-opens the comment guard. `reacted_at` is deliberately left
+standing; a confirmed reaction is never re-driven.
 
 Note that the bulk `POST /api/retry` walks the **profiles** table only — engagements are
 retried one row at a time.

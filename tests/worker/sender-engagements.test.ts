@@ -110,8 +110,32 @@ test('an unverified comment parks for the operator and is never auto-retried', a
   const row = repos.engagements.findById(e.id)!;
   expect(row.status).toBe('needs_attention');
   expect(row.reacted_at).not.toBeNull();
-  expect(row.commented_at).toBeNull();
+  // commented_at IS stamped, even though nothing confirmed: the submit click already
+  // happened, so the comment may be live and it must cost a slot of the daily budget.
+  // /api/engagements/:id/retry clears it — that is the operator saying "I looked, it
+  // did not post", and it is what lets a retry re-drive the comment.
+  expect(row.commented_at).not.toBeNull();
   expect(row.last_error).toMatch(/may have posted/);
+});
+
+test('the daily comment cap counts SUBMITTED comments, not confirmed ones', async () => {
+  // THE REGRESSION. The submit click is irreversible and confirmation is a separate,
+  // fallible read: if the budget only counted confirmed comments, a driver that stops
+  // confirming (LinkedIn renames the comment row's class) would find the full cap intact
+  // on every batch of the day. With the defaults that is 6 batches x 10 = up to 60
+  // published comments against a cap of 10, with no streak and no halt — because
+  // `unverified` deliberately does not call recordFailure.
+  repos.settings.update({ engage_comment_daily_cap: 2, engage_batch_size: 2 });
+  for (let i = 1; i <= 4; i++) driver.commentScripted.set(seed(i, 'hi').url, 'unverified');
+
+  await run(NOW);
+  await run(NOW); // same day, same cap
+
+  expect(driver.commentLog).toHaveLength(2);
+  expect(repos.engagements.countCommentedSince('2026-01-01T00:00:00.000Z')).toBe(2);
+  // The two that never ran are untouched and still queued behind the budget.
+  expect(repos.engagements.findById(3)!.status).toBe('scheduled');
+  expect(repos.engagements.findById(4)!.status).toBe('scheduled');
 });
 
 test('a checkpoint during a reaction trips the shared guardrail and halts', async () => {

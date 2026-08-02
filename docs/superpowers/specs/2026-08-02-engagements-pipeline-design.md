@@ -503,6 +503,10 @@ code.
   reaction always happens, so it is the correct unit.
 - **Daily:** `committedToday` equivalent = scheduled rows + rows with `reacted_at` today.
 - **Comment budget:** `engage_comment_daily_cap − COUNT(*) WHERE commented_at >= dayStart`.
+  `commented_at` is stamped on a **submitted** comment, not only a confirmed one (see the
+  `unverified` line below): the submit click is irreversible, so the budget has to assume
+  the worst. `POST /api/engagements/:id/retry` clears it — the operator's "I checked, it
+  did not post" is the one statement that refunds the slot.
 
 **The comment budget is applied at planning time, not only at send time.** `planEngagements`
 schedules at most `commentBudget` comment-bearing tasks per day. Without this, comment tasks
@@ -539,7 +543,9 @@ if comment_text is not null and commented_at is null:
     done              -> commented_at = clock()
     comments_disabled -> skipped/comments_disabled (reacted_at preserved); return
     not_found         -> skipped/not_found; return
-    unverified        -> needs_attention; NEVER auto-retry
+    unverified        -> commented_at = clock(); needs_attention; NEVER auto-retry
+                         # the submit click already happened: the comment may be live, so
+                         # it costs a comment-budget slot until a human says otherwise
     checkpoint        -> handleCheckpoint(); halt the pass
     error             -> failed; return (counts toward the streak)
 

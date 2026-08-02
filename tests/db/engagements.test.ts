@@ -133,7 +133,12 @@ test('NULL is accepted in both timestamp columns — an un-run task has neither'
   const e = repos.engagements.add(URL, URN, 'like', null);
   expect(e.reacted_at).toBeNull();
   expect(e.commented_at).toBeNull();
-  // And explicitly clearing them back to NULL is legal too (the retry path).
+  // And explicitly clearing them back to NULL is legal too. That is not hypothetical:
+  // POST /api/engagements/:id/retry clears commented_at (the operator saying "I checked,
+  // the unverified comment did not post"), which both refunds the daily-cap slot the
+  // submit spent and re-opens the sender's `commented_at === null` comment guard.
+  // reacted_at is NOT cleared by that path — a confirmed reaction is never re-driven —
+  // but the column accepts NULL all the same, so both are pinned here.
   repos.engagements.setStatus(e.id, 'queued', { reacted_at: null, commented_at: null });
   const row = repos.engagements.findById(e.id)!;
   expect(row.reacted_at).toBeNull();

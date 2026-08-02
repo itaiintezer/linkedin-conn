@@ -548,7 +548,23 @@ async function attemptEngagement(
         return skipEngagement(repos, e, 'not_found', 'post no longer exists (LinkedIn 404)');
       case 'unverified':
         // NEVER auto-retry: the comment may already be published under the operator's name.
+        //
+        // commented_at IS stamped here, on a comment nothing confirmed. THE BUDGET MUST
+        // COUNT SUBMITS, NOT CONFIRMATIONS: the submit click is irreversible and happens
+        // strictly before the confirmation read, so an unverified comment is one that may
+        // well be live — and engage_comment_daily_cap is metered purely by commented_at.
+        // Leaving it NULL meant a driver that stops confirming (a renamed comment-row
+        // class is enough) found the full budget intact on every batch of the day, and
+        // `unverified` deliberately trips no failure streak, so nothing else would notice.
+        // Erring the other way costs at most one under-counted slot; erring this way
+        // removes the cap exactly when the DOM rots.
+        //
+        // The stamp also engages the comment guard below (`commented_at === null`), which
+        // is why POST /api/engagements/:id/retry clears it: that endpoint means "I checked,
+        // it did not post", and clearing the stamp is both the budget refund and what lets
+        // the retry actually re-comment.
         repos.engagements.setStatus(e.id, 'needs_attention', {
+          commented_at: clock().toISOString(),
           last_error: 'comment could not be verified — it may have posted; check the post before retrying',
         });
         logEngagementVerdict(e, 'needs attention: comment unverified');

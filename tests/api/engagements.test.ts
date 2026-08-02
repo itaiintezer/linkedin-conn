@@ -3,6 +3,7 @@ import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
+import { runSenderOnce } from '../../src/worker/sender.js';
 
 /**
  * NO TEST IN THIS FILE MAY MAKE A REAL NETWORK REQUEST.
@@ -362,6 +363,37 @@ test('retry re-queues a needs_attention row and clears its error', async () => {
   expect(row.last_error).toBeNull();
   expect(row.skip_reason).toBeNull();
   expect(row.scheduled_for).toBeNull();
+});
+
+test('retry refunds the comment budget and lets the sender re-comment', async () => {
+  // The two halves of the unverified-comment contract, exercised together — they are only
+  // correct as a pair. The sender stamps commented_at on an unverified comment so the
+  // irreversible submit costs a slot of the daily cap; that same stamp is what the sender's
+  // own `commented_at === null` comment guard reads, so retry MUST clear it or a retry
+  // would silently re-drive the reaction alone and never re-post the comment.
+  const driver = new FakeDriver();
+  const url = 'https://www.linkedin.com/feed/update/urn:li:activity:7777/';
+  const e = (await post('/api/engagements', { post_url: url, comment: 'hi' })).json();
+  driver.commentScripted.set(url, 'unverified');
+
+  repos.engagements.setScheduled(e.id, iso(60 * 60 * 1000));
+  await runSenderOnce(repos, driver, ANCHOR, { sleep: async () => {} });
+  const parked = repos.engagements.findById(e.id)!;
+  expect(parked.status).toBe('needs_attention');
+  expect(parked.commented_at).not.toBeNull();          // the slot is spent
+  expect(repos.engagements.countCommentedSince(iso(24 * 60 * 60 * 1000))).toBe(1);
+
+  expect((await post(`/api/engagements/${e.id}/retry`)).statusCode).toBe(200);
+  const requeued = repos.engagements.findById(e.id)!;
+  expect(requeued.commented_at).toBeNull();            // "I checked, it did not post"
+  expect(requeued.reacted_at).not.toBeNull();          // the reaction DID land — never redone
+
+  driver.commentScripted.set(url, 'done');
+  repos.engagements.setScheduled(e.id, iso(60 * 60 * 1000));
+  await runSenderOnce(repos, driver, ANCHOR, { sleep: async () => {} });
+  expect(driver.commentLog).toHaveLength(2);           // the retry really did re-comment
+  expect(driver.reactLog).toHaveLength(1);             // and did NOT react a second time
+  expect(repos.engagements.findById(e.id)!.status).toBe('sent');
 });
 
 test('retry works for failed and skipped too, and 404s for an unknown id', async () => {
