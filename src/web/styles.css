@@ -620,8 +620,12 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
   transition: background .14s ease, border-color .14s ease, color .14s ease;
 }
 .note-btn:hover, .note-btn:focus-visible { background: var(--brand-50); border-color: var(--brand-100); outline: none; }
-.note-btn.empty { color: var(--ink-faint); cursor: default; }
-.note-btn.empty:hover, .note-btn.empty:focus-visible { background: var(--line-soft); border-color: var(--line); color: var(--ink-3); }
+/* `is-empty` rather than `empty` — the bare word is the page-level empty-state block
+   below (.empty { padding: 48px 20px }), which has the same specificity as .note-btn and
+   is declared after it. A note-less row therefore took that 48px padding, and border-box
+   sizing clamped height:30px up to it: ~98px of glyph, ~114px of row. */
+.note-btn.is-empty { color: var(--ink-faint); cursor: default; }
+.note-btn.is-empty:hover, .note-btn.is-empty:focus-visible { background: var(--line-soft); border-color: var(--line); color: var(--ink-3); }
 
 /* `body > .note-pop` (not just `.note-pop`) so position:fixed beats the global
    `body > *:not(.atmosphere){position:relative}` rule, which has higher
