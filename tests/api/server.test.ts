@@ -1155,6 +1155,22 @@ test('POST /api/run-now refuses while paused and promotes nothing', async () => 
   expect(repos.profiles.all()[0].scheduled_for).toBe('2099-01-01T00:00:00.000Z');
 });
 
+test('POST /api/run-now reports started when it actually got the browser', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Free', text: 'https://linkedin.com/in/free-1', message_template: 'Hi', allow_no_note: true },
+  });
+
+  const res = await app.inject({ method: 'POST', url: '/api/run-now', payload: { belt: 'invite' } });
+
+  const body = JSON.parse(res.body);
+  expect(body.started).toBe(true);
+  // The sentinel in the tryRun callback is what makes this true rather than undefined.
+  // Without it every successful run would misreport itself as 'browser busy'.
+  expect(body.deferred).toBeUndefined();
+  expect(repos.profiles.byStatus('sent')).toHaveLength(1);
+});
+
 test('POST /api/run-now reports deferred rather than claiming a run it could not do', async () => {
   const driver2 = new FakeDriver();
   const lock = new Mutex();
