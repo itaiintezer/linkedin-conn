@@ -3,6 +3,7 @@ import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { parseBelt, weeklyRemaining, preflight, promote } from '../../src/worker/run-now.js';
 import { RESERVATION_PURPOSE } from '../../src/worker/event-campaign.js';
+import { armedCampaign } from '../helpers/event-fixtures.js';
 
 let repos: Repos;
 const NOW = new Date('2026-08-04T10:00:00.000Z');
@@ -88,49 +89,8 @@ test('the all alias checks only the shared gates, not any belt cap', () => {
 });
 
 /* ---------- event belt ---------- */
-
-/**
- * Seed an enriched roster row straight into the table, the same way
- * tests/worker/event-campaign.test.ts does — `connections.upsertMany` takes the CSV-import
- * shape, which carries no location columns at all, so it cannot build a bucketable row.
- */
-function conn(slug: string): string {
-  const url = `https://www.linkedin.com/in/${slug}`;
-  const nowIso = new Date().toISOString();
-  repos.db.prepare(`
-    INSERT INTO connections
-      (profile_url, linkedin_id, full_name, location_country, location_country_code,
-       location_region, source, first_seen_at, last_seen_at, enrich_status)
-    VALUES (?, ?, ?, 'Israel', 'IL', NULL, 'scrape', ?, ?, 'enriched')
-  `).run(url, `urn:li:member:${slug}`, slug, nowIso, nowIso);
-  return url;
-}
-
-/** An armed campaign with one bucket and one pending invitee — the minimum runnable state. */
-function armedCampaign(): number {
-  const url = conn('ev-1');
-  const row = repos.connections.findByUrl(url)!;
-  const ev = repos.eventCampaigns.create('https://www.linkedin.com/events/7000000000000000000/', {
-    eventUrn: '7000000000000000000', inviteCap: 100, bucketCeiling: 3,
-  });
-  repos.eventBuckets.replaceAll(ev.id, [{
-    rank: 0,
-    key: { kind: 'country', country: 'Israel' },
-    label: 'Israel',
-    geoLabel: 'Israel',
-    geoCandidates: ['Israel'],
-    kind: 'country',
-    targetCount: 1,
-    rosterCount: 1,
-    parentIndex: null,
-  }]);
-  repos.eventInvitees.addMany(ev.id, [{
-    profile_url: row.profile_url, connection_id: row.id,
-    member_urn: row.linkedin_id, full_name: row.full_name,
-  }]);
-  repos.eventCampaigns.update(ev.id, { status: 'armed', armed_at: NOW.toISOString() });
-  return ev.id;
-}
+// `conn`/`armedCampaign` now live in tests/helpers/event-fixtures.ts (shared with Task 5's
+// moveEventWindow tests); this file just calls them with its own repos/NOW.
 
 test('event preflight refuses when nothing is armed', () => {
   expect(preflight(repos, 'event', NOW)?.code).toBe('nothing_armed');
@@ -140,7 +100,7 @@ test('event preflight refuses when nothing is armed', () => {
 // budget-spending signal), a preflight that checked the daily cap before the running check
 // would misreport this as daily_cap instead of already_running.
 test('event preflight refuses a campaign that is already running', () => {
-  const id = armedCampaign();
+  const id = armedCampaign(repos, NOW);
   repos.eventCampaigns.update(id, { status: 'running' });
   // `nextEventRun` only returns a running campaign when it holds a live reservation —
   // otherwise it falls back to `byStatus('armed')`, which a running campaign no longer
@@ -166,7 +126,7 @@ test('event preflight refuses a campaign that is already running', () => {
 // campaign), so the preflight must check `status = 'running'` independently of any
 // reservation.
 test('a run that overran its reserved window is still detected as running', () => {
-  const id = armedCampaign();
+  const id = armedCampaign(repos, NOW);
   repos.eventCampaigns.update(id, { status: 'running' });
   // Reservation already closed — exactly the overrun case event-runner.ts anticipates.
   repos.reservations.clearFor(RESERVATION_PURPOSE, id);
@@ -174,7 +134,7 @@ test('a run that overran its reserved window is still detected as running', () =
 });
 
 test('event preflight refuses once the day s run budget is spent', () => {
-  const id = armedCampaign();
+  const id = armedCampaign(repos, NOW);
   repos.settings.update({ events_per_day: 1 });
   const run = repos.eventRuns.start(id, 'live', null);
   // `start()` stamps `started_at` via SQLite's own `datetime('now')` — the real wall clock,
@@ -188,7 +148,7 @@ test('event preflight refuses once the day s run budget is spent', () => {
 });
 
 test('event preflight passes for a fresh armed campaign', () => {
-  armedCampaign();
+  armedCampaign(repos, NOW);
   expect(preflight(repos, 'event', NOW)).toBeNull();
 });
 
@@ -261,4 +221,24 @@ test('promote schedules engagements against the engagement batch size', () => {
   repos.engagements.add('https://www.linkedin.com/feed/update/urn:li:activity:3/', 'urn:li:activity:3', 'like', null);
   expect(promote(repos, 'engagement', NOW)).toBe(2);
   expect(repos.engagements.byStatus('scheduled')).toHaveLength(2);
+});
+
+// `[].slice(0, -1)` is JS for "all but the last element", not "nothing" — a hand-edited or
+// fat-fingered negative batch_size (POST /api/settings does no validation, see
+// src/api/server.ts) must not reach that footgun unclamped.
+test('a negative batch size promotes nothing, rather than slicing off the end', () => {
+  repos.settings.update({ batch_size: -1 });
+  queueProfiles('invite', 10);
+  expect(promote(repos, 'invite', NOW)).toBe(0);
+});
+
+// The 0-vs-1 floor is deliberate (see the comment in promote()): unlike scheduler-service.ts,
+// which floors at 1 to keep the planner making forward progress, promote() must let an
+// explicit batch_size: 0 mean "promote nothing on this click" — silently promoting one row
+// against that setting would be wrong, and this is exactly the kind of distinction a later
+// refactor could flatten by accident.
+test('a zero batch size promotes nothing, not one row', () => {
+  repos.settings.update({ batch_size: 0 });
+  queueProfiles('invite', 3);
+  expect(promote(repos, 'invite', NOW)).toBe(0);
 });

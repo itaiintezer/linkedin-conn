@@ -182,6 +182,16 @@ export function preflight(repos: Repos, belt: BeltArg, now: Date): Refusal | nul
  * The weekly cap is re-checked here as well as in preflight, because the `all` alias skips
  * the per-belt cap gate — a capped belt must promote nothing rather than stack up rows the
  * sender will then refuse.
+ *
+ * `batchSize` is clamped before it ever reaches `.slice()`. POST /api/settings does no
+ * validation or coercion (see src/api/server.ts) and there is no CHECK constraint on
+ * batch_size/msg_batch_size/engage_batch_size in schema.sql, so a hand-edited or
+ * fat-fingered negative setting reaches here unfiltered — and `[].slice(0, -1)` means
+ * "all but the last element", not "nothing". The floor here is 0, NOT 1: unlike the
+ * `Math.max(1, ...)` clamps in scheduler-service.ts (which must keep the planner making
+ * forward progress), `promote()` treats `batch_size: 0` as a legitimate "promote nothing on
+ * this click" — silently promoting one row against an explicit zero would be wrong. Do not
+ * "fix" this floor to match the scheduler's.
  */
 export function promote(repos: Repos, belt: Exclude<Belt, 'event'>, now: Date): number {
   if (weeklyRemaining(repos, belt, now) <= 0) return 0;
@@ -191,18 +201,20 @@ export function promote(repos: Repos, belt: Exclude<Belt, 'event'>, now: Date): 
   const s = repos.settings.get();
 
   if (belt === 'engagement') {
+    const batchSize = Math.max(0, Math.floor(Number(engagementCaps(s).batchSize) || 0));
     const rows = [
       ...repos.engagements.byStatus('scheduled'),
       ...repos.engagements.queuedByPriority(),
-    ].slice(0, engagementCaps(s).batchSize);
+    ].slice(0, batchSize);
     for (const e of rows) repos.engagements.setScheduled(e.id, dueIso);
     return rows.length;
   }
 
+  const batchSize = Math.max(0, Math.floor(Number(capsFor(s, belt).batchSize) || 0));
   const rows = [
     ...repos.profiles.byStatusKind('scheduled', belt),
     ...repos.profiles.queuedByPriorityKind(belt),
-  ].slice(0, capsFor(s, belt).batchSize);
+  ].slice(0, batchSize);
   for (const p of rows) repos.profiles.setScheduled(p.id, dueIso);
   return rows.length;
 }
