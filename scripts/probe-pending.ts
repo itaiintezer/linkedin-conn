@@ -34,6 +34,13 @@ mkdirSync(OUT_DIR, { recursive: true });
  * match is actually VISIBLE (the distinction that breaks on the Sales Nav layout).
  */
 function collect() {
+  // tsx transpiles with esbuild's keepNames, which wraps every named function expression
+  // below in a `__name(fn, "fn")` call. That helper is injected into the Node module scope,
+  // NOT into the page — so without this shim the whole probe dies on the first inner arrow
+  // with "ReferenceError: __name is not defined". Must stay the FIRST statement: the wrapper
+  // calls run at each declaration. Same shim as scripts/probe-topcard.ts.
+  (globalThis as { __name?: unknown }).__name = (t: unknown) => t;
+
   const vis = (el: Element): boolean => {
     if (el.getClientRects().length === 0) return false;
     const s = getComputedStyle(el);
