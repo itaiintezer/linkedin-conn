@@ -136,6 +136,9 @@ test('event preflight refuses when nothing is armed', () => {
   expect(preflight(repos, 'event', NOW)?.code).toBe('nothing_armed');
 });
 
+// This test protects gate ORDER: with a live reservation AND a live event_runs row (the
+// budget-spending signal), a preflight that checked the daily cap before the running check
+// would misreport this as daily_cap instead of already_running.
 test('event preflight refuses a campaign that is already running', () => {
   const id = armedCampaign();
   repos.eventCampaigns.update(id, { status: 'running' });
@@ -152,6 +155,21 @@ test('event preflight refuses a campaign that is already running', () => {
   // preflight that checked the cap first would misreport this as daily_cap, not already_running.
   const run = repos.eventRuns.start(id, 'live', null);
   repos.db.prepare('UPDATE event_runs SET started_at = ? WHERE id = ?').run(NOW.toISOString(), run.id);
+  expect(preflight(repos, 'event', NOW)?.code).toBe('already_running');
+});
+
+// This test protects a DIFFERENT property: running-detection must not depend on a live
+// reservation at all. event-runner.ts documents that a run is expected to overrun its
+// reserved window by up to one bucket's worth of work — the campaign is still `running` in
+// the DB, but its reservation has already expired (to_ts <= now). `nextEventRun` alone would
+// no longer surface it (falls through to byStatus('armed'), which excludes a running
+// campaign), so the preflight must check `status = 'running'` independently of any
+// reservation.
+test('a run that overran its reserved window is still detected as running', () => {
+  const id = armedCampaign();
+  repos.eventCampaigns.update(id, { status: 'running' });
+  // Reservation already closed — exactly the overrun case event-runner.ts anticipates.
+  repos.reservations.clearFor(RESERVATION_PURPOSE, id);
   expect(preflight(repos, 'event', NOW)?.code).toBe('already_running');
 });
 

@@ -77,6 +77,12 @@ const CAP_NOUN: Record<Exclude<Belt, 'event'>, string> = {
   invite: 'invites', message: 'messages', engagement: 'reactions',
 };
 
+/** `title ?? "campaign #<id>"` — matches the lowercase fallback src/web/app.js already
+ *  renders for this same concept, so the two operator-facing strings agree. */
+function titleOf(event: { id: number; title: string | null }): string {
+  return event.title ?? `campaign #${event.id}`;
+}
+
 /**
  * The event belt's own gates.
  *
@@ -88,15 +94,19 @@ const CAP_NOUN: Record<Exclude<Belt, 'event'>, string> = {
  * the run currently in progress.
  */
 function eventPreflight(repos: Repos, now: Date): Refusal | null {
+  // Running-detection needs a reservation-independent signal. nextEventRun only surfaces a
+  // running campaign while its window is unexpired (to_ts > now), and a run is EXPECTED to
+  // overrun by up to one bucket (see event-runner.ts). Asking nextEventRun alone would
+  // answer "nothing armed" about a campaign that is inviting people right now.
+  const running = repos.eventCampaigns.byStatus('running')[0];
+  if (running) {
+    return { code: 'already_running', error: `${titleOf(running)} is already running` };
+  }
+
   const next = nextEventRun(repos, now);
   if (!next) return { code: 'nothing_armed', error: 'No armed event campaign to run' };
-
-  const title = next.event.title ?? `Campaign #${next.event.id}`;
-  if (next.event.status === 'running') {
-    return { code: 'already_running', error: `${title} is already running` };
-  }
   if (next.event.status !== 'armed') {
-    return { code: 'nothing_armed', error: `${title} is ${next.event.status}, not armed` };
+    return { code: 'nothing_armed', error: `${titleOf(next.event)} is ${next.event.status}, not armed` };
   }
 
   const s = repos.settings.get();
