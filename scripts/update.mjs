@@ -36,6 +36,9 @@ export const LOG_CAP = 20;
 const BACKUP_PREFIX = 'app.db.';
 
 const ok = (id, label, message) => ({ id, label, severity: 'ok', message });
+// Same three-severity shape as scripts/preflight.mjs. Only 'error' blocks (see summarize),
+// so 'warn' is how a check reports something the operator should see without stopping them.
+const warn = (id, label, message, fix) => ({ id, label, severity: 'warn', message, fix });
 const fail = (id, label, message, fix) => ({ id, label, severity: 'error', message, fix });
 
 // ---------------------------------------------------------------------------
@@ -83,26 +86,47 @@ export function checkNotRunning(state, port = PORT) {
 }
 
 /**
- * `porcelain` is the raw output of `git status --porcelain`. A dirty tree is refused rather
- * than stashed: `git pull` into local edits is how you get a merge conflict, which is the one
- * failure a non-technical operator has no way out of.
+ * `porcelain` is the raw output of `git status --porcelain`.
+ *
+ * EDITS to tracked files are refused rather than stashed: `git pull` into local edits is how
+ * you get a merge conflict, which is the one failure a non-technical operator has no way out of.
+ *
+ * UNTRACKED files ('??') only warn. A pull cannot collide with a file git is not tracking
+ * unless the incoming commit creates that very path, and git refuses that case loudly by
+ * itself. Blocking on them was worse than useless: a colleague's Mac dropped a `.DS_Store` in
+ * the folder, which stopped the update dead — and NEITHER remedy suggested below (`git checkout
+ * -- .`, `git stash`) removes an untracked file, so the advice looped him back to the same
+ * error while he was waiting on a fix (2026-08-03). `.DS_Store` is also gitignored now; this
+ * check still has to be right for whatever the next stray file turns out to be.
  */
 export function checkCleanTree(porcelain) {
-  const files = String(porcelain ?? '')
-    .split('\n')
-    // Strip the two-column status code and its separator rather than slicing a fixed width:
-    // an unstaged edit is " M path", so any caller that trimmed the output would leave the
-    // first line one character short and silently report "ackage.json".
-    .map((l) => l.replace(/^\s*[A-Z?!ADMRCU]{1,2}\s+/, '').trim())
-    .filter(Boolean);
-  if (files.length === 0) return ok('clean', 'Local changes', 'none');
-  const shown = files.slice(0, 10);
-  const more = files.length - shown.length;
-  const list = shown.map((f) => `  · ${f}`).join('\n') + (more > 0 ? `\n  · …and ${more} more` : '');
+  // Strip the two-column status code and its separator rather than slicing a fixed width:
+  // an unstaged edit is " M path", so any caller that trimmed the output would leave the
+  // first line one character short and silently report "ackage.json".
+  const strip = (l) => l.replace(/^\s*[A-Z?!ADMRCU]{1,2}\s+/, '').trim();
+  const lines = String(porcelain ?? '').split('\n').filter((l) => l.trim());
+  const isUntracked = (l) => l.trimStart().startsWith('??');
+  const edited = lines.filter((l) => !isUntracked(l)).map(strip).filter(Boolean);
+  const untracked = lines.filter(isUntracked).map(strip).filter(Boolean);
+
+  if (edited.length === 0 && untracked.length === 0) return ok('clean', 'Local changes', 'none');
+
+  const listOf = (files) => {
+    const shown = files.slice(0, 10);
+    const more = files.length - shown.length;
+    return shown.map((f) => `  · ${f}`).join('\n') + (more > 0 ? `\n  · …and ${more} more` : '');
+  };
+  // Reported either way, so the operator still sees them — just never as a reason to stop.
+  const note = untracked.length === 0 ? ''
+    : `\n${untracked.length} file${untracked.length === 1 ? '' : 's'} git is not tracking`
+      + ` (${untracked.length === 1 ? 'this does' : 'these do'} NOT block the update):\n${listOf(untracked)}`;
+
+  if (edited.length === 0) return warn('clean', 'Local changes', `none that block the update.${note}`);
+
   return fail(
     'clean',
     'Local changes',
-    `${files.length} file${files.length === 1 ? '' : 's'} in this folder ${files.length === 1 ? 'has' : 'have'} been edited:\n${list}`,
+    `${edited.length} file${edited.length === 1 ? '' : 's'} in this folder ${edited.length === 1 ? 'has' : 'have'} been edited:\n${listOf(edited)}${note}`,
     'Updating would try to merge those edits and could stop halfway. Undo them with `git checkout -- .`, or save them with `git stash`, then run this again. Your queue and login are not in git and are never affected.',
   );
 }

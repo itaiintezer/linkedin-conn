@@ -78,12 +78,40 @@ describe('checkCleanTree', () => {
     expect(checkCleanTree('\n').severity).toBe('ok');
   });
 
-  test('edited files are named, not merely counted', () => {
+  test('edited files are named, not merely counted — and counted apart from untracked ones', () => {
     const r = checkCleanTree(' M src/index.ts\n?? notes.txt\n');
     expect(r.severity).toBe('error');
     expect(r.message).toContain('src/index.ts');
+    // Both are still reported, but only the tracked edit is what blocks, so the count is 1.
     expect(r.message).toContain('notes.txt');
-    expect(r.message).toContain('2 files');
+    expect(r.message).toContain('1 file in this folder has been edited');
+    expect(r.message).toContain('not tracking');
+  });
+
+  test('untracked files alone warn instead of blocking', () => {
+    // A Mac colleague's stray .DS_Store used to stop `npm run update` outright, and neither
+    // remedy the failure suggests (`git checkout -- .`, `git stash`) removes an untracked file,
+    // so the advice looped back to the same error. A pull cannot collide with a file git is not
+    // tracking unless the incoming commit creates that path, which git refuses on its own.
+    const r = checkCleanTree('?? .DS_Store\n');
+    expect(r.severity).toBe('warn');
+    expect(r.message).toContain('.DS_Store');
+    expect(r.message).toMatch(/do(es)? NOT block/);
+  });
+
+  test('a warn does not fail the run, but an edit does', () => {
+    expect(summarize([checkCleanTree('?? .DS_Store')]).ok).toBe(true);
+    expect(summarize([checkCleanTree('?? .DS_Store')]).exitCode).toBe(0);
+    expect(summarize([checkCleanTree(' M src/index.ts')]).ok).toBe(false);
+  });
+
+  test('many untracked files are capped too, and still only warn', () => {
+    const porcelain = Array.from({ length: 13 }, (_, i) => `?? junk${i}.txt`).join('\n');
+    const r = checkCleanTree(porcelain);
+    expect(r.severity).toBe('warn');
+    expect(r.message).toContain('13 files git is not tracking');
+    expect(r.message).toContain('…and 3 more');
+    expect(r.message).not.toContain('junk10.txt');
   });
 
   test('one file reads as singular', () => {
