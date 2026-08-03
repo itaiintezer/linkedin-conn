@@ -8,10 +8,15 @@
  * the house pattern this follows (a plain function returning/mutating against caller-owned
  * state, not a shared singleton).
  *
- * tests/worker/event-campaign.test.ts and tests/api/events.test.ts each keep their own local
- * `conn`/`armedCampaign`-shaped helpers (with extra options those suites need, e.g. country
- * overrides) rather than being migrated onto this one — deliberately out of scope for the
- * change that added this file. Only import this from new test files.
+ * tests/worker/event-campaign.test.ts keeps its own local `conn` (it needs country overrides
+ * this one doesn't take) rather than being migrated onto this one — out of scope churn on an
+ * already-passing suite. tests/api/events.test.ts keeps a local `conn` for the same reason,
+ * but imports `armedCampaign` from here directly (Task 7): its own create-then-arm flow has
+ * no single-call equivalent, so a third hand-rolled copy would be pure duplication.
+ *
+ * Rule going forward: new callers import from here; existing local copies migrate onto it
+ * opportunistically, not in a big-bang refactor — the risk being guarded against is churning
+ * unrelated passing tests outside a task's scope, not a preference for keeping duplicates.
  */
 import type { Repos } from '../../src/db/repositories.js';
 
