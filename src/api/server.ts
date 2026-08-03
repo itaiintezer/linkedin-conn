@@ -1046,7 +1046,7 @@ export function buildServer(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const belt = parseBelt(body.belt);
     if (belt === null) {
-      return reply.code(400).send({ ok: false, error: `unknown belt: ${String(body.belt)}` });
+      return reply.code(400).send({ ok: false, error: `unknown belt: ${JSON.stringify(body.belt)}` });
     }
 
     const now = new Date();
@@ -1059,10 +1059,30 @@ export function buildServer(
     // The event belt has no due-now queue: move its reserved window and let runEventTick
     // (≤60s) fire it. Nothing to kick here, hence started: false.
     if (belt === 'event') {
-      const w = moveEventWindow(repos, now);
+      let w;
+      try {
+        w = moveEventWindow(repos, now);
+      } catch (e) {
+        // Unreachable while preflight runs immediately above with no await between them —
+        // both are synchronous, so no request can interleave and change the state they
+        // both read. Caught anyway because the alternative is the global error handler
+        // answering 400 with a raw internal assertion string, in a shape no client of
+        // this endpoint expects.
+        defaultLog.error('api', 'run-now event window move failed', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+        return reply.code(500).send({
+          ok: false, belt, code: 'internal_error',
+          error: 'Could not open a run window for the next campaign',
+        });
+      }
       defaultLog.info('api', 'run-now', { belt, event: w.eventId, from: w.from, to: w.to });
       return {
-        ok: true, belt, promoted: 1, started: false,
+        ok: true, belt, started: false,
+        // No `promoted` here on purpose. On the sender belts that field counts rows moved
+        // to due-now; there is no equivalent count for an event run, and reporting a
+        // hardcoded 1 would put a different unit behind the same name. The window itself
+        // is the payload.
         event_id: w.eventId, from: w.from, to: w.to,
       };
     }
