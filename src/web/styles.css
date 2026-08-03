@@ -408,6 +408,64 @@ main { max-width: 1200px; margin: 0 auto; padding: 34px 30px 72px; }
   animation: pulse 1.2s ease-in-out infinite;
 }
 
+/* ---------- The per-conveyor manual trigger ----------
+   One "Run now" per engine, replacing the single global button that used to live in the
+   panel header — with four pipelines, a header button was a guess about which belt the
+   operator meant. It sits at the end of the pacing pills because the pills are what it
+   overrides: the ETA, and the next scheduled batch.
+
+   Deliberately NOT shaped like an .epill. The pills beside it are read-only; this fires
+   an irreversible LinkedIn action, so it borrows the .btn language instead — white face,
+   a lift, a shadow, a glyph — shrunk to pill scale. Same contract as .recheck-btn:
+   neutral at rest, the engine's identity colour on hover and focus.
+
+   No .engine.is-idle rule is needed. An idle engine hides .engine-top wholesale and the
+   button lives inside it — which is right, because an idle conveyor has no campaigns at
+   all and there is nothing for its button to run. */
+.run-belt {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  /* Sized for the longest label the click handler can set ("Nothing queued"), so
+     reporting a verdict never resizes the button or re-wraps the pills row. */
+  min-width: 138px; white-space: nowrap;
+  font-family: var(--sans); font-size: 12.5px; font-weight: 600; letter-spacing: 0.1px;
+  color: var(--ink); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 100px; padding: 7px 14px;
+  box-shadow: var(--shadow-sm); cursor: pointer;
+  transition: transform .08s ease, box-shadow .16s ease, background .16s ease,
+              border-color .16s ease, color .16s ease;
+}
+/* A masked pseudo-element rather than an <svg> child: the handler reports back by
+   rewriting the button's textContent, which would delete any real element in here. A
+   pseudo survives, so the control still reads as a button while it says "Nothing queued".
+   A bolt, not the play triangle used elsewhere — the "next batch" pill sitting immediately
+   to its left already wears that triangle, and the same mark twice in one row would say
+   the two things are the same kind of thing. */
+.run-belt::before {
+  --bolt: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M13 2 4 14h6l-1 8 9-12h-6z'/%3E%3C/svg%3E");
+  content: ""; flex: none; width: 10px; height: 11px; background: currentColor;
+  -webkit-mask: var(--bolt) center / contain no-repeat;
+          mask: var(--bolt) center / contain no-repeat;
+}
+.run-belt:hover:not(:disabled) {
+  color: var(--brand-700); background: var(--brand-50); border-color: var(--brand-100);
+  box-shadow: var(--shadow); transform: translateY(-1px);
+}
+.run-belt:active:not(:disabled) { transform: translateY(0); box-shadow: var(--shadow-sm); }
+.run-belt:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.run-belt:disabled {
+  cursor: default; opacity: 0.6; transform: none; box-shadow: var(--shadow-sm);
+  color: var(--ink-2); background: var(--panel-2); border-color: var(--line);
+}
+
+/* Each trigger wears its own engine's identity colour — the rule this file follows for
+   anything that is chrome rather than status. */
+.engine-msg .run-belt:hover:not(:disabled) { color: var(--teal-700); background: var(--teal-50); border-color: var(--teal-100); }
+.engine-msg .run-belt:focus-visible { outline-color: var(--teal); }
+.engine-ev .run-belt:hover:not(:disabled) { color: var(--indigo-700); background: var(--indigo-50); border-color: var(--indigo-100); }
+.engine-ev .run-belt:focus-visible { outline-color: var(--indigo); }
+.engine-eng .run-belt:hover:not(:disabled) { color: var(--cyan-700); background: var(--cyan-50); border-color: var(--cyan-100); }
+.engine-eng .run-belt:focus-visible { outline-color: var(--cyan); }
+
 /* Clickable drill-down targets (stations + outcome cards) */
 .is-drill { cursor: pointer; }
 .station.is-drill:focus-visible .puck,

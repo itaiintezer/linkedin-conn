@@ -128,7 +128,6 @@
         <div class="panel-actions">
           <span class="refresh-dot" id="refreshDot" title="auto-refresh"></span>
           <button class="btn" id="retryFailed" title="Requeue failed / needs-attention profiles (posts retry from the Needs-attention list)" hidden>Retry failed</button>
-          <button class="btn" id="runNow" title="Send one batch right now">Run batch now</button>
           <button class="btn btn-amber" id="pauseToggle">Pause</button>
         </div>
       </div>
@@ -168,6 +167,21 @@
               <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
               <span id="nextTxt">—</span>
             </span>
+            <!-- Manual trigger for THIS conveyor. It replaces the single "Run batch now" that
+                 used to sit in the panel header, which could only ever mean the invite belt —
+                 with four pipelines a header button was a guess about which one you meant.
+                 It sits at the end of the pacing pills because the pills are exactly what it
+                 overrides: the ETA, and the next scheduled batch. Styled as a raised button
+                 rather than another .epill so a control that fires an irreversible LinkedIn
+                 action is never mistaken for a read-only chip.
+
+                 The verdict comes back as a rewritten label ("Triggered 7", "Nothing queued"),
+                 which a screen reader will not reliably speak once focus has moved on — so
+                 each button carries the same visually-hidden status span as .recheck-btn
+                 (cf. #recheckStatus). Ids are #run<Belt>Status, one per data-belt value. -->
+            <button class="run-belt" type="button" data-belt="invite"
+                    title="Send one invite batch right now" aria-label="Run now, invites">Run now</button>
+            <span class="visually-hidden run-belt-status" id="runInviteStatus" role="status" aria-live="polite"></span>
           </div>
         </div>
 
@@ -245,6 +259,9 @@
               <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
               <span id="msgNextTxt">—</span>
             </span>
+            <button class="run-belt" type="button" data-belt="message"
+                    title="Send one message batch right now" aria-label="Run now, messages">Run now</button>
+            <span class="visually-hidden run-belt-status" id="runMessageStatus" role="status" aria-live="polite"></span>
           </div>
         </div>
 
@@ -320,6 +337,9 @@
               <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
               <span id="evNextTxt">—</span>
             </span>
+            <button class="run-belt" type="button" data-belt="event"
+                    title="Start the next event run now" aria-label="Run now, event invites">Run now</button>
+            <span class="visually-hidden run-belt-status" id="runEventStatus" role="status" aria-live="polite"></span>
           </div>
         </div>
 
@@ -399,6 +419,9 @@
               <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
               <span id="engNextTxt">—</span>
             </span>
+            <button class="run-belt" type="button" data-belt="engagement"
+                    title="Run one engagement batch right now" aria-label="Run now, engagements">Run now</button>
+            <span class="visually-hidden run-belt-status" id="runEngagementStatus" role="status" aria-live="polite"></span>
           </div>
         </div>
 
