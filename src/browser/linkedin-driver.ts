@@ -13,6 +13,10 @@ import {
   COMMENT_CONFIRM_TIMEOUT_MS,
 } from './post-selectors.js';
 import { normalizeProfileUrl } from '../core/url.js';
+import {
+  classifyRelationship, skipsInvite, confirmsInviteLanded, mayReceiveDirectMessage,
+  type Relationship,
+} from '../core/relationship.js';
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 import { firstNameFrom } from '../core/first-name.js';
 import { detectCheckpoint } from '../core/checkpoint.js';
@@ -73,13 +77,13 @@ export class LinkedInDriver implements BrowserDriver {
         const scan = await this.scanCheckpoint(page);
         if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
       }
-      if (await find.pendingBadge(page).first().isVisible().catch(() => false)) {
-        return { result: 'already', firstName }; // an invite is already pending
-      }
-      // Already a 1st-degree connection? There's no Pending badge and no Connect control for
-      // them — but LinkedIn STILL opens the custom-invite composer for connections, so without
-      // this guard we'd "send", find no Pending on re-visit, and mis-record `failed`.
-      if (await this.isAlreadyConnected(page, url)) return { result: 'already', firstName };
+      // Don't re-send to someone with an invite already pending, and don't invite an existing
+      // connection — LinkedIn STILL opens the custom-invite composer for connections, so
+      // without this guard we'd "send", find no Pending on re-visit, and mis-record the row.
+      // skipsInvite deliberately also covers 'unknown', which is what the pre-2026-08-03 code
+      // treated as connected; keeping that keeps every classic-layout outcome unchanged.
+      const preVisit = await this.classifyRelationship(page, url);
+      if (skipsInvite(preVisit)) return { result: 'already', firstName, relationship: preVisit };
 
       // 2) Open the invite composer: direct custom-invite route first, then
       //    fall back to clicking the Connect control on the profile UI.
@@ -148,11 +152,20 @@ export class LinkedInDriver implements BrowserDriver {
       } catch {
         const scan = await this.scanCheckpoint(page);
         if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
-        // No Pending badge. If there's no longer any Connect control for this person, the
-        // request had nowhere to land — they're already connected, not a failure (which would
-        // keep getting retried against LinkedIn).
-        if (await this.isAlreadyConnected(page, url)) return { result: 'already', firstName };
-        return this.errorOutcome(page, 'send not confirmed: no Pending state after submit', firstName);
+        // The top card showed no Pending badge within the window. Under Sales Navigator it
+        // never will — Pending is demoted into the "More" overflow — so classify properly
+        // before judging, expanding the overflow if the top card is inconclusive.
+        const after = await this.classifyRelationship(page, url);
+        if (confirmsInviteLanded(after)) return { result: 'sent', firstName, relationship: after };
+        // Deliberately NOT 'already' here, however little we can see. The pre-visit above
+        // classified them invitable seconds ago and nobody becomes a 1st-degree connection in
+        // between, so "no signals" means we failed to read the page — not that they were
+        // connected all along. Returning 'already' recorded live pending invites as terminal
+        // already_connected skips, with no send_log row and no evidence (2026-08-03).
+        if (await this.invitePendingOnSentList(url)) {
+          return { result: 'sent', firstName, relationship: after };
+        }
+        return this.unconfirmedOutcome(page, firstName, after);
       }
     } catch (e) {
       const scan = await this.scanCheckpoint(page);
@@ -192,6 +205,25 @@ export class LinkedInDriver implements BrowserDriver {
       result: 'error',
       error,
       firstName,
+      evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+    };
+  }
+
+  /**
+   * The invite was submitted but LinkedIn would not confirm it — neither the profile page nor
+   * the sent-invitations list showed it. Snapshotted, because this is the one verdict that
+   * asks a human to go and look; the old code silently called this case "already connected"
+   * and captured nothing, which is why the original incident had no evidence to inspect.
+   */
+  private async unconfirmedOutcome(
+    page: Page, firstName: string | undefined, relationship: Relationship,
+  ): Promise<SendOutcome> {
+    const ev = await captureEvidence(page, 'send-unconfirmed', { relationship });
+    return {
+      result: 'unconfirmed',
+      error: 'invite submitted but not confirmed — check the profile before retrying',
+      firstName,
+      relationship,
       evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
     };
   }
@@ -237,35 +269,102 @@ export class LinkedInDriver implements BrowserDriver {
   }
 
   /**
-   * True if the profile is an existing 1st-degree connection: the page actually loaded (we
-   * can read the name), there's no Pending badge, and there is NO Connect control for this
-   * person anywhere (top card, direct custom-invite anchor, or under "More"). Verified live:
-   * a connection exposes none of those; a sendable profile exposes the custom-invite anchor
-   * at the top level. Degree text ("· 1st"/"· 2nd") is NOT usable — it appears on every page
-   * (sidebar recommendations) and even shows both tokens for the owner.
+   * What the profile page says about our relationship to this person. The decisions keyed off
+   * this live in core/relationship.ts, where a truth table pins them; this method only reads
+   * the DOM. Degree text ("· 1st"/"· 2nd") is NOT usable — it appears on every page (sidebar
+   * recommendations) and even shows both tokens for the owner (re-confirmed 2026-08-03: a
+   * probe read "· 2nd" on a 1st-degree profile and "· 1st" on a pending one).
+   *
+   * Two passes, and the order is load-bearing:
+   *
+   *  1. The top card, untouched. A classic (non-Sales-Navigator) layout keeps Pending and
+   *     Connect as primary controls, so it resolves here and never opens the overflow — no
+   *     extra click, no extra latency on the path that already works.
+   *  2. Only if that was inconclusive, expand "More" and look again. A Sales Navigator
+   *     licence spends a primary slot on "Save in Sales Navigator" and demotes the
+   *     relationship affordance into that overflow, where it is not merely hidden but
+   *     ABSENT from the DOM until the menu opens — which is why no timeout could ever have
+   *     fixed this, and why the old code (which checked Pending BEFORE the expand that
+   *     hasConnectAffordance performed) lost the signal on ordering alone.
+   *
+   * Finding nothing yields 'unknown', never 'connected'. Callers decide what absence means:
+   * the pre-visit still treats it as connected (preserving the old behaviour exactly), the
+   * post-submit confirmation refuses to.
    */
-  private async isAlreadyConnected(page: Page, url: string): Promise<boolean> {
+  private async classifyRelationship(page: Page, url: string): Promise<Relationship> {
     const name = await this.readFullName(page);
-    if (!name) return false; // no profile rendered — don't infer "connected" from a blank page
-    if (await find.pendingBadge(page).first().isVisible().catch(() => false)) return false;
-    return !(await this.hasConnectAffordance(page, url, name));
+    if (!name) return classifyRelationship({
+      nameRead: false, pendingForTarget: false, connectForTarget: false, removeConnection: false,
+    });
+
+    const read = async (overflowExpanded: boolean): Promise<Relationship> => classifyRelationship({
+      nameRead: true,
+      pendingForTarget: await this.pendingForTarget(page, name),
+      connectForTarget: await this.connectForTarget(page, url, name),
+      // Only trustworthy inside the overflow we just opened (see selectors).
+      removeConnection: overflowExpanded && (await this.removeConnectionVisible(page)),
+    });
+
+    const topCard = await read(false);
+    if (topCard !== 'unknown') return topCard;
+    if (!(await this.expandOverflow(page))) return 'unknown';
+    return read(true);
   }
 
-  /** Whether a Connect/Invite control for THIS person exists (top card, direct anchor, or under "More"). */
-  private async hasConnectAffordance(page: Page, url: string, name: string): Promise<boolean> {
+  /**
+   * A Pending badge for THIS person. Prefers the name-scoped label, which cannot be
+   * satisfied by a pending invite to someone in the right-rail recommendations, then falls
+   * back to the bare badge so any layout whose label omits the name behaves as it did before.
+   */
+  private async pendingForTarget(page: Page, name: string): Promise<boolean> {
+    if (await find.pendingBadgeForName(page, name).first().isVisible().catch(() => false)) return true;
+    return find.pendingBadge(page).first().isVisible().catch(() => false);
+  }
+
+  /** A Connect/Invite control for THIS person: top card by name, or a custom-invite anchor
+   *  carrying their own slug (which can never resolve to a different person). */
+  private async connectForTarget(page: Page, url: string, name: string): Promise<boolean> {
     const slug = profileSlug(url);
     const main = page.locator('main');
     if (await find.connectByName(main, name).first().isVisible().catch(() => false)) return true;
     if (slug && (await find.connectByHref(page, slug).first().isVisible().catch(() => false))) return true;
-    // Connect is sometimes tucked under the "More" overflow — expand once and re-check.
-    const more = find.moreButton(main).first();
-    if (await more.isVisible().catch(() => false)) {
-      await more.click().catch(() => {});
-      await sleep(rand(600, 1200));
-      if (slug && (await find.connectByHref(page, slug).first().isVisible().catch(() => false))) return true;
-      if (await find.connectByName(main, name).first().isVisible().catch(() => false)) return true;
-    }
     return false;
+  }
+
+  /** Expand the profile's "More" overflow. Scoped to <main> so it cannot hit the global-nav
+   *  "More"; same click-and-settle timing the old hasConnectAffordance used. */
+  private async expandOverflow(page: Page): Promise<boolean> {
+    const more = find.moreButton(page.locator('main')).first();
+    if (!(await more.isVisible().catch(() => false))) return false;
+    await more.click().catch(() => {});
+    await sleep(rand(600, 1200));
+    return true;
+  }
+
+  /** "Remove connection" inside the expanded overflow — the positive connected signal. */
+  private async removeConnectionVisible(page: Page): Promise<boolean> {
+    const menu = page.locator(SEL.overflowMenu).first();
+    if (!(await menu.isVisible().catch(() => false))) return false;
+    return find.removeConnection(menu).first().isVisible().catch(() => false);
+  }
+
+  /**
+   * Last-resort confirmation for a submitted invite the profile page would not confirm:
+   * LinkedIn's own sent-invitations list. Account-level, so it is immune to whatever the
+   * top card is doing. The documented weakness of this reader — only the newest page loads,
+   * which is why acceptance stopped using it (false expiries) — does not apply here: an
+   * invite sent seconds ago is in that newest slice by construction. Any failure (including
+   * a checkpoint mid-read) answers "cannot confirm" rather than throwing, so the send falls
+   * through to the operator instead of blowing up the pass.
+   */
+  private async invitePendingOnSentList(url: string): Promise<boolean> {
+    const target = normalizeProfileUrl(url);
+    if (!target) return false;
+    try {
+      return (await this.readPendingInvites()).includes(target);
+    } catch {
+      return false;
+    }
   }
 
   /** True if the invite composer (note or no-note path) is currently open. */
@@ -333,8 +432,8 @@ export class LinkedInDriver implements BrowserDriver {
 
   /**
    * Send a direct message to an existing 1st-degree connection.
-   * Flow (live-verified 2026-07-28): profile page → 1st-degree gate (the production-proven
-   * isAlreadyConnected signal — NOT the degree badge, which renders unreliably) → navigate
+   * Flow (live-verified 2026-07-28): profile page → 1st-degree gate (classifyRelationship
+   * plus mayReceiveDirectMessage — NOT the degree badge, which renders unreliably) → navigate
    * to the profile's own /messaging/compose/ deep link → type into the classic msg-form →
    * Send → verify structurally (composer cleared + our text present in the thread).
    * Anything not clearly a 1st-degree connection is 'not_connected' — never InMail.
@@ -355,8 +454,13 @@ export class LinkedInDriver implements BrowserDriver {
         if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
       }
       // 1st-degree gate: must be an existing connection (fail-safe: skip, never InMail).
-      if (!(await this.isAlreadyConnected(page, url))) {
-        return { result: 'not_connected', firstName, fullName };
+      // 'pending' is rejected here specifically: under Sales Navigator a pending invite used
+      // to classify as connected, inverting this gate so a non-connection could be messaged.
+      // 'unknown' still passes, as it did before, so a classic-layout connection that shows no
+      // positive signal keeps working.
+      const relationship = await this.classifyRelationship(page, url);
+      if (!mayReceiveDirectMessage(relationship)) {
+        return { result: 'not_connected', firstName, fullName, relationship };
       }
       // 2) The Message control is an anchor to the compose route; its absence on a
       //    connection's profile means messaging is unavailable for them — skip.

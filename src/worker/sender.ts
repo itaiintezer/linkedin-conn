@@ -324,7 +324,25 @@ async function attemptInvite(
     case 'already':
       repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'already_connected' });
       repos.events.recordEvent(p.id, 'skipped');
-      logVerdict(p, 'skipped: already connected');
+      // Both cases are terminal skips and share skip_reason, but they are not the same fact.
+      // The log said "already connected" for a pending invite too, which made the Sales
+      // Navigator misread (2026-08-03) read as a plausible verdict instead of a bug.
+      logVerdict(p, outcome.relationship === 'pending'
+        ? 'skipped: an invite is already pending'
+        : 'skipped: already connected');
+      return { halted: false, contacted: true };
+    case 'unconfirmed':
+      // Submitted, unconfirmable. Recorded as a SEND in send_log even though the status is
+      // needs_attention: the weekly cap counts send_log rows, and under-counting real invites
+      // is what risks tripping LinkedIn's own limit. recordSuccess is right too — we reached
+      // LinkedIn and submitted, which is exactly what the failure streak measures.
+      repos.profiles.setStatus(p.id, 'needs_attention', {
+        last_error: outcome.error ?? 'invite submitted but not confirmed',
+      });
+      repos.events.recordSend(p.id, 'sent');
+      recordSuccess(repos);
+      logVerdict(p, 'needs attention: invite submitted but not confirmed'
+        + (outcome.evidence?.screenshot ? ` — screenshot: /incidents/${outcome.evidence.screenshot}` : ''));
       return { halted: false, contacted: true };
     case 'email_required':
       // LinkedIn gates this member behind "enter their email to connect" — a

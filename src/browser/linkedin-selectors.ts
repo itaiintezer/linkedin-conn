@@ -35,6 +35,10 @@ export const SEL = {
   // /messaging/compose/?profileUrn=… — navigate to its href instead of clicking hashed-
   // class UI. That route renders the CLASSIC messaging surface with stable classes.
   msgComposeLink: 'a[href*="/messaging/compose/"]',
+  // The profile's "More" overflow surface, once expanded. Hashed class names churn, so the
+  // role is the anchor; the artdeco class is kept as a fallback for the older surface.
+  // Live-verified 2026-08-03: exactly one matches on an expanded profile top card.
+  overflowMenu: '[role="menu"], [class*="artdeco-dropdown__content"]',
   msgBox: 'div.msg-form__contenteditable[contenteditable="true"]',
   // Disabled until text is typed; re-disabled after a successful send.
   msgSendButton: 'button.msg-form__send-button',
@@ -63,6 +67,21 @@ export const find = {
   // getByRole('button') misses it. en-US is forced at launch, so matching the
   // English "Pending" wording is safe.
   pendingBadge: (s: Scope): Locator => s.locator('[aria-label*="Pending" i]'),
+  // Name-scoped Pending badge. The label carries the target ("Pending, click to withdraw
+  // invitation sent to Brian Palazini" — live-verified on a Sales Navigator account
+  // 2026-08-03, and the same shape the comment above records from the classic layout), so
+  // matching on it cannot be satisfied by a pending invite to someone in the right-rail
+  // recommendations, which the bare `pendingBadge` above can. Tried first; `pendingBadge`
+  // stays as the fallback so behaviour on any layout whose label omits the name is unchanged.
+  pendingBadgeForName: (s: Scope, name: string): Locator =>
+    s.locator(`[aria-label*="Pending" i][aria-label*="${name.replace(/["\\]/g, '')}"]`),
+
+  // The one POSITIVE "this is an existing connection" signal. Only present in the expanded
+  // "More" overflow, so callers must scope to SEL.overflowMenu after expanding — read
+  // page-wide it would eventually catch a recommendation card. Live-verified: one node
+  // carries aria-label="Remove connection", another is role="menuitem" with the text.
+  removeConnection: (s: Scope): Locator =>
+    s.locator('[aria-label*="Remove connection" i], [role="menuitem"]:has-text("Remove connection")'),
 
   // Email-verification gate: some members only accept invites from people who know
   // their email. LinkedIn shows "To verify this member knows you, please enter their

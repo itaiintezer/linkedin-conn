@@ -5,8 +5,8 @@ import type { Repos } from './repositories.js';
  *
  *  - `accepted` / `replied` profiles — acceptance or a reply confirmed it directly.
  *  - message-kind profiles that reached `sent` — the sender's live 1st-degree gate
- *    (`isAlreadyConnected`) had to pass before a DM could go out, so a sent message is
- *    itself proof of connection.
+ *    (`classifyRelationship` + `mayReceiveDirectMessage`) had to pass before a DM could go
+ *    out, so a sent message is itself proof of connection.
  *
  * Everything else is excluded. In particular a `sent` INVITE is a pending request, not a
  * connection, and seeding it would manufacture a connection that may never exist.

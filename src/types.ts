@@ -14,6 +14,11 @@ export type { CampaignKind };
 import type { Reaction } from './core/engagement-action.js';
 export type { Reaction };
 
+// Re-exported for the same reason as CampaignKind: SendOutcome carries one, so consumers of
+// this module need the name without reaching into core/.
+import type { Relationship } from './core/relationship.js';
+export type { Relationship };
+
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
   | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
@@ -262,7 +267,10 @@ export interface EngagementOutcome {
 
 export type SendResult =
   | 'sent' | 'already' | 'unavailable' | 'note_quota' | 'checkpoint' | 'error'
-  | 'email_required' | 'not_found' | 'weekly_limit' | 'not_connected';
+  | 'email_required' | 'not_found' | 'weekly_limit' | 'not_connected'
+  /** Submitted, but LinkedIn would not confirm it landed. Counts as a send (so the weekly
+   *  cap cannot under-count) but needs a human — never a silent skip. */
+  | 'unconfirmed';
 
 /** What the browser saw when a send went wrong — captured for the operator. */
 export interface SendEvidence {
@@ -277,6 +285,10 @@ export interface SendOutcome {
   result: SendResult;
   firstName?: string;
   fullName?: string;
+  /** What the profile page said about our relationship to them (see core/relationship.ts).
+   *  Reported so a verdict can name the real reason — an 'already' that is a pending invite
+   *  is not the same thing as an existing connection, and the log used to conflate them. */
+  relationship?: Relationship;
   threadUrl?: string;
   error?: string;
   evidence?: SendEvidence;
