@@ -1136,6 +1136,194 @@ function wireRecheck({ btn, statusEl, endpoint, countKey, none, reasons }) {
   });
 }
 
+/* ---------- per-conveyor manual trigger ---------- */
+
+/**
+ * Short button labels for each pre-flight refusal code (POST /api/run-now answers 409).
+ * The full sentence goes in the tooltip and out over the live region instead: the button is
+ * sized for "Nothing queued", not for "Weekly cap reached — 100/100 invitations this week",
+ * and a truncated reason is exactly how an operator ends up guessing at why nothing sent.
+ *
+ * A code missing from this table (`internal_error`, or whatever a later server adds) falls
+ * back to 'Failed' rather than putting the raw token on the face — the sentence beside it
+ * is written for a human, the code is not.
+ */
+const RUN_BELT_LABELS = {
+  paused: 'Paused',
+  guardrail: 'Halted',
+  not_logged_in: 'Not logged in',
+  capped: 'Capped',
+  nothing_armed: 'Nothing armed',
+  // NOT 'Running': the in-flight label on this same button is 'Running…', and a refusal that
+  // reads as the state it is refusing is a refusal an operator will not notice. Every label
+  // here also stays within "Nothing queued", the longest string .run-belt's min-width is
+  // sized for, so reporting a verdict never resizes the button.
+  already_running: 'In progress',
+  daily_cap: 'Daily cap',
+};
+
+/* How long a verdict stays on the face before the button goes back to reading "Run now". */
+const RUN_BELT_REVERT_MS = 2500;
+
+/* A trigger's live region: the one .run-belt-status in its own pills row. Paired by class
+   rather than by #run<Belt>Status id, so four buttons need no id table over here —
+   index.html documents that class as precisely this hook. */
+function beltStatusEl(btn) {
+  return btn.parentElement ? $('.run-belt-status', btn.parentElement) : null;
+}
+
+/* The conveyor's name as this app speaks it ("connection requests"), read off the button's
+   own aria-label ("Run now, connection requests") rather than from a second table here.
+   The announcement needs the name: heard with no card around it, four belts' worth of
+   "Queued 3" are indistinguishable, and they fire four different irreversible actions.
+   Deriving it means the spoken name cannot drift from the one index.html declares; if that
+   label is ever reworded past recognition this degrades to the belt key rather than lying. */
+function beltName(btn) {
+  const label = btn.getAttribute('aria-label') || '';
+  const comma = label.indexOf(',');
+  return comma < 0 ? (btn.dataset.belt || 'this conveyor') : label.slice(comma + 1).trim();
+}
+
+/**
+ * What one /api/run-now answer means, in the three registers the UI reports it in: `label`
+ * for the button face (short — see RUN_BELT_LABELS), `title` for the tooltip, and `say` for
+ * the aria-live span, which is heard with no card and no button around it and so names the
+ * conveyor and carries the whole reason.
+ */
+function runBeltVerdict(ok, data, belt, name) {
+  if (!ok) {
+    // A 409 refusal always carries both fields. The other two failures fall through to
+    // 'Failed' by design: a 400 (unknown belt) has an `error` and no `code` at all, and the
+    // event belt's 500 has `internal_error`, a code deliberately left out of the table.
+    const why = data.error || 'Could not run this batch';
+    return {
+      label: RUN_BELT_LABELS[data.code] || 'Failed',
+      title: why,
+      say: `Cannot run ${name}: ${why}`,
+    };
+  }
+  if (belt === 'event') {
+    // Returns BEFORE the `promoted` checks below, and that ordering is load-bearing: the
+    // event answer has no `promoted` field at all — there is no unit to count, the moved run
+    // window IS the payload — so falling through would read the absence as a zero and report
+    // "Nothing queued" for a run that is about to start.
+    return {
+      label: 'Starting…',
+      title: 'Run window moved to now — the next pass starts it',
+      say: `Starting the next run for ${name}.`,
+    };
+  }
+  // Every sender-belt success carries a numeric `promoted` (server.ts sends an explicit 0
+  // when nothing moved), so a falsy value here is a real zero, not a missing field.
+  const n = data.promoted;
+  if (!n) {
+    return {
+      label: 'Nothing queued',
+      title: 'Nothing was waiting to send',
+      say: `Nothing queued for ${name}.`,
+    };
+  }
+  if (data.started) {
+    return {
+      label: `Triggered ${n}`,
+      title: `Sending ${n} now`,
+      say: `Triggered ${n} ${name}, sending now.`,
+    };
+  }
+  // Promoted but not started: the rows ARE due now and the next pass drains them. Saying
+  // "Triggered" here would report a send that has not happened.
+  const why = data.deferred || 'the browser is busy';
+  return {
+    label: `Queued ${n}`,
+    title: `${n} are due now — ${why}; the next pass sends them`,
+    say: `Queued ${n} ${name} — ${why}. The next pass sends them.`,
+  };
+}
+
+/**
+ * One conveyor's manual trigger.
+ *
+ * Reports the verdict three ways: the button face (for a glance), the tooltip (the full
+ * sentence), and the card's visually-hidden aria-live span — the same contract .recheck-btn
+ * follows (wireRecheck above), and the reason index.html gives each button a status span. A
+ * rewritten label is silent to a screen reader once focus has moved on, and these buttons
+ * fire irreversible LinkedIn actions.
+ *
+ * Uses fetch directly rather than api(): a refusal body carries BOTH a `code` (which picks
+ * the short label) and an `error` (the sentence), and api() throws away all but `error`.
+ *
+ * `state` is this one button's, created per button in initDashboard. It holds the pristine
+ * idle label and the pending revert, neither of which may leak into the next click.
+ */
+async function runBelt(btn, state) {
+  // A re-entrancy guard, not just `disabled`. The second click of a double-click is one POST
+  // away from a burst of real sends, so it is dropped here rather than trusted to an
+  // attribute — a synthetic click, or a stray render that re-enables the button mid-flight,
+  // still reaches this listener.
+  if (state.running) return;
+  state.running = true;
+
+  // Captured ONCE, on the first click, and never re-read. Re-reading per click latches: a
+  // click landing while "Triggered 4" is still on the face would take THAT as the label to
+  // restore, and the button would read "Triggered 4" for the rest of the session.
+  if (!state.idle) state.idle = { label: btn.textContent, title: btn.title };
+  clearTimeout(state.revert); // a verdict still showing belongs to the previous run
+
+  const statusEl = beltStatusEl(btn);
+  const name = beltName(btn);
+  btn.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  btn.textContent = 'Running…';
+  // Announced before the verdict, so that two identical verdicts in a row still change this
+  // region's text between them and are therefore both spoken.
+  if (statusEl) statusEl.textContent = `Running ${name} now…`;
+
+  let verdict;
+  try {
+    const res = await fetch('/api/run-now', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ belt: btn.dataset.belt }),
+    });
+    let data = {};
+    try { data = await res.json(); } catch (_) { /* keep the empty object */ }
+    verdict = runBeltVerdict(res.ok, data, btn.dataset.belt, name);
+  } catch (_) {
+    // fetch rejects only on a transport failure, and a POST that died in flight may well
+    // have been received and acted on. A flat 'Failed' would be a claim we cannot support;
+    // the only honest thing to report is that we do not know.
+    verdict = {
+      label: 'No response',
+      title: 'Could not reach Relay — this batch may or may not have started',
+      say: `No response from Relay for ${name}. The batch may or may not have started.`,
+    };
+  }
+
+  btn.textContent = verdict.label;
+  btn.title = verdict.title;
+  btn.removeAttribute('aria-busy');
+  if (statusEl) statusEl.textContent = verdict.say;
+
+  // Deliberately after the verdict is already on the button, and in a try of their own. Both
+  // of these swallow their own errors today, but the label is the only receipt an operator
+  // gets for an irreversible action: it must not be reachable from a refresh's failure path,
+  // where a batch that really did fire would end up reported as 'Failed'. Nor may a stale
+  // panel cost the button its revert and leave it disabled for good.
+  try {
+    await refreshStatus();
+    await refreshQueue();
+  } catch (_) { /* transient; the 15s poll catches the panel up */ }
+
+  state.running = false;
+  state.revert = setTimeout(() => {
+    btn.textContent = state.idle.label;
+    btn.title = state.idle.title;
+    btn.disabled = false;
+    // The announcement is left standing, as wireRecheck leaves its own: a live region going
+    // quiet is not news, and the next run overwrites it.
+  }, RUN_BELT_REVERT_MS);
+}
+
 function initDashboard() {
   // The "Needs attention" outcome opens the attention modal — but only when it
   // carries a count (renderEngine toggles `is-clickable`).
@@ -1172,22 +1360,12 @@ function initDashboard() {
   const evIdleCta = $('#evEngineIdleCta');
   if (evIdleCta) evIdleCta.addEventListener('click', () => switchTab('events'));
 
-  $('#runNow').addEventListener('click', async () => {
-    const btn = $('#runNow');
-    btn.disabled = true;
-    const original = btn.textContent;
-    btn.textContent = 'Running…';
-    try {
-      const res = await api('/api/run-now', { method: 'POST' });
-      btn.textContent = res && typeof res.promoted === 'number'
-        ? `Triggered ${res.promoted}` : 'Triggered';
-      await refreshStatus();
-      await refreshQueue();
-    } catch (_) {
-      btn.textContent = 'Failed';
-    }
-    setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 2500);
-  });
+  // One handler per conveyor's manual trigger; the belt travels in data-belt. Each button
+  // carries its own state: the pristine idle label to restore, and the pending revert timer.
+  for (const btn of $$('.run-belt')) {
+    const state = { running: false, idle: null, revert: 0 };
+    btn.addEventListener('click', () => { void runBelt(btn, state); });
+  }
 
   $('#retryFailed').addEventListener('click', async () => {
     const btn = $('#retryFailed');

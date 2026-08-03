@@ -97,7 +97,13 @@ export function stubFetchJson(payload: unknown): void {
   globalThis.fetch = (async () => ({ ok: true, json: async () => payload })) as unknown as typeof fetch;
 }
 
-/** One canned response for a route: a JSON body, or an error to make api() throw. */
+/**
+ * One canned response for a route: a JSON body, or an error to make api() throw.
+ *
+ * `body` is honoured on failure statuses too — a refusal carries a whole body, not just a
+ * message. The run-now buttons read BOTH fields off a 409: `code` picks the short button
+ * label and `error` is the sentence they put in the tooltip and speak over aria-live.
+ */
 export interface RouteStub {
   body?: unknown;
   status?: number;
@@ -131,8 +137,9 @@ export function stubFetchRoutes(routes: Record<string, RouteStub>): RecordedCall
       .find((r) => path.startsWith(r));
     if (!key) throw new Error(`unrouted fetch in test: ${path}`);
     const stub = routes[key];
-    if (stub.error !== undefined) {
-      return { ok: false, status: stub.status ?? 400, statusText: 'Bad Request', json: async () => ({ error: stub.error }) };
+    if (stub.error !== undefined || (stub.status ?? 200) >= 400) {
+      const body = stub.body ?? { error: stub.error };
+      return { ok: false, status: stub.status ?? 400, statusText: 'Bad Request', json: async () => body };
     }
     return { ok: true, status: 200, json: async () => stub.body };
   }) as unknown as typeof fetch;
