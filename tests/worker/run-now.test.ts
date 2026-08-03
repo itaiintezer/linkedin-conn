@@ -293,3 +293,24 @@ test('moveEventWindow tolerates a non-numeric event_run_budget_minutes setting',
   expect(Number.isNaN(new Date(w.to).getTime())).toBe(false);
   expect(new Date(w.to).getTime()).toBeGreaterThan(new Date(w.from).getTime());
 });
+
+// The doc-comment on the "no runnable campaign" branch calls it load-bearing (silently
+// picking an un-armed target is exactly the surprise an irreversible invite pipeline must
+// not have) — nothing exercised it until now.
+test('moveEventWindow throws rather than inventing a target when nothing is armed', () => {
+  expect(() => moveEventWindow(repos, NOW)).toThrow();
+});
+
+// moveEventWindow must not depend on a caller having called preflight first: this mirrors
+// promote()'s own weekly-cap re-check and ensureEventReservation's inline cap test, and is
+// the same started_at-patching pattern the 'event preflight refuses once the day s run
+// budget is spent' test above uses, since `eventRuns.start` stamps the real wall clock.
+test('moveEventWindow refuses to spend past the day s event-run budget, even unpreflighted', () => {
+  const id = armedCampaign(repos, NOW);
+  repos.settings.update({ events_per_day: 1 });
+  const run = repos.eventRuns.start(id, 'live', null);
+  repos.db.prepare('UPDATE event_runs SET started_at = ? WHERE id = ?').run(NOW.toISOString(), run.id);
+  repos.eventRuns.finish(run.id, 'complete', 1, NOW.toISOString());
+
+  expect(() => moveEventWindow(repos, NOW)).toThrow();
+});

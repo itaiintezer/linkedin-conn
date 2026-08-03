@@ -110,7 +110,11 @@ function eventPreflight(repos: Repos, now: Date): Refusal | null {
   }
 
   const s = repos.settings.get();
-  const perDay = Math.max(1, s.events_per_day);
+  // Number(...) coercion for the same reason moveEventWindow's own perDay check needs it:
+  // POST /api/settings does no validation, so a non-numeric events_per_day would otherwise
+  // make Math.max(1, ...) evaluate to NaN and runsToday >= NaN is always false — silently
+  // disabling the daily cap instead of refusing.
+  const perDay = Math.max(1, Number(s.events_per_day) || 1);
   const runsToday = repos.eventCampaigns.countRunsOnDate(now.toISOString());
   if (runsToday >= perDay) {
     return {
@@ -241,6 +245,17 @@ export function moveEventWindow(repos: Repos, now: Date): EventWindow {
   if (!next) throw new Error('moveEventWindow: no runnable campaign — call preflight first');
 
   const s = repos.settings.get();
+
+  // Self-defence, mirroring promote()'s own weekly-cap re-check and ensureEventReservation's
+  // inline cap test: the daily budget must not depend on a caller having remembered to
+  // preflight. Nothing downstream re-checks it — dueEventRun only tests `armed`, and
+  // runEventTick only tests paused/guardrail/login — so this is the last line before an
+  // irreversible invite run.
+  const perDay = Math.max(1, Number(s.events_per_day) || 1);
+  if (repos.eventCampaigns.countRunsOnDate(now.toISOString()) >= perDay) {
+    throw new Error('moveEventWindow: the day\'s event-run budget is spent — call preflight first');
+  }
+
   // A second in the past, so dueEventRun's `from_ts <= now` holds on the very next tick.
   const from = new Date(now.getTime() - 1000);
   // `Math.max(1, s.event_run_budget_minutes)` alone is not enough defence: POST /api/settings
@@ -251,6 +266,10 @@ export function moveEventWindow(repos: Repos, now: Date): EventWindow {
   // `Number(...) || fallback` treatment randomDelayMs (src/worker/sender.ts:43-55) documents;
   // 20 is schema.sql's own DEFAULT for this column, so an invalid setting degrades to the
   // same value a fresh database ships with, not an invented one.
+  //
+  // This can't share promote()'s `Math.max(0, Math.floor(Number(x) || 0))` idiom: a batch
+  // size of 0 is a legitimate "promote nothing", but a zero-or-negative-length run window is
+  // never legitimate, so the floor here is a positive fallback (20), not 0.
   const rawBudget = Number(s.event_run_budget_minutes);
   const budgetMinutes = Number.isFinite(rawBudget) && rawBudget > 0 ? rawBudget : 20;
   const to = new Date(from.getTime() + budgetMinutes * 60 * 1000);
