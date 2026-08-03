@@ -1,8 +1,10 @@
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
-import { parseBelt, weeklyRemaining, preflight, promote } from '../../src/worker/run-now.js';
-import { RESERVATION_PURPOSE } from '../../src/worker/event-campaign.js';
+import {
+  parseBelt, weeklyRemaining, preflight, promote, moveEventWindow,
+} from '../../src/worker/run-now.js';
+import { RESERVATION_PURPOSE, dueEventRun } from '../../src/worker/event-campaign.js';
 import { armedCampaign } from '../helpers/event-fixtures.js';
 
 let repos: Repos;
@@ -241,4 +243,53 @@ test('a zero batch size promotes nothing, not one row', () => {
   repos.settings.update({ batch_size: 0 });
   queueProfiles('invite', 3);
   expect(promote(repos, 'invite', NOW)).toBe(0);
+});
+
+/* ---------- moveEventWindow ---------- */
+
+test('moveEventWindow opens the window now, and dueEventRun then returns the campaign', () => {
+  const id = armedCampaign(repos, NOW);
+  repos.settings.update({ event_run_budget_minutes: 30 });
+
+  const w = moveEventWindow(repos, NOW);
+
+  expect(w.eventId).toBe(id);
+  expect(new Date(w.from).getTime()).toBeLessThanOrEqual(NOW.getTime());
+  expect(new Date(w.to).getTime()).toBe(new Date(w.from).getTime() + 30 * 60 * 1000);
+  expect(dueEventRun(repos, NOW)?.event.id).toBe(id);
+});
+
+test('moveEventWindow replaces an existing reservation rather than stacking a second', () => {
+  const id = armedCampaign(repos, NOW);
+  repos.reservations.create('2099-01-01T09:00:00.000Z', '2099-01-01T10:00:00.000Z', 'event_invite', id);
+
+  const w = moveEventWindow(repos, NOW);
+
+  // `between` is purpose-blind (it queries every reservation regardless of `purpose`), so a
+  // bare length check alone would not prove the STALE 2099 row was actually replaced rather
+  // than merely not duplicated — a bug that left the old row and silently dropped the new one
+  // would also produce exactly one result. Assert the surviving row IS the new window.
+  const held = repos.reservations.between('2000-01-01T00:00:00.000Z', '2100-01-01T00:00:00.000Z');
+  expect(held).toHaveLength(1);
+  expect(held[0].from_ts).toBe(w.from);
+  expect(held[0].to_ts).toBe(w.to);
+});
+
+// POST /api/settings does no validation or coercion (src/api/server.ts), and there is no
+// CHECK constraint on event_run_budget_minutes in schema.sql — so a fat-fingered non-numeric
+// setting reaches here unfiltered, exactly like the negative batch_size bug promote() had to
+// guard against above. `Math.max(1, s.event_run_budget_minutes)` alone is NOT enough:
+// `Math.max(1, NaN)` and `Math.max(1, Number('abc'))` both evaluate to NaN, which would make
+// `to` an Invalid Date — and calling `.toISOString()` on an Invalid Date throws, so this test
+// would fail loudly (not silently) without the same `Number(...) || fallback` treatment
+// randomDelayMs (src/worker/sender.ts) already documents.
+test('moveEventWindow tolerates a non-numeric event_run_budget_minutes setting', () => {
+  const id = armedCampaign(repos, NOW);
+  repos.settings.update({ event_run_budget_minutes: 'abc' as unknown as number });
+
+  const w = moveEventWindow(repos, NOW);
+
+  expect(w.eventId).toBe(id);
+  expect(Number.isNaN(new Date(w.to).getTime())).toBe(false);
+  expect(new Date(w.to).getTime()).toBeGreaterThan(new Date(w.from).getTime());
 });

@@ -13,7 +13,7 @@
 import type { Repos } from '../db/repositories.js';
 import { capsFor, engagementCaps } from '../core/caps.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
-import { nextEventRun } from './event-campaign.js';
+import { nextEventRun, RESERVATION_PURPOSE } from './event-campaign.js';
 
 /**
  * The four conveyors on the dashboard, each with its own manual trigger.
@@ -217,4 +217,46 @@ export function promote(repos: Repos, belt: Exclude<Belt, 'event'>, now: Date): 
   ].slice(0, batchSize);
   for (const p of rows) repos.profiles.setScheduled(p.id, dueIso);
   return rows.length;
+}
+
+/** The window a manual event run just claimed. */
+export interface EventWindow { eventId: number; from: string; to: string }
+
+/**
+ * Rewrite the next-up campaign's reserved window so it is open right now.
+ *
+ * This is the event belt's answer to `promote`: a scheduling modification and nothing else.
+ * `runEventTick` fires within 60s, which is why the endpoint reports `started: false` — the
+ * run has been handed over, not performed.
+ *
+ * Clear-then-create rather than an UPDATE: `clearFor` is the existing primitive for "this
+ * campaign holds no window", and one campaign must never end up holding two.
+ *
+ * Call `preflight` first — this throws rather than inventing a target, because silently
+ * picking a campaign nobody armed is exactly the kind of surprise an irreversible invite
+ * pipeline must not have.
+ */
+export function moveEventWindow(repos: Repos, now: Date): EventWindow {
+  const next = nextEventRun(repos, now);
+  if (!next) throw new Error('moveEventWindow: no runnable campaign — call preflight first');
+
+  const s = repos.settings.get();
+  // A second in the past, so dueEventRun's `from_ts <= now` holds on the very next tick.
+  const from = new Date(now.getTime() - 1000);
+  // `Math.max(1, s.event_run_budget_minutes)` alone is not enough defence: POST /api/settings
+  // does no validation or coercion (src/api/server.ts) and schema.sql has no CHECK on this
+  // column, so a fat-fingered non-numeric or NaN setting reaches here unfiltered — and
+  // `Math.max(1, NaN)` is NaN, which would make `to` an Invalid Date whose `to_ts > now` can
+  // never hold, silently turning a manual "run now" into a no-op reservation. Same
+  // `Number(...) || fallback` treatment randomDelayMs (src/worker/sender.ts:43-55) documents;
+  // 20 is schema.sql's own DEFAULT for this column, so an invalid setting degrades to the
+  // same value a fresh database ships with, not an invented one.
+  const rawBudget = Number(s.event_run_budget_minutes);
+  const budgetMinutes = Number.isFinite(rawBudget) && rawBudget > 0 ? rawBudget : 20;
+  const to = new Date(from.getTime() + budgetMinutes * 60 * 1000);
+
+  repos.reservations.clearFor(RESERVATION_PURPOSE, next.event.id);
+  repos.reservations.create(from.toISOString(), to.toISOString(), RESERVATION_PURPOSE, next.event.id);
+
+  return { eventId: next.event.id, from: from.toISOString(), to: to.toISOString() };
 }
