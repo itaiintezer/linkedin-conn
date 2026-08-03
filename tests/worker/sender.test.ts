@@ -50,6 +50,49 @@ test('already-connected -> skipped with reason, not counted as sent', async () =
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
 });
 
+test('a pending invite still skips, but the verdict says pending rather than connected', async () => {
+  // Same terminal skip and same skip_reason as an existing connection — only the verdict
+  // line distinguishes them. Conflating the two is what made the Sales Navigator misread
+  // (2026-08-03) look like a legitimate outcome in the log.
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'already');
+  driver.relationship = 'pending';
+  await run(new Date('2026-06-29T10:00:00Z'));
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('skipped');
+  expect(row.skip_reason).toBe('already_connected');
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
+});
+
+test('unconfirmed -> needs_attention, but COUNTS toward the cap', async () => {
+  // The invite was submitted; LinkedIn just would not confirm it. It must count as a send:
+  // the weekly cap reads send_log, and the original bug recorded these as skips, so real
+  // invites went uncounted and the cap could over-send against LinkedIn's own limit.
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'unconfirmed');
+  driver.evidence = { pageUrl: 'https://www.linkedin.com/in/a', screenshot: 'shot.png' };
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.last_error).toMatch(/not confirmed/i);
+  expect(row.skip_reason).toBeNull();
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(1);
+});
+
+test('unconfirmed does not trip the failure streak — we reached LinkedIn and submitted', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  for (const u of ['a', 'b', 'c', 'd', 'e']) {
+    seedScheduled(`https://www.linkedin.com/in/${u}`, '2026-06-29T09:00:00.000Z', c.id);
+    driver.scripted.set(`https://www.linkedin.com/in/${u}`, 'unconfirmed');
+  }
+  await run(new Date('2026-06-29T10:00:00Z'));
+  expect(repos.settings.get().paused).toBeFalsy();
+  expect(repos.profiles.byStatus('needs_attention')).toHaveLength(5);
+});
+
 test('email_required -> skipped with reason, terminal, no failure streak', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);

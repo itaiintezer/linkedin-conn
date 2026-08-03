@@ -2,7 +2,7 @@ import type {
   BrowserDriver, SendOutcome, SendResult, SendEvidence, SendOptions, LoginSnapshot,
   CheckpointScan, InboxRow, ConnectionCard, EventPageInfo, EventStepOutcome,
   EventStepStatus, BucketRunRequest, BucketRunResult,
-  EngagementOutcome, EngagementResult, Reaction,
+  EngagementOutcome, EngagementResult, Reaction, Relationship,
 } from '../types.js';
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 export type { BrowserDriver };
@@ -19,6 +19,9 @@ export class FakeDriver implements BrowserDriver {
   evidence: SendEvidence | undefined;
   pending: string[] = [];
   scripted = new Map<string, SendResult>();
+  /** Relationship reported alongside an outcome, when a test cares which kind of `already`
+   *  (or unconfirmed send) it is. Left unset so existing tests are unaffected. */
+  relationship: Relationship | undefined = undefined;
   /** Name this fake "reads" from profiles; {firstName} is substituted with it. */
   firstName = 'Test';
   /** Records the note as actually sent (after {firstName} substitution). */
@@ -66,9 +69,16 @@ export class FakeDriver implements BrowserDriver {
     const note = message === null ? null : applyFirstName(message, firstName);
     this.sentLog.push({ url, message: note });
     const result = this.scripted.get(url) ?? 'sent';
-    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable')
+    // 'unconfirmed' carries evidence in the real driver too — the verdict line links the
+    // screenshot, so a fake that omitted it would let that path regress untested.
+    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable'
+      || result === 'unconfirmed')
       ? this.evidence : undefined;
-    return { result, firstName, ...(evidence ? { evidence } : {}) };
+    return {
+      result, firstName,
+      ...(this.relationship ? { relationship: this.relationship } : {}),
+      ...(evidence ? { evidence } : {}),
+    };
   }
   async sendMessage(url: string, message: string, opts?: SendOptions): Promise<SendOutcome> {
     this.open = true;
