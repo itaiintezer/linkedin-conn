@@ -381,10 +381,16 @@ test('a second click while a run is in flight cannot fire a second batch', async
   expect(btn.textContent).toBe('Triggered 3');
 });
 
-test('the idle label always comes back — a verdict can never latch onto the button', async () => {
-  // The revert used to restore whatever textContent read at click time. A click landing
-  // while "Triggered 3" was still on the face would capture THAT as the idle label and the
-  // button would say "Triggered 3" for the rest of the session.
+/*
+ * Two DISTINCT properties of the revert, not one property tested twice. Keep both.
+ *
+ *  - this test: the SETTLED path. Run, wait the verdict out, run again. Covers that a
+ *    completed cycle leaves the button exactly as it found it.
+ *  - the next test: MID-FEEDBACK re-entry, which is the one the capture-once guard exists
+ *    for. This test cannot see that guard at all — by the time it clicks again the button
+ *    already reads "Run now", so a naive per-click capture reads the same value and passes.
+ */
+test('a settled run leaves the button exactly as it found it', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   stubFetchRoutes(beltRoutes({ body: { ok: true, belt: 'invite', promoted: 3, started: true } }));
   app.initDashboard();
@@ -405,4 +411,46 @@ test('the idle label always comes back — a verdict can never latch onto the bu
   expect(btn.textContent).toBe('Triggered 3');
   await vi.advanceTimersByTimeAsync(2600);
   expect(btn.textContent).toBe('Run now');
+});
+
+test('a click landing mid-verdict reverts to Run now, not to the verdict it interrupted', async () => {
+  /*
+   * The MID-FEEDBACK re-entry, which the settled test above structurally cannot reach.
+   *
+   * Two things have to hold when a second click lands inside the 2500ms window while the
+   * first run's verdict is still on the face:
+   *   1. the idle label was captured ONCE, on the first click ever — a per-click capture
+   *      reads "Triggered 3" off the face here and latches it as the label to "restore",
+   *      so the button wears a stale verdict for the rest of the session;
+   *   2. the first run's pending revert was cancelled — otherwise it fires mid-way through
+   *      the second run and wipes a verdict that is still current.
+   * The two runs return different counts so both are observable.
+   */
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  stubFetchRoutes(beltRoutes({ body: { ok: true, belt: 'invite', promoted: 3, started: true } }));
+  app.initDashboard();
+  const btn = beltBtn('invite');
+
+  btn.click();
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(1000);        // t=1000: inside the window, revert pending
+  expect(btn.textContent).toBe('Triggered 3');
+
+  // Re-enter while that verdict is still displayed. `disabled` is cleared the same way the
+  // re-entrancy test does it — a stray re-render or an AT activation path.
+  stubFetchRoutes(beltRoutes({ body: { ok: true, belt: 'invite', promoted: 5, started: true } }));
+  btn.disabled = false;
+  btn.click();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(btn.textContent).toBe('Triggered 5');
+
+  // t=2600 from the first click: the first run's revert was due at 2500 and must not fire.
+  await vi.advanceTimersByTimeAsync(1600);
+  expect(btn.textContent).toBe('Triggered 5');
+
+  // Past the SECOND run's revert. A per-click capture reports 'Triggered 3' here.
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(btn.textContent).toBe('Run now');
+  expect(btn.title).toBe('Send one invite batch right now');
+  expect(btn.disabled).toBe(false);
 });
