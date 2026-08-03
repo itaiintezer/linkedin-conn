@@ -1,7 +1,7 @@
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
-import { parseBelt, weeklyRemaining } from '../../src/worker/run-now.js';
+import { parseBelt, weeklyRemaining, preflight } from '../../src/worker/run-now.js';
 
 let repos: Repos;
 const NOW = new Date('2026-08-04T10:00:00.000Z');
@@ -42,4 +42,45 @@ test('weeklyRemaining subtracts what has already gone out this week', () => {
   const e = repos.engagements.add('https://www.linkedin.com/posts/abc', 'urn:li:activity:1', 'like', null);
   repos.engagements.setStatus(e.id, 'sent', { reacted_at: NOW.toISOString() });
   expect(weeklyRemaining(repos, 'engagement', NOW)).toBe(29);
+});
+
+test('preflight refuses a paused engine and echoes the real pause reason', () => {
+  repos.settings.update({ paused: 1, pause_reason: 'LinkedIn weekly invitation limit reached' });
+  const r = preflight(repos, 'invite', NOW);
+  expect(r?.code).toBe('paused');
+  expect(r?.error).toContain('LinkedIn weekly invitation limit reached');
+});
+
+test('preflight refuses a tripped guardrail', () => {
+  repos.appState.trip('repeated_failures', 'five in a row', NOW.toISOString());
+  const r = preflight(repos, 'invite', NOW);
+  expect(r?.code).toBe('guardrail');
+});
+
+test('preflight refuses when logged out', () => {
+  repos.appState.setLogin({ loggedIn: false, cookieExpiry: null }, NOW.toISOString());
+  expect(preflight(repos, 'invite', NOW)?.code).toBe('not_logged_in');
+});
+
+test('preflight refuses a belt whose weekly cap is spent, naming the cap', () => {
+  repos.settings.update({ weekly_cap: 1 });
+  const c = repos.cohorts.create('C', null, true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/spent', null);
+  repos.events.recordSend(p.id, 'sent');
+  const r = preflight(repos, 'invite', NOW);
+  expect(r?.code).toBe('capped');
+  expect(r?.error).toContain('1/1 invites');
+});
+
+test('a spent invite cap does not refuse the message belt', () => {
+  repos.settings.update({ weekly_cap: 1 });
+  const c = repos.cohorts.create('C', null, true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/spent', null);
+  repos.events.recordSend(p.id, 'sent');
+  expect(preflight(repos, 'message', NOW)).toBeNull();
+});
+
+test('the all alias checks only the shared gates, not any belt cap', () => {
+  repos.settings.update({ weekly_cap: 0 });
+  expect(preflight(repos, 'all', NOW)).toBeNull();
 });

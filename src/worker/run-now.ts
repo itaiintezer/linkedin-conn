@@ -65,3 +65,53 @@ export function weeklyRemaining(
     repos.events.countSentSince(windowStartIso(now), belt),
   );
 }
+
+/** Filled in by Task 3. */
+function eventPreflight(_repos: Repos, _now: Date): Refusal | null { return null; }
+
+/** A refused click: a machine-readable `code` for the UI to map to a short button label,
+ *  and the sentence a human reads. `error` (not `message`) because the dashboard's api()
+ *  helper reads `error` off a non-ok body, as does every other endpoint in this server. */
+export interface Refusal { code: string; error: string }
+
+/** Plural nouns for the capped message, per belt. */
+const CAP_NOUN: Record<Exclude<Belt, 'event'>, string> = {
+  invite: 'invites', message: 'messages', engagement: 'reactions',
+};
+
+/**
+ * Why this click cannot run, or null to proceed.
+ *
+ * Called BEFORE any promotion, always. The three shared gates apply to every belt including
+ * the `all` alias; the weekly cap is per-belt, so `all` skips it (a capped belt simply
+ * promotes nothing when `promote` runs).
+ */
+export function preflight(repos: Repos, belt: BeltArg, now: Date): Refusal | null {
+  const s = repos.settings.get();
+  const a = repos.appState.get();
+  if (s.paused === 1) {
+    return { code: 'paused', error: s.pause_reason ? `Paused — ${s.pause_reason}` : 'Paused' };
+  }
+  if (a.guardrail_tripped === 1) {
+    return {
+      code: 'guardrail',
+      error: a.guardrail_reason ? `Halted — ${a.guardrail_reason}` : 'Halted by the guardrail',
+    };
+  }
+  if (a.login_logged_in !== 1) {
+    return { code: 'not_logged_in', error: 'Not logged in to LinkedIn' };
+  }
+  if (belt === 'all') return null;
+  if (belt === 'event') return eventPreflight(repos, now);
+
+  if (weeklyRemaining(repos, belt, now) <= 0) {
+    const cap = belt === 'engagement'
+      ? engagementCaps(s).weeklyCap
+      : capsFor(s, belt).weeklyCap;
+    return {
+      code: 'capped',
+      error: `Weekly cap reached — ${cap}/${cap} ${CAP_NOUN[belt]} this week`,
+    };
+  }
+  return null;
+}
