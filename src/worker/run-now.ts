@@ -13,6 +13,7 @@
 import type { Repos } from '../db/repositories.js';
 import { capsFor, engagementCaps } from '../core/caps.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
+import { nextEventRun } from './event-campaign.js';
 
 /**
  * The four conveyors on the dashboard, each with its own manual trigger.
@@ -66,9 +67,6 @@ export function weeklyRemaining(
   );
 }
 
-/** Filled in by Task 3. */
-function eventPreflight(_repos: Repos, _now: Date): Refusal | null { return null; }
-
 /** A refused click: a machine-readable `code` for the UI to map to a short button label,
  *  and the sentence a human reads. `error` (not `message`) because the dashboard's api()
  *  helper reads `error` off a non-ok body, as does every other endpoint in this server. */
@@ -78,6 +76,40 @@ export interface Refusal { code: string; error: string }
 const CAP_NOUN: Record<Exclude<Belt, 'event'>, string> = {
   invite: 'invites', message: 'messages', engagement: 'reactions',
 };
+
+/**
+ * The event belt's own gates.
+ *
+ * `nextEventRun` is reused rather than re-deriving the target, so this button can never
+ * promise a different campaign than the planner would pick.
+ *
+ * Order is deliberate: a campaign that is running right now has ALREADY incremented
+ * countRunsOnDate, so checking the daily cap first would report "already ran today" about
+ * the run currently in progress.
+ */
+function eventPreflight(repos: Repos, now: Date): Refusal | null {
+  const next = nextEventRun(repos, now);
+  if (!next) return { code: 'nothing_armed', error: 'No armed event campaign to run' };
+
+  const title = next.event.title ?? `Campaign #${next.event.id}`;
+  if (next.event.status === 'running') {
+    return { code: 'already_running', error: `${title} is already running` };
+  }
+  if (next.event.status !== 'armed') {
+    return { code: 'nothing_armed', error: `${title} is ${next.event.status}, not armed` };
+  }
+
+  const s = repos.settings.get();
+  const perDay = Math.max(1, s.events_per_day);
+  const runsToday = repos.eventCampaigns.countRunsOnDate(now.toISOString());
+  if (runsToday >= perDay) {
+    return {
+      code: 'daily_cap',
+      error: `Already ran an event campaign today (${runsToday}/${perDay})`,
+    };
+  }
+  return null;
+}
 
 /**
  * Why this click cannot run, or null to proceed.
