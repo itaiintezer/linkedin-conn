@@ -183,10 +183,12 @@ test('preflight refuses a paused engine and echoes the real pause reason', () =>
   expect(r?.error).toContain('LinkedIn weekly invitation limit reached');
 });
 
-test('preflight refuses a tripped guardrail', () => {
+test('preflight refuses a tripped guardrail, showing the detail not the enum', () => {
   repos.appState.trip('repeated_failures', 'five in a row', NOW.toISOString());
   const r = preflight(repos, 'invite', NOW);
   expect(r?.code).toBe('guardrail');
+  // `guardrail_reason` is the enum; only `guardrail_detail` is fit to show a human.
+  expect(r?.error).toContain('five in a row');
 });
 
 test('preflight refuses when logged out', () => {
@@ -261,9 +263,14 @@ export function preflight(repos: Repos, belt: BeltArg, now: Date): Refusal | nul
     return { code: 'paused', error: s.pause_reason ? `Paused — ${s.pause_reason}` : 'Paused' };
   }
   if (a.guardrail_tripped === 1) {
+    // `guardrail_detail` is the operator-facing sentence; `guardrail_reason` is the enum
+    // ('checkpoint' | 'login_lost' | 'repeated_failures'). Showing the enum here would put
+    // a machine token in the slot this type promises is human-readable.
     return {
       code: 'guardrail',
-      error: a.guardrail_reason ? `Halted — ${a.guardrail_reason}` : 'Halted by the guardrail',
+      error: a.guardrail_detail ?? (a.guardrail_reason
+        ? `Halted — ${a.guardrail_reason}`
+        : 'Halted by the guardrail'),
     };
   }
   if (a.login_logged_in !== 1) {
