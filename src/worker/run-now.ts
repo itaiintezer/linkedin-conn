@@ -162,3 +162,47 @@ export function preflight(repos: Repos, belt: BeltArg, now: Date): Refusal | nul
   }
   return null;
 }
+
+/**
+ * Make one belt's next batch due now, and report how many rows are due as a result.
+ *
+ * Pulls from already-scheduled (future) rows first and then backfills from queued, so a
+ * manual run always has something to send when work exists at all — the same pool the old
+ * global endpoint drew from.
+ *
+ * Already-scheduled rows come FIRST, not last: the returned count is "rows due now", NOT
+ * "rows newly moved" — a second click at the same instant must re-stamp the very same rows
+ * (a genuine no-op) rather than reaching past them into fresh queued backlog. With a queued
+ * backlog bigger than one batch, queued-first would make a second click pick a DIFFERENT
+ * slice of queued rows every time (the first slice having just left 'queued' status), which
+ * breaks that idempotency. Scheduled-first is stable: once a batch is promoted, it fills the
+ * pool by itself on every subsequent call at the same `now`, so nothing new gets pulled in
+ * until those rows actually send and leave 'scheduled'.
+ *
+ * The weekly cap is re-checked here as well as in preflight, because the `all` alias skips
+ * the per-belt cap gate — a capped belt must promote nothing rather than stack up rows the
+ * sender will then refuse.
+ */
+export function promote(repos: Repos, belt: Exclude<Belt, 'event'>, now: Date): number {
+  if (weeklyRemaining(repos, belt, now) <= 0) return 0;
+  // A second in the past, so the sender's `scheduled_for <= now` test is satisfied even
+  // when the two timestamps would otherwise be identical to the millisecond.
+  const dueIso = new Date(now.getTime() - 1000).toISOString();
+  const s = repos.settings.get();
+
+  if (belt === 'engagement') {
+    const rows = [
+      ...repos.engagements.byStatus('scheduled'),
+      ...repos.engagements.queuedByPriority(),
+    ].slice(0, engagementCaps(s).batchSize);
+    for (const e of rows) repos.engagements.setScheduled(e.id, dueIso);
+    return rows.length;
+  }
+
+  const rows = [
+    ...repos.profiles.byStatusKind('scheduled', belt),
+    ...repos.profiles.queuedByPriorityKind(belt),
+  ].slice(0, capsFor(s, belt).batchSize);
+  for (const p of rows) repos.profiles.setScheduled(p.id, dueIso);
+  return rows.length;
+}

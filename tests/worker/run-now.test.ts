@@ -1,7 +1,7 @@
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
-import { parseBelt, weeklyRemaining, preflight } from '../../src/worker/run-now.js';
+import { parseBelt, weeklyRemaining, preflight, promote } from '../../src/worker/run-now.js';
 import { RESERVATION_PURPOSE } from '../../src/worker/event-campaign.js';
 
 let repos: Repos;
@@ -190,4 +190,75 @@ test('event preflight refuses once the day s run budget is spent', () => {
 test('event preflight passes for a fresh armed campaign', () => {
   armedCampaign();
   expect(preflight(repos, 'event', NOW)).toBeNull();
+});
+
+/* ---------- promote ---------- */
+
+/** n queued profiles of one kind, in one cohort. */
+function queueProfiles(kind: 'invite' | 'message', n: number): void {
+  const c = repos.cohorts.create(`C-${kind}`, 'Hi', true, kind);
+  for (let i = 0; i < n; i++) {
+    // `kind` must be passed to `add` too — cohorts.create's `kind` only labels the cohort,
+    // it does NOT propagate to the profiles created under it. Without this, every profile
+    // here would default to 'invite' regardless of the cohort's kind, and the "touches only
+    // its own belt" test below would be exercising two invite-shaped queues and pass for
+    // free even if promote() ignored the belt argument entirely.
+    repos.profiles.add(c.id, `https://www.linkedin.com/in/${kind}-${i}`, null, kind);
+  }
+}
+
+test('promote makes a belt s backlog due now, clamped to its batch size', () => {
+  repos.settings.update({ batch_size: 2 });
+  queueProfiles('invite', 5);
+  expect(promote(repos, 'invite', NOW)).toBe(2);
+  const due = repos.profiles.byStatusKind('scheduled', 'invite');
+  expect(due).toHaveLength(2);
+  for (const p of due) expect(new Date(p.scheduled_for!).getTime()).toBeLessThan(NOW.getTime());
+});
+
+test('promote touches only its own belt', () => {
+  repos.settings.update({ batch_size: 5, msg_batch_size: 5 });
+  queueProfiles('invite', 3);
+  queueProfiles('message', 3);
+  // Confirms the fixture actually produced message-kind rows before promoting — otherwise
+  // this test would be meaningless (see the queueProfiles kind-bug note above).
+  expect(repos.profiles.queuedByPriorityKind('message')).toHaveLength(3);
+  promote(repos, 'message', NOW);
+  expect(repos.profiles.byStatusKind('scheduled', 'invite')).toHaveLength(0);
+  expect(repos.profiles.byStatusKind('scheduled', 'message')).toHaveLength(3);
+});
+
+test('promote pulls already-scheduled rows forward, not just queued ones', () => {
+  repos.settings.update({ batch_size: 5 });
+  queueProfiles('invite', 1);
+  const p = repos.profiles.all()[0];
+  repos.profiles.setScheduled(p.id, '2099-01-01T00:00:00.000Z');
+  expect(promote(repos, 'invite', NOW)).toBe(1);
+  const after = repos.profiles.byStatusKind('scheduled', 'invite')[0];
+  expect(new Date(after.scheduled_for!).getTime()).toBeLessThan(NOW.getTime());
+});
+
+test('promote is a no-op re-stamp on a second call', () => {
+  repos.settings.update({ batch_size: 2 });
+  queueProfiles('invite', 5);
+  expect(promote(repos, 'invite', NOW)).toBe(2);
+  expect(promote(repos, 'invite', NOW)).toBe(2);       // same rows, still due
+  expect(repos.profiles.byStatusKind('scheduled', 'invite')).toHaveLength(2);
+});
+
+test('promote returns 0 rather than over-committing a spent weekly cap', () => {
+  repos.settings.update({ weekly_cap: 1, batch_size: 5 });
+  queueProfiles('invite', 3);
+  const p = repos.profiles.all()[0];
+  repos.events.recordSend(p.id, 'sent');
+  expect(promote(repos, 'invite', NOW)).toBe(0);
+});
+
+test('promote schedules engagements against the engagement batch size', () => {
+  repos.settings.update({ engage_batch_size: 2 });
+  repos.engagements.add('https://www.linkedin.com/feed/update/urn:li:activity:1/', 'urn:li:activity:1', 'like', null);
+  repos.engagements.add('https://www.linkedin.com/feed/update/urn:li:activity:2/', 'urn:li:activity:2', 'like', null);
+  repos.engagements.add('https://www.linkedin.com/feed/update/urn:li:activity:3/', 'urn:li:activity:3', 'like', null);
+  expect(promote(repos, 'engagement', NOW)).toBe(2);
+  expect(repos.engagements.byStatus('scheduled')).toHaveLength(2);
 });
