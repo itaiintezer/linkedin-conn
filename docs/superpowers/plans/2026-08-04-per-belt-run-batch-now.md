@@ -842,7 +842,11 @@ with:
       const w = moveEventWindow(repos, now);
       defaultLog.info('api', 'run-now', { belt, event: w.eventId, from: w.from, to: w.to });
       return {
-        ok: true, belt, promoted: 1, started: false,
+        ok: true, belt, started: false,
+        // No `promoted` here on purpose. On the sender belts that field counts rows moved
+        // to due-now; there is no equivalent count for an event run, and reporting a
+        // hardcoded 1 would put a different unit behind the same name. The window is the
+        // payload.
         event_id: w.eventId, from: w.from, to: w.to,
       };
     }

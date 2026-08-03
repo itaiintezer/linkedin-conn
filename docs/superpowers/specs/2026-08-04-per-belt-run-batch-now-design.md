@@ -72,10 +72,11 @@ Splitting them is what makes the busy case honest.
 The no-belt alias answers `belt: 'all'` with `promoted` as the sum across the three sender
 belts, so a client never has to special-case a missing field.
 
-For `belt: 'event'`, `promoted` is `1` when a reservation was moved (`0` never occurs — a
-belt with nothing to run refuses at pre-flight), and the payload additionally carries
-`event_id` and the new `from`/`to` window. `started` is always `false`: the run is handed to
-`runEventTick`, which fires within 60s.
+`belt: 'event'` omits `promoted` entirely and carries `event_id` plus the new `from`/`to`
+window instead. There is no row count to report — moving one campaign's window is not the
+same unit as promoting N rows, and putting a hardcoded `1` behind the same field name would
+mislead any client that reads `promoted` uniformly. `started` is always `false` for this
+belt: the run is handed to `runEventTick`, which fires within 60s.
 
 ## Behaviour per belt
 
