@@ -1114,3 +1114,85 @@ test('POST /api/profiles treats an explicit null kind as invalid but an omitted 
   expect(omitted.statusCode).toBe(200);
   expect(omitted.json().kind).toBe('invite');
 });
+
+test('POST /api/run-now with belt=message leaves the invite backlog alone', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Inv', text: 'https://linkedin.com/in/belt-inv', message_template: 'Hi', allow_no_note: true },
+  });
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Msg', text: 'https://linkedin.com/in/belt-msg', message_template: 'Hi', kind: 'message' },
+  });
+
+  const res = await app.inject({ method: 'POST', url: '/api/run-now', payload: { belt: 'message' } });
+
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  expect(body.belt).toBe('message');
+  expect(body.promoted).toBe(1);
+  expect(ofKind('invite').every((p) => p.status !== 'sent')).toBe(true);
+});
+
+test('POST /api/run-now rejects an unknown belt', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/run-now', payload: { belt: 'invites' } });
+  expect(res.statusCode).toBe(400);
+});
+
+test('POST /api/run-now refuses while paused and promotes nothing', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'P', text: 'https://linkedin.com/in/paused-1', message_template: 'Hi', allow_no_note: true },
+  });
+  // Park the backlog in the future so "promoted nothing" is observable.
+  for (const p of repos.profiles.all()) repos.profiles.setScheduled(p.id, '2099-01-01T00:00:00.000Z');
+  repos.settings.update({ paused: 1, pause_reason: 'Manual pause' });
+
+  const res = await app.inject({ method: 'POST', url: '/api/run-now', payload: { belt: 'invite' } });
+
+  expect(res.statusCode).toBe(409);
+  expect(JSON.parse(res.body).code).toBe('paused');
+  expect(repos.profiles.all()[0].scheduled_for).toBe('2099-01-01T00:00:00.000Z');
+});
+
+test('POST /api/run-now reports deferred rather than claiming a run it could not do', async () => {
+  const driver2 = new FakeDriver();
+  const lock = new Mutex();
+  const app2 = buildServer(repos, driver2, lock, undefined, { senderOptions: { sleep: async () => {} } });
+  await app2.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Busy', text: 'https://linkedin.com/in/busy-1', message_template: 'Hi', allow_no_note: true },
+  });
+  repos.appState.setLogin({ loggedIn: true, cookieExpiry: null }, '2026-06-29T00:00:00.000Z');
+
+  let release!: () => void;
+  const held = lock.run(() => new Promise<void>((r) => { release = r; }));
+
+  const res = await app2.inject({ method: 'POST', url: '/api/run-now', payload: { belt: 'invite' } });
+
+  const body = JSON.parse(res.body);
+  expect(res.statusCode).toBe(200);
+  expect(body.started).toBe(false);
+  expect(body.deferred).toBe('browser busy');
+  expect(body.promoted).toBe(1);                 // the schedule nudge still landed
+  expect(driver2.sentLog).toHaveLength(0);
+
+  release();
+  await held;
+});
+
+test('POST /api/run-now with nothing queued says so instead of reporting a run', async () => {
+  const res = await app.inject({ method: 'POST', url: '/api/run-now', payload: { belt: 'invite' } });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  expect(body.promoted).toBe(0);
+  expect(body.deferred).toBe('nothing queued');
+});
+
+test('POST /api/run-now with no belt promotes engagements too (the old gap)', async () => {
+  repos.engagements.add('https://www.linkedin.com/feed/update/urn:li:activity:9/', 'urn:li:activity:9', 'like', null);
+  const res = await app.inject({ method: 'POST', url: '/api/run-now' });
+  expect(res.statusCode).toBe(200);
+  expect(JSON.parse(res.body).belt).toBe('all');
+  expect(repos.engagements.byStatus('queued')).toHaveLength(0);
+});

@@ -36,10 +36,13 @@ import {
 import { runEventCampaign } from '../worker/event-runner.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE, MAX_COMMENT } from '../core/message.js';
-import { capsFor, engagementCaps } from '../core/caps.js';
+import { engagementCaps } from '../core/caps.js';
 import type { Logger } from '../core/logger.js';
 import { log as defaultLog } from '../core/log.js';
 import { listDocs, readDoc } from '../core/docs.js';
+import {
+  moveEventWindow, parseBelt, preflight, promote, SENDER_BELTS,
+} from '../worker/run-now.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1019,33 +1022,70 @@ export function buildServer(
     return { ok: true };
   });
 
-  // Manual trigger: promote up to batch_size queued profiles to due-now and run one
-  // sender batch immediately. Respects pause/login/guardrail (runSenderOnce returns early).
-  // Guarded by the shared browser lock so it can't drive the page while the periodic
-  // sender, the acceptance reader or the reply reader is already running. Useful for
-  // sending on demand.
-  app.post('/api/run-now', async () => {
+  /**
+   * Manual trigger, one belt at a time.
+   *
+   * Two separable steps, and the response reports each honestly: PROMOTE is a durable DB
+   * write making that belt's backlog due now, KICK is a best-effort attempt to grab the
+   * shared browser. When the lock is held the promotion still stands and the next 60s tick
+   * drains it — so `started: false, deferred: 'browser busy'` is the truth, where the old
+   * handler answered a flat `{ok:true}`.
+   *
+   * Refusals are pre-flighted BEFORE promoting: a batch promoted while paused would all fire
+   * the instant the operator resumes, outside the planned spread.
+   *
+   * `belt` omitted means every sender belt (invite + message + engagement). Events are never
+   * part of that alias — they are a reserved window, not a queue of due rows.
+   *
+   * Deliberately NOT skipping the inter-send delay: this hits the same LinkedIn account
+   * through the same automation, so a manual batch firing several sends back-to-back is
+   * exactly the burst pattern min_delay_ms/max_delay_ms exist to prevent. `force: true` is
+   * kept — a manual trigger may run outside working hours by design.
+   */
+  app.post('/api/run-now', async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const belt = parseBelt(body.belt);
+    if (belt === null) {
+      return reply.code(400).send({ ok: false, error: `unknown belt: ${String(body.belt)}` });
+    }
+
     const now = new Date();
-    const dueIso = new Date(now.getTime() - 1000).toISOString();
-    const s = repos.settings.get();
-    // Make the next batch due immediately, pulling from queued first, then already-
-    // scheduled (future) profiles, so "Run now" always sends something if work exists.
-    // Promoted per kind, each against its own batch size, so one conveyor's backlog can't
-    // starve the other out of a manual run.
-    const promote = (kind: CampaignKind) =>
-      [...repos.profiles.queuedByPriorityKind(kind), ...repos.profiles.byStatusKind('scheduled', kind)]
-        .slice(0, capsFor(s, kind).batchSize);
-    const candidates = [...promote('invite'), ...promote('message')];
-    defaultLog.info('api', 'run-now', { promoted: candidates.length });
-    for (const p of candidates) repos.profiles.setScheduled(p.id, dueIso);
-    // force: a manual trigger may run outside working hours by design.
-    // Deliberately NOT skipping the inter-send delay here: this hits the same LinkedIn
-    // account through the same automation, so a "Run batch now" that fires several sends
-    // back-to-back is exactly the burst pattern min_delay_ms/max_delay_ms exist to prevent.
-    // The endpoint already awaits the whole batch today, so a slower manual trigger
-    // (safety over responsiveness) is an acceptable trade — no separate "fast" path.
-    await browserLock.tryRun(() => runSenderOnce(repos, driver, now, { force: true, clock: () => new Date(), ...senderOptions }));
-    return { ok: true, promoted: candidates.length };
+    const refusal = preflight(repos, belt, now);
+    if (refusal) {
+      defaultLog.info('api', 'run-now refused', { belt, code: refusal.code });
+      return reply.code(409).send({ ok: false, belt, ...refusal });
+    }
+
+    // The event belt has no due-now queue: move its reserved window and let runEventTick
+    // (≤60s) fire it. Nothing to kick here, hence started: false.
+    if (belt === 'event') {
+      const w = moveEventWindow(repos, now);
+      defaultLog.info('api', 'run-now', { belt, event: w.eventId, from: w.from, to: w.to });
+      return {
+        ok: true, belt, promoted: 1, started: false,
+        event_id: w.eventId, from: w.from, to: w.to,
+      };
+    }
+
+    const belts = belt === 'all' ? SENDER_BELTS : [belt];
+    let promoted = 0;
+    for (const b of belts) promoted += promote(repos, b, now);
+    defaultLog.info('api', 'run-now', { belt, promoted });
+    if (promoted === 0) {
+      return { ok: true, belt, promoted: 0, started: false, deferred: 'nothing queued' };
+    }
+
+    // tryRun resolves to undefined when the lock was held. runSenderOnce itself returns
+    // void, so the callback returns a sentinel — otherwise "did it run?" is unanswerable.
+    const ran = await browserLock.tryRun(async () => {
+      await runSenderOnce(repos, driver, now, {
+        force: true, clock: () => new Date(), ...senderOptions,
+      });
+      return true as const;
+    });
+    return ran === true
+      ? { ok: true, belt, promoted, started: true }
+      : { ok: true, belt, promoted, started: false, deferred: 'browser busy' };
   });
 
   // Manual, on-demand acceptance reconciliation. Read-only against LinkedIn, so it runs
