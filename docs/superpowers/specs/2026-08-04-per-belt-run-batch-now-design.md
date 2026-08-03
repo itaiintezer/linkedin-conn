@@ -59,8 +59,12 @@ Responses:
 200 { ok: true,  belt: 'invite', promoted: 7, started: true }
 200 { ok: true,  belt: 'invite', promoted: 7, started: false, deferred: 'browser busy' }
 200 { ok: true,  belt: 'invite', promoted: 0, started: false, deferred: 'nothing queued' }
-409 { ok: false, belt: 'invite', error: 'paused', message: 'Paused — LinkedIn weekly invitation limit reached' }
+409 { ok: false, belt: 'invite', code: 'paused', error: 'Paused — LinkedIn weekly invitation limit reached' }
 ```
+
+The human sentence lives in `error`, not `message`: the dashboard's `api()` helper already
+reads `error` off a non-ok body and throws it, and every other endpoint in this server uses
+`error` the same way. `code` is the machine-readable name the button maps to a short label.
 
 `promoted` is what definitely happened (a durable DB write); `started` is what may not have.
 Splitting them is what makes the busy case honest.
@@ -124,9 +128,11 @@ belts share the pause/guardrail/login state); the per-belt weekly cap simply ski
 - **Browser lock held.** `tryRun` returns `undefined` → `started: false, deferred: 'browser busy'`.
   The promoted rows are due, so the next 60s sender tick sends them. Nothing is lost and
   nothing is falsely claimed.
-- **Double-click.** The second promote finds the rows already due and promotes 0 more; its
-  kick is dropped by the lock. Answers `promoted: 0, deferred: 'browser busy'`. Idempotence
-  falls out of the design — no in-flight registry is needed.
+- **Double-click.** The second promote re-stamps the same rows to the same due-now instant —
+  a genuine no-op — and its kick is dropped by the lock, so it answers
+  `deferred: 'browser busy'`. `promoted` therefore reads "rows due now", not "rows newly
+  moved", and repeats the first click's count. Idempotence falls out of the design; no
+  in-flight registry is needed.
 - **Two belts in quick succession.** The first kick takes the lock and drains both, because
   the second belt's rows were promoted before the passes reach them; the second request
   answers `deferred`. Correct either way.
