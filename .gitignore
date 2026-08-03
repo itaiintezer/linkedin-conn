@@ -5,3 +5,6 @@ data/
 *.db-*
 .linkedin-profile/
 .superpowers/
+# Finder metadata. Not merely noise: it is untracked, so it used to make `npm run update`
+# refuse to run on every Mac in the team the moment Finder opened the folder.
+.DS_Store
