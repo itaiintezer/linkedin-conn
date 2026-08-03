@@ -813,6 +813,39 @@ in principle cross-confirm. The `• You` badge is read and logged but is Englis
 not load-bearing. Tightening this needs a language-independent ownership signal; the actor
 `href` on `.comments-comment-meta__actor` is the obvious candidate and was not tested.
 
+#### RESOLVED 2026-08-04 — novelty, not identity
+
+Re-verified live first: on `urn:li:activity:7487584764410019841` the marker still matched zero
+rows (`attributable=false`), confirming this is live behaviour and not a one-off.
+
+The actor-href route was investigated and **rejected**. It needs the operator's own profile
+URL, which this app does not hold: there is no such column, the global-nav "Me" control is a
+`<button>` with no `href`, and the comment composer form contains no avatar `img`. The real
+class is also `a.comments-comment-meta__description-container`, not `.comments-comment-meta__actor`.
+Matching on the comment's post id was rejected too — that `ugcPost` id appears in exactly one
+other place on the page, an ad "Boost" link that only renders when the operator administers
+the post, so it is not recoverable in general.
+
+What replaced it needs no identity at all: **snapshot every rendered comment `data-id` in the
+instant before the submit click; our comment is the row that is new AND carries our needle.**
+Language-independent, URN-independent, no schema change.
+
+Two structural changes came with it:
+
+- The verdict moved OUT of `page.evaluate` into the pure, tested `confirmPostedComment`. The
+  driver's `readThread` now only reads. That the old verdict was unreachable from any test is
+  precisely why a marker matching zero rows survived a live run reporting success.
+- There is deliberately **no** "no new row, so accept any row with the text" fallback. That
+  fallback *was* the old behaviour and is exactly the cross-confirmation hole above. Strictness
+  costs an `unverified` (which parks for a human and cannot double-post, since comments never
+  auto-retry) instead of a wrong `done`.
+- `urnNumericId`, `CommentIdParts`, `commentIdParts` and `commentRowsForPost` were deleted —
+  all four served the disproven post-URN attribution model and were dead outside their tests.
+
+Residual, documented in code: `knownIds` covers only the rows rendered when it was taken, so a
+thread that lazily loads older comments after the click could present one as new — but only a
+row also containing our needle verbatim could be mistaken for ours.
+
 ### Still unverified
 
 - The remaining three reactions (`support`, `love`, `funny`). The flyout mechanism is proven,

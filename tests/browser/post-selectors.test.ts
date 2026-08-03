@@ -1,8 +1,9 @@
 import { test, expect } from 'vitest';
 import { REACTIONS } from '../../src/core/engagement-action.js';
 import {
-  PSEL, REACTION_ICON_TYPE, REACTION_LABEL, reactionEntry, commentRowsForPost,
-  existingReactionFrom, urnNumericId, commentIdParts, commentNeedle,
+  PSEL, REACTION_ICON_TYPE, REACTION_LABEL, reactionEntry,
+  existingReactionFrom, commentNeedle,
+  confirmPostedComment, type ThreadRow,
   POST_LOAD_TIMEOUT_MS, FLYOUT_TIMEOUT_MS, REACTED_TIMEOUT_MS, SUBMIT_ARM_TIMEOUT_MS,
   COMMENT_CONFIRM_TIMEOUT_MS,
 } from '../../src/browser/post-selectors.js';
@@ -58,7 +59,6 @@ function allSelectors(): string[] {
   return [
     ...Object.values(PSEL),
     ...REACTIONS.map(reactionEntry),
-    commentRowsForPost('7489401096851906561'),
   ];
 }
 
@@ -164,10 +164,88 @@ test('composer selectors match the live Quill editor and form', () => {
   expect(PSEL.commentBody).toBe('span.comments-comment-item__main-content');
 });
 
-test('commentRowsForPost keys a comment row on the post id embedded in its data-id', () => {
-  expect(commentRowsForPost('7489401096851906561')).toBe(
-    'article.comments-comment-entity[data-id^="urn:li:comment:(activity:7489401096851906561,"]',
-  );
+// --- confirmPostedComment ---------------------------------------------------------------
+//
+// The verdict used to be computed inside page.evaluate, which is why the broken attribution
+// marker below survived a live run: nothing could reach it from a test. It is a pure
+// function over what the page reported, so all of this runs without a browser.
+
+/** The comment this pipeline actually posted on 2026-08-02, verbatim from the live DOM.
+ *  Its data-id is keyed on a `ugcPost` URN with an id that appears NOWHERE else — the post's
+ *  own container called itself `urn:li:activity:7487584764410019841`. */
+const LIVE_ID = 'urn:li:comment:(ugcPost:7487584763386560512,7489660459537788928)';
+
+const row = (dataId: string, body: string, meta = ''): ThreadRow => ({ dataId, body, meta });
+
+test('confirmPostedComment matches a comment whose URN type and id we could never have known', () => {
+  // THE REGRESSION. The old marker was `(activity:<container id>,` and this row does not
+  // contain it, so attribution was silently false on every ugcPost-backed post (which is
+  // what a re-share is) and the verdict fell back to "any row containing our text".
+  // Novelty is what identifies our comment now, so the URN is not consulted at all.
+  const seen = confirmPostedComment([row(LIVE_ID, '👀', 'Itai Tevet • You')], [''], '👀', []);
+  expect(seen.matched).toBe(true);
+  expect(seen.commentId).toBe(LIVE_ID);
+  expect(seen.cleared).toBe(true);
+});
+
+test('confirmPostedComment refuses a needle-bearing row that was already in the thread', () => {
+  // The cross-confirmation case the design doc flags: somebody else's comment carrying our
+  // text must never confirm ours. It was present BEFORE we clicked submit, so it is not ours,
+  // and no amount of text match may promote it.
+  const stranger = row('urn:li:comment:(ugcPost:7487584763386560512,111)', 'great post 👀');
+  const seen = confirmPostedComment([stranger], [''], 'great post 👀', [stranger.dataId]);
+  expect(seen.matched).toBe(false);
+  expect(seen.commentId).toBeNull();
+});
+
+test('confirmPostedComment matches the new row on a thread that started empty', () => {
+  // A re-share detail page with no comments yet — verified live on
+  // urn:li:ugcPost:7490079826100297728, which rendered zero comment rows.
+  const seen = confirmPostedComment([row(LIVE_ID, 'welcome to Black Hat')], [''],
+    'welcome to Black Hat', []);
+  expect(seen.matched).toBe(true);
+});
+
+test('confirmPostedComment picks OUR new row out of several that arrived', () => {
+  const old = row('urn:li:comment:(activity:1,111)', 'an older comment');
+  const other = row('urn:li:comment:(activity:1,222)', 'someone else, also new');
+  const ours = row('urn:li:comment:(activity:1,333)', 'ours 👀');
+  const seen = confirmPostedComment([old, other, ours], [''], 'ours 👀', [old.dataId]);
+  expect(seen.commentId).toBe(ours.dataId);
+  expect(seen.matched).toBe(true);
+});
+
+test('confirmPostedComment reports not-cleared while a composer still holds our text', () => {
+  // `cleared` is the second independent signal, and a composer that still shows the text
+  // means the submit did not take. Parks as `unverified` rather than claiming success.
+  const seen = confirmPostedComment([row(LIVE_ID, '👀')], ['👀'], '👀', []);
+  expect(seen.matched).toBe(true);
+  expect(seen.cleared).toBe(false);
+});
+
+test('confirmPostedComment reads the English You badge without letting it decide', () => {
+  // Corroborating only — LinkedIn has been observed rendering Hebrew, so a missing badge must
+  // never cost a confirmed comment.
+  expect(confirmPostedComment([row(LIVE_ID, '👀', 'Itai Tevet • You Premium')], [''], '👀', []))
+    .toMatchObject({ matched: true, ownBadge: true });
+  expect(confirmPostedComment([row(LIVE_ID, '👀', 'איתי טבת')], [''], '👀', []))
+    .toMatchObject({ matched: true, ownBadge: false });
+});
+
+test('confirmPostedComment confirms nothing on an empty needle', () => {
+  // A whitespace-only comment cannot be recognised in the thread, so it must not be able to
+  // confirm by matching every row. Mirrors the `want.length > 0` guard this replaces.
+  const seen = confirmPostedComment([row(LIVE_ID, '👀')], [''], '', []);
+  expect(seen.matched).toBe(false);
+  expect(seen.cleared).toBe(false);
+});
+
+test('confirmPostedComment tolerates the whitespace the rendered thread collapses', () => {
+  // Both sides are normalized: the needle comes from commentNeedle and the body from
+  // textContent, and the thread wraps and indents freely.
+  const seen = confirmPostedComment([row(LIVE_ID, 'Congrats on the launch')], [''],
+    commentNeedle('Congrats   on the\n  launch'), []);
+  expect(seen.matched).toBe(true);
 });
 
 // --- existingReactionFrom ---------------------------------------------------------------
@@ -198,40 +276,6 @@ test('existingReactionFrom returns undefined for anything that is not a bare Unr
   expect(existingReactionFrom(null)).toBeUndefined();
   expect(existingReactionFrom(undefined)).toBeUndefined();
   expect(existingReactionFrom('Unreact')).toBeUndefined();
-});
-
-// --- URN / comment-id parsing -----------------------------------------------------------
-
-test('urnNumericId extracts the id from any urn:li type', () => {
-  expect(urnNumericId('urn:li:activity:7489401096851906561')).toBe('7489401096851906561');
-  expect(urnNumericId('urn:li:share:7489401095899770880')).toBe('7489401095899770880');
-  expect(urnNumericId('urn:li:ugcPost:7123')).toBe('7123');
-});
-
-test('urnNumericId returns null rather than guessing', () => {
-  expect(urnNumericId('urn:li:activity:not-a-number')).toBeNull();
-  expect(urnNumericId('7489401096851906561')).toBeNull();
-  expect(urnNumericId('urn:li:activity:7489401096851906561/')).toBeNull();
-  expect(urnNumericId('')).toBeNull();
-  expect(urnNumericId(null)).toBeNull();
-  expect(urnNumericId(undefined)).toBeNull();
-});
-
-test('commentIdParts splits a live comment data-id', () => {
-  // Verbatim from the comment this pipeline actually posted (2026-08-02).
-  expect(commentIdParts('urn:li:comment:(activity:7489401096851906561,7489611829028102144)')).toEqual({
-    postType: 'activity', postId: '7489401096851906561', commentId: '7489611829028102144',
-  });
-});
-
-test('commentIdParts returns null for anything malformed', () => {
-  expect(commentIdParts('urn:li:comment:(activity:abc,def)')).toBeNull();
-  expect(commentIdParts('urn:li:comment:(activity:123)')).toBeNull();
-  expect(commentIdParts('urn:li:activity:123')).toBeNull();
-  expect(commentIdParts('urn:li:comment:(activity:123,456')).toBeNull();
-  expect(commentIdParts('')).toBeNull();
-  expect(commentIdParts(null)).toBeNull();
-  expect(commentIdParts(undefined)).toBeNull();
 });
 
 // --- commentNeedle ----------------------------------------------------------------------

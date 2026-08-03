@@ -239,11 +239,6 @@ export function reactionEntry(reaction: Reaction): string {
     + `:has(img[data-test-reactions-icon-type="${REACTION_ICON_TYPE[reaction]}"])`;
 }
 
-/** Comment rows belonging to one post id, whatever URN type the container reported. */
-export function commentRowsForPost(postId: string): string {
-  return `article.comments-comment-entity[data-id^="urn:li:comment:(activity:${postId},"]`;
-}
-
 /**
  * The reaction named by a reacted trigger's `aria-label` ("Unreact Like" -> "like").
  *
@@ -266,24 +261,11 @@ export function existingReactionFrom(ariaLabel: string | null | undefined): stri
   return m ? m[1].toLowerCase() : undefined;
 }
 
-/** The numeric id inside a `urn:li:<type>:<id>`, or null. Used to match a post against the
- *  post id embedded in a comment's `data-id`. */
-export function urnNumericId(urn: string | null | undefined): string | null {
-  return /^urn:li:[A-Za-z]+:(\d+)$/.exec((urn ?? '').trim())?.[1] ?? null;
-}
-
-export interface CommentIdParts {
-  /** The post's URN type as the comment reports it — `activity` on every observed row. */
-  postType: string;
-  postId: string;
-  commentId: string;
-}
-
-/** Split `urn:li:comment:(activity:<postId>,<commentId>)`. Null for anything else. */
-export function commentIdParts(dataId: string | null | undefined): CommentIdParts | null {
-  const m = /^urn:li:comment:\(([A-Za-z]+):(\d+),(\d+)\)$/.exec((dataId ?? '').trim());
-  return m ? { postType: m[1], postId: m[2], commentId: m[3] } : null;
-}
+// REMOVED 2026-08-04: urnNumericId, CommentIdParts, commentIdParts and commentRowsForPost.
+// All four existed to attribute a comment to its post through the post URN embedded in the
+// comment's own `data-id`. That scheme does not work and cannot be made to — the id there
+// belongs to a `ugcPost` URN we never hold (see confirmPostedComment). They were dead outside
+// their own tests, and leaving them would invite someone to rebuild the broken model.
 
 /**
  * The needle used to recognise our own comment in the thread.
@@ -301,6 +283,86 @@ export function commentNeedle(text: string, maxCodePoints = 40): string {
   const firstLine = text.replace(/\r\n?/g, '\n').split('\n')[0] ?? '';
   const normalized = firstLine.replace(/\s+/g, ' ').trim();
   return [...normalized].slice(0, Math.max(0, maxCodePoints)).join('');
+}
+
+/** One comment row as the page reported it. Whitespace already collapsed on both text
+ *  fields, because the rendered thread wraps and indents freely. */
+export interface ThreadRow {
+  /** `urn:li:comment:(<type>:<postId>,<commentId>)`, verbatim. Used as an OPAQUE identity —
+   *  see confirmPostedComment for why nothing here parses it. */
+  dataId: string;
+  body: string;
+  meta: string;
+}
+
+export interface CommentConfirmation {
+  /** A row that is provably ours appeared in the thread. */
+  matched: boolean;
+  commentId: string | null;
+  /** The English `• You` badge. Corroborating only, NEVER load-bearing. */
+  ownBadge: boolean;
+  /** No composer still holds the text we typed. */
+  cleared: boolean;
+}
+
+/**
+ * Decide whether the comment we just submitted is in the thread.
+ *
+ * NOVELTY IS THE OWNERSHIP PROOF. A row that was not in the thread before we clicked submit,
+ * and that carries our text, is ours. Nothing else can establish that:
+ *
+ *  - The comment's own `data-id` CANNOT. It is keyed on a `ugcPost` URN whose id appears
+ *    nowhere else — live 2026-08-02, a post whose container read
+ *    `urn:li:activity:7487584764410019841` produced
+ *    `urn:li:comment:(ugcPost:7487584763386560512,7489660459537788928)`. Both the type and the
+ *    number differ from anything we hold, so the old `(activity:<containerId>,` marker matched
+ *    zero rows and silently disabled attribution on every ugcPost-backed post — which is what
+ *    a re-share is. Re-verified live 2026-08-04. That id is recoverable from the page in
+ *    exactly one other place: an ad "Boost" link that only exists when the operator
+ *    administers the post. So it is not a signal, and this function never reads it.
+ *  - The `• You` badge cannot: it is English, and LinkedIn has been observed rendering Hebrew.
+ *  - The actor href could, but only against the operator's own profile URL, which this app
+ *    does not know (no such column, the global-nav "Me" control is a `<button>` with no href,
+ *    and the composer form carries no avatar). Novelty needs no identity at all.
+ *
+ * STRICT ON PURPOSE — there is no "no new row, so accept any row carrying the text" fallback.
+ * That fallback is what the old code degraded into, and it is precisely the cross-confirmation
+ * hole the design doc warns about: two operators posting the same text on one post, or a
+ * stranger quoting us, would confirm our comment for us. Being strict costs an `unverified`
+ * on a thread that re-rendered every id, which parks the row for a human — and comments never
+ * auto-retry, so parking can never publish twice. Claiming a stranger's comment as ours is
+ * unrecoverable; parking is not.
+ *
+ * RESIDUAL HOLE, stated rather than papered over: `knownIds` can only describe the rows that
+ * were RENDERED when it was taken. A long thread that lazily loads older comments after the
+ * click presents them as new, so one of those could in principle be mistaken for ours — but
+ * only if it also contains our needle verbatim. That is a far narrower target than the
+ * behaviour this replaces, which accepted any row on the page carrying the text, new or not.
+ *
+ * PURE, and outside the page on purpose. The verdict used to live inside `page.evaluate`,
+ * which is exactly why the broken marker survived a live run — no test could reach it. The
+ * reads stay in one evaluate so both signals still describe the same instant; only the
+ * judgement moved out.
+ */
+export function confirmPostedComment(
+  rows: readonly ThreadRow[],
+  editors: readonly string[],
+  needle: string,
+  knownIds: readonly string[],
+): CommentConfirmation {
+  // An empty needle matches every row's body. Guarding here rather than at the call site
+  // keeps "a comment we cannot recognise confirms nothing" true for every caller.
+  if (needle.length === 0) {
+    return { matched: false, commentId: null, ownBadge: false, cleared: false };
+  }
+  const before = new Set(knownIds);
+  const hit = rows.find((r) => !before.has(r.dataId) && r.body.includes(needle));
+  return {
+    matched: hit !== undefined,
+    commentId: hit?.dataId ?? null,
+    ownBadge: hit !== undefined && /•\s*You\b/.test(hit.meta),
+    cleared: !editors.some((t) => t.includes(needle)),
+  };
 }
 
 /** How long a post detail page gets to render its container. */
