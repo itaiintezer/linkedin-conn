@@ -93,9 +93,14 @@ export function preflight(repos: Repos, belt: BeltArg, now: Date): Refusal | nul
     return { code: 'paused', error: s.pause_reason ? `Paused — ${s.pause_reason}` : 'Paused' };
   }
   if (a.guardrail_tripped === 1) {
+    // `guardrail_detail` is the operator-facing sentence; `guardrail_reason` is the enum
+    // ('checkpoint' | 'login_lost' | 'repeated_failures'). Showing the enum here would put
+    // a machine token in the slot this type promises is human-readable.
     return {
       code: 'guardrail',
-      error: a.guardrail_reason ? `Halted — ${a.guardrail_reason}` : 'Halted by the guardrail',
+      error: a.guardrail_detail ?? (a.guardrail_reason
+        ? `Halted — ${a.guardrail_reason}`
+        : 'Halted by the guardrail'),
     };
   }
   if (a.login_logged_in !== 1) {

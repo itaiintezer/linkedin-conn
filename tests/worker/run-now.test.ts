@@ -55,6 +55,7 @@ test('preflight refuses a tripped guardrail', () => {
   repos.appState.trip('repeated_failures', 'five in a row', NOW.toISOString());
   const r = preflight(repos, 'invite', NOW);
   expect(r?.code).toBe('guardrail');
+  expect(r?.error).toContain('five in a row');
 });
 
 test('preflight refuses when logged out', () => {
