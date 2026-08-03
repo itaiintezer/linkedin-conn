@@ -11,12 +11,20 @@
  * in-memory database.
  */
 import type { Repos } from '../db/repositories.js';
-import type { CampaignKind } from '../types.js';
 import { capsFor, engagementCaps } from '../core/caps.js';
 import { windowStartIso, remainingCapacity } from '../core/rate-limit.js';
 
-/** The four conveyors on the dashboard, each with its own manual trigger. */
-export type Belt = 'invite' | 'message' | 'engagement' | 'event';
+/**
+ * The four conveyors on the dashboard, each with its own manual trigger.
+ *
+ * `BELTS` is the single source of truth: `Belt` is DERIVED from it, so the runtime list and
+ * the compile-time type can never drift. Mirrors src/core/campaign-kind.ts, and for the same
+ * reason — without this direction, adding a fifth belt to a hand-written `Belt` union would
+ * compile cleanly while `parseBelt` silently rejected it forever, with no compiler error to
+ * catch the omission.
+ */
+export const BELTS = ['invite', 'message', 'engagement', 'event'] as const;
+export type Belt = typeof BELTS[number];
 /** `all` is the no-belt alias: every SENDER belt, which deliberately excludes events. */
 export type BeltArg = Belt | 'all';
 
@@ -26,7 +34,7 @@ export type BeltArg = Belt | 'all';
  */
 export const SENDER_BELTS: readonly Exclude<Belt, 'event'>[] = ['invite', 'message', 'engagement'];
 
-const BELT_ARGS: readonly BeltArg[] = ['invite', 'message', 'engagement', 'event', 'all'];
+const BELT_ARGS: readonly BeltArg[] = [...BELTS, 'all'];
 
 /** An unrecognised belt is null (a 400), not a silent fallback to 'all' — a typo'd belt
  *  must never quietly promote every pipeline. */
@@ -49,9 +57,11 @@ export function weeklyRemaining(
       repos.engagements.countReactedSince(windowStartIso(now)),
     );
   }
-  const kind = belt as CampaignKind;
+  // TypeScript already narrows `belt` to 'invite' | 'message' here, which IS CampaignKind —
+  // no cast needed, so a future Belt member that isn't a CampaignKind fails the build here
+  // rather than being silently swallowed by an `as`.
   return remainingCapacity(
-    capsFor(s, kind).weeklyCap,
-    repos.events.countSentSince(windowStartIso(now), kind),
+    capsFor(s, belt).weeklyCap,
+    repos.events.countSentSince(windowStartIso(now), belt),
   );
 }

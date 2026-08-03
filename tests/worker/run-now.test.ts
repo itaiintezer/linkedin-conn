@@ -29,3 +29,17 @@ test('weeklyRemaining reads each belt against its own cap', () => {
   expect(weeklyRemaining(repos, 'message', NOW)).toBe(20);
   expect(weeklyRemaining(repos, 'engagement', NOW)).toBe(30);
 });
+
+test('weeklyRemaining subtracts what has already gone out this week', () => {
+  repos.settings.update({ weekly_cap: 10, engage_weekly_cap: 30 });
+  const c = repos.cohorts.create('C', null, true);
+  const p = repos.profiles.add(c.id, 'https://www.linkedin.com/in/counted', null);
+  repos.events.recordSend(p.id, 'sent', NOW.toISOString());
+  expect(weeklyRemaining(repos, 'invite', NOW)).toBe(9);
+  // Untouched by an invite send — proves per-belt capacity is actually per-belt.
+  expect(weeklyRemaining(repos, 'message', NOW)).toBe(250);
+
+  const e = repos.engagements.add('https://www.linkedin.com/posts/abc', 'urn:li:activity:1', 'like', null);
+  repos.engagements.setStatus(e.id, 'sent', { reacted_at: NOW.toISOString() });
+  expect(weeklyRemaining(repos, 'engagement', NOW)).toBe(29);
+});
