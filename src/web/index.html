@@ -178,9 +178,19 @@
                  The verdict comes back as a rewritten label ("Triggered 7", "Nothing queued"),
                  which a screen reader will not reliably speak once focus has moved on — so
                  each button carries the same visually-hidden status span as .recheck-btn
-                 (cf. #recheckStatus). Ids are #run<Belt>Status, one per data-belt value. -->
+                 (cf. #recheckStatus). Ids are #run<Belt>Status, one per data-belt value.
+                 `run-belt-status` is a scripting hook, not a style hook: it carries no CSS of
+                 its own and exists so the handler can pair a button with its live region
+                 without hard-coding four ids. All the styling is in `visually-hidden`.
+
+                 Each aria-label names its pipeline the way the app names it everywhere else
+                 (kindMark, the cohort panels, the kind toggle) rather than the way this card's
+                 fuel label abbreviates it — "connection requests", not "invites", because
+                 heard on its own "Run now, invites" is a hair away from the event card's
+                 "Run now, event invites" and these fire different irreversible actions. The
+                 titles stay in the visible card's vocabulary; a sighted user has the card. -->
             <button class="run-belt" type="button" data-belt="invite"
-                    title="Send one invite batch right now" aria-label="Run now, invites">Run now</button>
+                    title="Send one invite batch right now" aria-label="Run now, connection requests">Run now</button>
             <span class="visually-hidden run-belt-status" id="runInviteStatus" role="status" aria-live="polite"></span>
           </div>
         </div>
@@ -420,7 +430,7 @@
               <span id="engNextTxt">—</span>
             </span>
             <button class="run-belt" type="button" data-belt="engagement"
-                    title="Run one engagement batch right now" aria-label="Run now, engagements">Run now</button>
+                    title="Run one post-engagement batch right now" aria-label="Run now, post engagements">Run now</button>
             <span class="visually-hidden run-belt-status" id="runEngagementStatus" role="status" aria-live="polite"></span>
           </div>
         </div>
