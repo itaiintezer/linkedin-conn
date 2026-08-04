@@ -231,18 +231,32 @@ export class PostRepo {
    * deliberate — the key is either `posted_at` or `first_seen_at`, both GLOB-checked ISO
    * shapes in schema.sql that can never contain a `|`, so the first pipe is always the
    * separator; splitting on the LAST one is what let a cursor with an extra `|` silently
-   * re-serve an already-seen row. `sep <= 0` rejects both no-pipe-found (-1) and an
-   * empty key (0), and a non-integer id is rejected outright rather than silently
-   * producing a wrong page.
+   * re-serve an already-seen row.
+   *
+   * Both halves are validated against a strict shape rather than merely coerced:
+   *  - the id half must be all digits. `Number.isInteger` alone let `""` through as `0`
+   *    (`Number('') === 0`), which then excluded every row AT the cursor's key via
+   *    `p.id < 0` — silently dropping the rest of a tie group rather than re-serving it,
+   *    the one case among these that loses rows instead of repeating them. Digits-only
+   *    also rejects `-1`, `1e3`, hex, and anything past safe-integer precision, none of
+   *    which a real cursor should ever contain.
+   *  - the key half must match the same ISO shape the schema's GLOB CHECK enforces on
+   *    `posted_at`/`first_seen_at`. Unvalidated, any string sorting above all real data
+   *    (e.g. injected SQL text) satisfies `SORT_KEY < ?` for every row and silently
+   *    re-serves page one — parameterization means this was never an injection risk, just
+   *    a wrong page with no signal that the cursor was garbage.
    */
   feed(filter: PostFilter, limit: number, cursor: string | null): FeedPost[] {
     const params: unknown[] = [];
     let keyset = '';
     if (cursor !== null) {
       const sep = cursor.indexOf('|');
-      const id = Number(cursor.slice(sep + 1));
-      if (sep <= 0 || !Number.isInteger(id)) throw new Error(`malformed feed cursor: ${cursor}`);
       const key = cursor.slice(0, sep);
+      const idPart = cursor.slice(sep + 1);
+      if (sep <= 0 || !/^\d+$/.test(idPart) || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(key)) {
+        throw new Error(`malformed feed cursor: ${cursor}`);
+      }
+      const id = Number(idPart);
       keyset = `AND (${SORT_KEY} < ? OR (${SORT_KEY} = ? AND p.id < ?))`;
       params.push(key, key, id);
     }
@@ -296,12 +310,22 @@ export class PostRepo {
    * editable, 0 is the value an operator would guess means "keep everything forever", and
    * the naive cutoff math does the opposite — it makes every un-engaged post instantly
    * overdue and wipes the New feed in one tick, recoverable only by re-paying Apify to
-   * re-sweep. A non-finite `days` (NaN, or a bad settings row coercing to undefined) must
-   * not throw out of `new Date(...).toISOString()` either, because this runs inside a
-   * scheduler tick and tick handlers must never throw (see orchestrator.ts).
+   * re-sweep. A non-finite `days` (NaN, or a settings value that arrives as a string —
+   * `Number.isFinite('30')` is `false`, with no coercion) must not throw out of
+   * `new Date(...).toISOString()` either, because this runs inside a scheduler tick and
+   * tick handlers must never throw (see orchestrator.ts).
+   *
+   * The refusal is logged, not silent: the whole point of the upsertMany reject/duplicate
+   * fix above is that a silent drop is worse than a loud one, and an invalid `days` means
+   * retention never runs again — New grows without bound with nothing in the log to say
+   * why, which is exactly the "load-bearing" failure mode this method's own comment warns
+   * about.
    */
   prune(days: number, now: Date): number {
-    if (!Number.isFinite(days) || days < 1) return 0;
+    if (!Number.isFinite(days) || days < 1) {
+      log.warn('posts', 'prune refused an out-of-range retention window', { days });
+      return 0;
+    }
     const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
     return Number(this.db.prepare(
       `DELETE FROM posts WHERE engagement_id IS NULL

@@ -301,6 +301,21 @@ test('feed() rejects a malformed cursor rather than silently returning a wrong p
   expect(() => repos.posts.feed('new', 20, '|5')).toThrow(/malformed feed cursor/);
   // Non-integer id half.
   expect(() => repos.posts.feed('new', 20, '2026-08-03T09:00:00.000Z|abc')).toThrow(/malformed feed cursor/);
+  // Trailing pipe, empty id half. This is the one that used to slip through:
+  // Number('') === 0 and Number.isInteger(0) is true, so `id` became 0 and `p.id < 0`
+  // silently excluded every row at that key — the only malformed shape that DROPS rows
+  // rather than repeating a page. Must throw, not return an (empty) result set.
+  expect(() => repos.posts.feed('new', 20, '2026-08-03T09:00:00.000Z|')).toThrow(/malformed feed cursor/);
+  // Digits-only also closes off values Number.isInteger would have accepted: negative,
+  // scientific notation, and leading/trailing whitespace.
+  expect(() => repos.posts.feed('new', 20, '2026-08-03T09:00:00.000Z|-1')).toThrow(/malformed feed cursor/);
+  expect(() => repos.posts.feed('new', 20, '2026-08-03T09:00:00.000Z|1e3')).toThrow(/malformed feed cursor/);
+  expect(() => repos.posts.feed('new', 20, '2026-08-03T09:00:00.000Z| 2')).toThrow(/malformed feed cursor/);
+  // A garbage key that isn't the schema's ISO shape must also throw — unvalidated, any
+  // string sorting above real data satisfies SORT_KEY < ? for every row and silently
+  // re-serves page one. Parameterization means this was never an injection risk, just a
+  // wrong page with no signal.
+  expect(() => repos.posts.feed('new', 20, "x' OR 1=1 --|1")).toThrow(/malformed feed cursor/);
 });
 
 test('keyset pagination visits every post exactly once, in order, across ties and a NULL posted_at', () => {
