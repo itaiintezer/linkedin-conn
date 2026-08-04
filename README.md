@@ -310,17 +310,25 @@ could spend the whole day's allowance.
 Posts you never engage with age out after `posts_retention_days` — anything you did react to
 or comment on is kept regardless of age, as the record of what was done.
 
-| Setting | Default | What it does |
-|---|---|---|
-| `posts_sweep_per_day` | 1 | Sweep passes per day |
-| `posts_max_per_sweep` | 3 | Posts fetched per profile per sweep |
-| `posts_retention_days` | 30 | Un-engaged posts older than this are dropped from the feed |
-| `tracked_profile_cap` | 200 | Maximum active tracked profiles |
+| Setting | Default | Range | What it does |
+|---|---|---|---|
+| `posts_sweep_per_day` | 1 | 0–4 | Sweep passes per day; **0 means never sweep automatically** |
+| `posts_max_per_sweep` | 3 | 1–25 | Posts fetched per profile per sweep |
+| `posts_retention_days` | 30 | 1–365 | Un-engaged posts older than this are dropped from the feed |
+| `tracked_profile_cap` | 200 | 1–1000 | Maximum active tracked profiles |
 
-`posts_sweep_batch_size` (default 200) also exists, but it is **not a dial** — it is a safety
-valve that splits one sweep into multiple Apify runs only if the tracked-profile cap is ever
-raised well past its default; in ordinary use one run covers every tracked profile and this
-setting has no visible effect.
+Those ranges are enforced on save — the Settings form and `POST /api/settings` both reject an
+out-of-range value, and reject the **whole** patch rather than half-applying it. They exist
+because these four multiply into a pay-per-result Apify bill that nothing downstream re-checks:
+the sweep runs unattended. `posts_max_per_sweep` in particular cannot be 0, because it reaches
+the actor as `maxPosts` where 0 means *all posts, ever* — which is also what you would type to
+mean "off". To turn sweeping off, set `posts_sweep_per_day` to 0. Full table of every setting's
+range: [API.md](API.md).
+
+`posts_sweep_batch_size` (default 200, range 1–1000) also exists, but it is **not a dial** — it
+is a safety valve that splits one sweep into multiple Apify runs only if the tracked-profile cap
+is ever raised well past its default; in ordinary use one run covers every tracked profile and
+this setting has no visible effect.
 
 ## Connections
 

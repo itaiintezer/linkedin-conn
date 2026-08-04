@@ -7,6 +7,7 @@ import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
 import type { ApifyPostsClient } from '../../src/core/apify-posts-client.js';
+import { SETTING_RULES } from '../../src/core/settings-rules.js';
 import type { FastifyInstance } from 'fastify';
 
 let repos: Repos; let app: FastifyInstance;
@@ -509,17 +510,41 @@ test('sweep-now with nothing tracked is a 400', async () => {
 });
 
 /* ---------- settings validation ----------------------------------------------
-   POST /api/settings allowlists key NAMES and writes values through untouched, which is
-   harmless for pacing dials and is not harmless here: `posts_max_per_sweep` becomes the
-   actor's `maxPosts`, where 0 means "all posts, ever" — the exact value an operator types
-   to mean "off". These tests pin the outermost of the three guards. */
+   Every posts setting is range-checked by the shared table in src/core/settings-rules.ts, the
+   same one every other numeric setting uses. It matters more here than for a pacing dial:
+   `posts_max_per_sweep` becomes the actor's `maxPosts`, where 0 means "all posts, ever" — the
+   exact value an operator types to mean "off". These tests pin the outermost of the three
+   guards, through the route rather than against the table directly.
+
+   Failure text is asserted via SETTING_RULES[key].label rather than by quoting the sentence,
+   because the wording belongs to the rule table and is covered by its own tests. What must not
+   drift is that the message names THIS key's operator-facing label — the one thing that tells
+   the reader which box to go fix. */
+
+/** The floors that exist to stop an unattended sweep spending money. */
+const POSTS_FLOORS = {
+  posts_max_per_sweep: 1,
+  posts_retention_days: 1,
+  tracked_profile_cap: 1,
+  posts_sweep_batch_size: 1,
+  posts_sweep_per_day: 0,
+} as const;
+
+/* The guard behind every test below. Asserted against the table rather than through a request
+   because a posts key silently dropping out of SETTING_RULES would make the route accept
+   anything for it, and every "is refused" test below would then be testing nothing. */
+test('every posts setting is ruled, with the floor that protects the Apify bill', () => {
+  for (const [key, min] of Object.entries(POSTS_FLOORS)) {
+    expect(SETTING_RULES[key], `${key} has no rule`).toBeDefined();
+    expect(SETTING_RULES[key].min, `${key} floor`).toBe(min);
+  }
+});
 
 test('posts_max_per_sweep of 0 is refused, because 0 means "everything" to the actor', async () => {
   const before = repos.settings.get().posts_max_per_sweep;
   const res = await post('/api/settings', { posts_max_per_sweep: 0 });
   expect(res.statusCode).toBe(400);
-  expect(res.json().error).toMatch(/posts_max_per_sweep/);
-  expect(res.json().error).toMatch(/1 or more/);
+  expect(res.json().error).toContain(SETTING_RULES.posts_max_per_sweep.label);
   expect(repos.settings.get().posts_max_per_sweep).toBe(before);   // nothing was written
 });
 
@@ -527,14 +552,14 @@ test('posts_retention_days and tracked_profile_cap also refuse 0', async () => {
   for (const key of ['posts_retention_days', 'tracked_profile_cap', 'posts_sweep_batch_size']) {
     const res = await post('/api/settings', { [key]: 0 });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toMatch(new RegExp(key));
+    expect(res.json().error).toContain(SETTING_RULES[key].label);
   }
 });
 
 test('a fractional posts setting is refused', async () => {
   const res = await post('/api/settings', { posts_max_per_sweep: 2.5 });
   expect(res.statusCode).toBe(400);
-  expect(res.json().error).toMatch(/posts_max_per_sweep/);
+  expect(res.json().error).toContain(SETTING_RULES.posts_max_per_sweep.label);
   expect(res.json().error).toMatch(/whole number/);
 });
 
@@ -545,7 +570,7 @@ test('a non-finite or non-numeric posts setting is refused', async () => {
   for (const bad of [null, 'lots', true, {}]) {
     const res = await post('/api/settings', { posts_max_per_sweep: bad });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toMatch(/posts_max_per_sweep/);
+    expect(res.json().error).toContain(SETTING_RULES.posts_max_per_sweep.label);
   }
 });
 
@@ -555,7 +580,18 @@ test('a non-finite or non-numeric posts setting is refused', async () => {
 test("a numeric string is refused rather than coerced", async () => {
   const res = await post('/api/settings', { posts_retention_days: '30' });
   expect(res.statusCode).toBe(400);
-  expect(res.json().error).toMatch(/posts_retention_days/);
+  expect(res.json().error).toContain(SETTING_RULES.posts_retention_days.label);
+});
+
+/* The ceilings arrived with the shared table — the original guard had floors only, so a
+   mistyped extra digit (30 -> 300 posts per profile per sweep) was accepted and simply spent
+   ten times as much. */
+test('a posts setting above its ceiling is refused', async () => {
+  const over = SETTING_RULES.posts_max_per_sweep.max + 1;
+  const res = await post('/api/settings', { posts_max_per_sweep: over });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toContain(SETTING_RULES.posts_max_per_sweep.label);
+  expect(repos.settings.get().posts_max_per_sweep).not.toBe(over);
 });
 
 test('valid posts settings are accepted and stored', async () => {
@@ -586,7 +622,7 @@ test('posts_sweep_per_day of 0 is accepted — it means "never sweep automatical
 test('a negative posts_sweep_per_day is still refused', async () => {
   const res = await post('/api/settings', { posts_sweep_per_day: -1 });
   expect(res.statusCode).toBe(400);
-  expect(res.json().error).toMatch(/posts_sweep_per_day/);
+  expect(res.json().error).toContain(SETTING_RULES.posts_sweep_per_day.label);
 });
 
 /* One bad field rejects the whole patch. A partial write would leave the operator looking at

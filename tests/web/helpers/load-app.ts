@@ -34,6 +34,10 @@ export interface AppInternals {
   refreshEnrichment: () => Promise<void>;
   initEnrichment: () => void;
   renderApifyKey: (settings: Record<string, unknown>) => void;
+  /** The one id<->setting-key map the Settings form loads and submits through. */
+  SETTINGS_FIELDS: { key: string; id: string }[];
+  loadSettings: () => Promise<void>;
+  initSettings: () => void;
   applyEnrichHaltUi: (status: Record<string, unknown>) => void;
   initSearch: () => void;
   /** app.js's module-level `selected` Set of profile URLs (app.js:1879) — the ONE selection
@@ -89,7 +93,7 @@ export function loadApp(): AppInternals {
   const postsSrc = readFileSync(join(WEB_DIR, 'posts.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
+    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, loadSettings, initSettings, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }
