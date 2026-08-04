@@ -754,7 +754,7 @@
         <div class="field"><label for="setMsgWeeklyCap">Weekly cap <span class="hint">messages</span></label><input id="setMsgWeeklyCap" type="number" /></div>
         <div class="field"><label for="setMsgBatchSize">Batch size <span class="hint">messages</span></label><input id="setMsgBatchSize" type="number" /></div>
         <div class="field"><label for="setMsgBatchesPerDay">Batches / day <span class="hint">messages</span></label><input id="setMsgBatchesPerDay" type="number" /></div>
-        <div class="field"><label for="setReplyChecks">Reply checks / day <span class="hint">1–4</span></label><input id="setReplyChecks" type="number" /></div>
+        <div class="field"><label for="setReplyChecks">Reply checks / day <span class="hint" data-range-for="reply_checks_per_day">1–4</span></label><input id="setReplyChecks" type="number" /></div>
 
         <div class="section-divider span-all">
           <span>
@@ -787,14 +787,14 @@
         <div class="section-divider span-all"><span>Both engines</span></div>
         <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" /></div>
         <div class="field"><label for="setEnd">Workday end hour</label><input id="setEnd" type="number" /></div>
-        <div class="field"><label for="setRosterSync">Connection syncs / day <span class="hint">1–24</span></label><input id="setRosterSync" type="number" /></div>
+        <div class="field"><label for="setRosterSync">Connection syncs / day <span class="hint" data-range-for="roster_sync_per_day">1–24</span></label><input id="setRosterSync" type="number" /></div>
         <p class="hint span-all settings-note">Invites and messages are paced independently but share this window — and one pause, one halt. A captcha or lost session stops both.</p>
 
         <div class="field span-all">
           <button class="btn btn-green" type="submit">Save settings</button>
         </div>
       </form>
-      <div class="toast" id="settingsResult" hidden></div>
+      <div class="toast" id="settingsResult" role="status" aria-live="polite" hidden></div>
 
       <div class="panel-head sub">
         <div class="panel-title">

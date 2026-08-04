@@ -70,10 +70,17 @@ function fmtTime(iso) {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/**
+ * Unhide first, then write the text — not the other way round.
+ *
+ * A `hidden` node is out of the accessibility tree, so text set while it is still hidden is
+ * the region's starting content rather than a change to it, and a live region announces
+ * changes only. Unhiding first makes the write a mutation a screen reader will speak.
+ */
 function toast(node, msg, isError = false) {
-  node.textContent = msg;
   node.className = 'toast' + (isError ? ' error' : '');
   node.hidden = false;
+  node.textContent = msg;
 }
 
 /* ---------- tab navigation ---------- */
@@ -1813,6 +1820,14 @@ function applySettingRules(rules) {
     input.max = String(rule.max);
     input.step = '1';
   });
+  // A couple of labels quote their range in prose. Those spans were the last hardcoded
+  // limits left in index.html once the min/max attributes went, and one had already drifted
+  // (reply checks still read 1-24 against a rule of 4). Stamped from the same table, a new
+  // hint needs only the data attribute.
+  $$('[data-range-for]').forEach((span) => {
+    const rule = settingRules[span.dataset.rangeFor];
+    if (rule) span.textContent = `${rule.min}–${rule.max}`;   // en dash, as authored
+  });
 }
 
 /**
@@ -1864,10 +1879,19 @@ function validateSettings() {
     const input = $(`#${id}`);
     if (!input) return;
     setFieldError(input, null);
-    if (input.value === '') return;
+    const rule = settingRules[key];
+    // A number input reports '' for anything it can't parse ("1e", a pasted "1,000"), and the
+    // form is novalidate, so nothing else catches it. Skipping the key would POST cleanly and
+    // report "Settings saved." over a value that never left the box. Every settings column is
+    // NOT NULL with a default, so an empty box is always operator-caused.
+    if (input.value === '') {
+      const message = `${rule ? rule.label : 'This setting'} needs a whole number.`;
+      setFieldError(input, message);
+      failures.push({ id, message });
+      return;
+    }
     const n = Number(input.value);
     values[key] = n;
-    const rule = settingRules[key];
     if (!rule) return;
     let message = null;
     if (!Number.isInteger(n)) message = `${rule.label} must be a whole number.`;
@@ -1896,7 +1920,13 @@ async function loadSettings() {
       const input = $(`#${id}`);
       if (input) input.value = s[key] ?? '';
     });
-    validateSettings();   // flag anything the stored row already violates
+    // Flag anything the stored row already violates. Nobody typed these, so the red field
+    // needs a reason attached — otherwise Settings just opens angry at the operator.
+    if (validateSettings().length) {
+      toast($('#settingsResult'),
+        'A saved value is now outside the safe range — the limit was lowered. '
+        + 'Fix the field marked in red; no settings can be saved until you do.', true);
+    }
     renderApifyKey(s);
     refreshConnections();
     loadLogs();
@@ -2648,6 +2678,20 @@ async function selectDoc(slug, btn) {
 }
 
 function initSettings() {
+  // Errors are computed on load and on Save, so a field left red after a correction reads as
+  // "my fix didn't work". Clear on edit and let the next Save re-judge — re-checking per
+  // keystroke would flag "1" on the way to "150".
+  $('#settingsForm').addEventListener('input', (e) => {
+    const input = e.target;
+    if (!input || input.tagName !== 'INPUT') return;
+    setFieldError(input, null);
+    // The workday failure hangs on #setEnd but quotes #setStart's value, so editing either
+    // hour has to clear it — left alone it keeps naming an hour no longer on screen.
+    if (input.id === 'setStart' || input.id === 'setEnd') {
+      [$('#setStart'), $('#setEnd')].forEach((el) => { if (el) setFieldError(el, null); });
+    }
+  });
+
   $('#settingsForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const result = $('#settingsResult');
