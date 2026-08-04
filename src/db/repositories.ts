@@ -28,6 +28,8 @@ const SETTINGS_COLUMNS = new Set([
   'event_run_budget_minutes', 'event_shard_threshold',
   'engage_weekly_cap', 'engage_batch_size', 'engage_batches_per_day',
   'engage_comment_daily_cap',
+  'posts_sweep_per_day', 'posts_max_per_sweep', 'posts_sweep_batch_size',
+  'posts_retention_days', 'tracked_profile_cap',
 ]);
 
 export class CohortRepo {

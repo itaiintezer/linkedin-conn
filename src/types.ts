@@ -376,11 +376,11 @@ export interface AppState {
   replies_checked_at: string | null;    // ISO, last successful reply-check read
   roster_synced_at: string | null;      // ISO, last successful roster read
   connections_seeded_at: string | null; // ISO, one-time seed from existing profiles
-  posts_swept_at: string | null;
-  posts_halted: number;
+  posts_swept_at: string | null;       // ISO, last clean sweep pass
+  posts_halted: number;                // 0 | 1 — automatic sweeping stopped itself
   posts_halt_reason: PostsHaltReason | null;
-  posts_halt_detail: string | null;
-  posts_halted_at: string | null;
+  posts_halt_detail: string | null;    // operator-facing message; never the API token
+  posts_halted_at: string | null;      // ISO
 }
 
 /** A point-in-time read of LinkedIn auth from the browser's li_at cookie. */

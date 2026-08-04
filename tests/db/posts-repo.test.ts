@@ -1,6 +1,10 @@
 /**
- * The Posts data layer. Covers the four decisions the spec defends: URN dedupe,
- * soft-delete, the retention prune, and engagement_id surviving a URN reconcile.
+ * Schema-level coverage for the Posts feed: the new tables and columns exist, the
+ * settings defaults match the spec, and the `posted_at` CHECK rejects the shape the
+ * retention prune cannot safely compare as TEXT. Tasks 2 and 3 add TrackedProfileRepo
+ * and PostRepo and, with them, the behavioural tests this file doesn't yet have: URN
+ * dedupe, soft-delete, the retention prune itself, and engagement_id surviving a URN
+ * reconcile.
  */
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
@@ -42,9 +46,22 @@ test('posted_at rejects a non-ISO shape, because the prune compares it as TEXT',
   repos.db.prepare(
     "INSERT INTO tracked_profiles (profile_url, source) VALUES ('https://www.linkedin.com/in/a', 'urls')",
   ).run();
+  // Space-separated, no timezone — the exact shape datetime('now') produces, and the
+  // exact shape the send_log scar (see schema.sql) was written to reject.
   const bad = () => repos.db.prepare(
     `INSERT INTO posts (post_urn, post_url, tracked_profile_id, posted_at, first_seen_at)
      VALUES ('urn:li:activity:1', 'https://x', 1, '2026-08-04 10:00:00', '2026-08-04T10:00:00.000Z')`,
   ).run();
-  expect(bad).toThrow();
+  // Anchor on the CHECK's own text so this fails loudly if a FK or NOT NULL violation
+  // ever reached it first instead — SQLite's message reproduces the failing constraint
+  // expression verbatim, which for this column starts with 'posted_at IS NULL'.
+  expect(bad).toThrow(/CHECK constraint failed: posted_at IS NULL/);
+
+  // Sibling proof: the identical INSERT with only the timestamp shape corrected succeeds,
+  // which pins the timestamp shape as the sole variable between the two outcomes.
+  const good = () => repos.db.prepare(
+    `INSERT INTO posts (post_urn, post_url, tracked_profile_id, posted_at, first_seen_at)
+     VALUES ('urn:li:activity:2', 'https://x', 1, '2026-08-04T10:00:00.000Z', '2026-08-04T10:00:00.000Z')`,
+  ).run();
+  expect(good).not.toThrow();
 });

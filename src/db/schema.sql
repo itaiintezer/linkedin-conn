@@ -460,7 +460,8 @@ CREATE TABLE IF NOT EXISTS posts (
   first_seen_at TEXT NOT NULL CHECK (
     first_seen_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
   ),
-  raw_json TEXT,
+  raw_json TEXT,                      -- the raw Apify sweep payload, so fields not yet
+                                       -- promoted to a column aren't lost
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_posts_profile ON posts(tracked_profile_id);
