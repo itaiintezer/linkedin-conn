@@ -1921,6 +1921,10 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
           // refused (a malformed posted_at from Apify), which OR IGNORE would otherwise
           // discard indistinguishably from a duplicate — and we would re-bill for it every
           // sweep, forever, with nothing to show the operator.
+          //
+          // Do NOT wrap this call in a transaction of your own: upsertMany opens its own
+          // unconditionally, and SQLite refuses a nested BEGIN ("cannot start a transaction
+          // within a transaction"). Same constraint as ConnectionRepo.upsertMany.
           const stored = repos.posts.upsertMany(rows as PostInput[], nowIso);
           result.postsAdded += stored.added;
           result.postsRejected += stored.rejected;
