@@ -2961,6 +2961,10 @@ function init() {
   initConnections();
   initEnrichment();
   initSearch();
+  // posts.js is a separate script tag. Guarded so a load failure costs the Posts screen and
+  // nothing else: an unguarded call would throw out of init() and leave the whole dashboard —
+  // including the live queue's controls — unwired.
+  if (typeof initPosts === 'function') initPosts();
   initAttention();
   initEvents();
   initLogViewer();

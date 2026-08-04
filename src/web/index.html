@@ -795,6 +795,12 @@
         </div>
       </div>
 
+      <!-- This screen's feedback line: what a queue, a sweep or a tracking change actually
+           did. Its own node rather than reusing #postsStatus, which every feed render
+           rewrites — a message written there would be wiped by the refresh that follows the
+           action that produced it. -->
+      <div class="toast slim" id="postsToast" hidden></div>
+
       <div class="posts-feed" id="postsFeed"></div>
       <div class="empty" id="postsEmpty">No posts yet. Track some profiles, then sweep.</div>
       <div class="search-more">
