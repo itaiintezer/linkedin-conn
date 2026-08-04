@@ -31,6 +31,8 @@ export const SETTING_RULES: Record<string, SettingRule> = {
   // Sends are spaced min_delay_ms..max_delay_ms apart (20-90s), so 25 in a batch is already
   // ~35 minutes of unbroken automation inside one browser session.
   batch_size: { label: 'Batch size (invites)', min: 1, max: 25 },
+  // One per hour across a 12-hour workday (workday_start_hour..workday_end_hour) is the
+  // most batches that can actually land without doubling up inside the same hour.
   batches_per_day: { label: 'Batches / day (invites)', min: 0, max: 12 },
 
   // --- Messages ---
