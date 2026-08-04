@@ -448,6 +448,33 @@ test('a body short enough to fit gets no expander at all', () => {
   expect(document.querySelector('.post-card [data-act="expand"]')).toBeNull();
 });
 
+test('the expander is hidden when the measured body does not actually overflow', () => {
+  /* This is the bug: a long-enough-by-character-count post can still render fully inside the
+   * two-line clamp at a wide viewport, and the fix measures scrollHeight vs clientHeight to
+   * catch exactly that case. jsdom has no layout engine — every real element reports both as
+   * 0 — so a real card here would always take the "can't tell" fallback and never exercise the
+   * `scrollHeight > clientHeight` comparison itself. To honestly test that comparison (not just
+   * the fallback around it), the Element accessors are overridden for this test only, to values
+   * that represent a body which fits (scrollHeight === clientHeight), and restored immediately
+   * after so no other test observes the override. */
+  const scrollDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+  const clientDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+  Object.defineProperty(Element.prototype, 'scrollHeight', { configurable: true, get() { return 48; } });
+  Object.defineProperty(Element.prototype, 'clientHeight', { configurable: true, get() { return 48; } });
+  try {
+    const long = `Alert triage is an ownership problem. ${'The rota is the tell. '.repeat(12)}`;
+    internals.renderPostsFeed(feedPayload({
+      posts: [{ ...feedPayload().posts[0], content: long }],
+    }));
+    const expand = document.querySelector('.post-card [data-act="expand"]') as HTMLButtonElement;
+    expect(expand).not.toBeNull();
+    expect(expand.hidden).toBe(true);
+  } finally {
+    if (scrollDesc) Object.defineProperty(Element.prototype, 'scrollHeight', scrollDesc);
+    if (clientDesc) Object.defineProperty(Element.prototype, 'clientHeight', clientDesc);
+  }
+});
+
 test('the tracking table lists profiles with a Remove button', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => ({
     ok: true, status: 200,

@@ -34,15 +34,32 @@ function postReactionLabel(r) {
 const postsState = { filter: 'new', selected: new Set(), cursor: null, loading: false };
 
 /**
- * Roughly how much text needs clamping before offering the expander.
+ * Roughly how much text needs clamping before BUILDING the expander at all.
  *
- * A heuristic, deliberately: `.post-body.is-clamped` clamps at two lines and jsdom has no
- * layout, so the honest measurement (scrollHeight > clientHeight) is not available at build
- * time. Set low enough to err toward offering the control — a needless "Show more" is noise,
- * but a missing one hides the words the whole screen exists to show. A "Show more" that
- * visibly does nothing is worse than either, which is why short posts don't get one.
+ * A heuristic, deliberately: at build time the card is a detached node (`scrollHeight` and
+ * `clientHeight` are both 0 until it's in the document), so there's no honest measurement to
+ * consult yet. Set low enough to err toward building the control — skipping it here can never
+ * be corrected later, whereas building one that turns out unneeded gets caught and hidden by
+ * `bodyOverflowsClamp` once the card is actually laid out (see `renderPostsFeed`).
  */
 const POSTS_CLAMP_HINT = 150;
+
+/**
+ * Does a clamped post body actually overflow its two-line box? The one honest way to know,
+ * once the node is laid out — unlike `POSTS_CLAMP_HINT`, which only guesses before that.
+ *
+ * jsdom has no layout engine, so a real card's `.post-body` reports both metrics as exactly 0
+ * regardless of content — indistinguishable from "fits exactly". Treat that specific reading
+ * as "can't tell, so show it" rather than as "doesn't overflow": the alternative (naively
+ * trusting `scrollHeight > clientHeight`) is false for every post in that environment, which
+ * would hide every expander and break the tests that click one. This is the only case jsdom
+ * can express, and it's also the safer default in a real browser that somehow reports 0/0.
+ */
+function bodyOverflowsClamp(body) {
+  const { scrollHeight, clientHeight } = body;
+  if (scrollHeight === 0 && clientHeight === 0) return true;
+  return scrollHeight > clientHeight;
+}
 
 /** "6h ago" / "3d ago" / a date once it stops being useful as a relative age. */
 function postAge(iso) {
@@ -180,7 +197,23 @@ function renderPostsFeed(payload, append = false) {
   if (!append) feed.replaceChildren();
 
   const posts = Array.isArray(p.posts) ? p.posts : [];
-  for (const post of posts) feed.appendChild(postCard(post));
+  const appended = [];
+  for (const post of posts) {
+    const card = postCard(post);
+    feed.appendChild(card);
+    appended.push(card);
+  }
+
+  /* One measurement pass over exactly the cards just appended, now that they're actually in
+     the document (a detached node's scrollHeight/clientHeight are both 0, so this can't run
+     any earlier). Batched here rather than inside postCard() so reading layout doesn't force
+     a reflow between every single card. */
+  for (const card of appended) {
+    const expand = card.querySelector('[data-act="expand"]');
+    if (!expand) continue;
+    const body = card.querySelector('.post-body');
+    if (body && !bodyOverflowsClamp(body)) expand.hidden = true;
+  }
 
   const counts = p.counts || {};
   for (const key of ['new', 'queued', 'engaged']) {
