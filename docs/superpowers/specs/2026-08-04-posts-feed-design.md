@@ -343,25 +343,35 @@ No test touches `data/app.db` — it is production data.
 
 ## Known residual risks, accepted (added 2026-08-04 during implementation)
 
-**A sustained Apify outage discards a run we already paid for.** The client retries the two
-idempotent GETs (poll, dataset page) three times with backoff, which survives failures spread
-across a run. It does not survive an outage longer than roughly six seconds *within a single
-poll*: that throws, the sweep marks the batch's profiles with `last_sweep_error`, and because
-`last_swept_at` is deliberately left untouched the next pass uses the wider `'week'` window —
-so we pay for the discarded run and then pay again, wider.
+**`maxItems` caps what Apify CHARGES, not what the dataset holds.** Apify's docs are explicit:
+it "does NOT guarantee that the Actor will return only this many items — it only ensures you
+won't be charged for more than this number." So it is a genuine spend ceiling (which is why it
+is passed on every run start) but it must never be used to predict dataset size. An early
+implementation derived the pagination page cap from it, which meant an over-delivering run hit
+the cap and **discarded posts already billed for** — turning a cost overrun into total loss plus
+a re-bill on the next pass. The page cap is now a generous absolute constant, and hitting it
+returns what was read with a loud log rather than throwing, because the data is already bought.
 
-The real fix is to persist the run id and dataset id when a run starts, so a later tick can read
-a dataset already paid for instead of starting a new run. That needs a column and a resume path
-and was judged out of proportion mid-implementation. Two things bound the damage in the
-meantime: `maxItems` on the run start caps what Apify will charge regardless, and the sweep is
-daily rather than hourly, so the worst case is one duplicated day.
+**A prolonged Apify outage can still discard a run we paid for.** The client retries the two
+idempotent GETs three times with backoff, and a *retryable* poll failure no longer kills the
+run — it is treated like a non-terminal status, so the poll loop's full ~20-minute budget
+absorbs a correlated outage (a deploy, a rate limit, an LB flap) instead of only ~4 seconds of
+it. A non-retryable failure (401/403/404) still fails fast, which is correct: those never
+recover, and failing fast is what lets the sweep latch its halt promptly.
 
-**`timeout` on the run start is unverified against rendered docs.** `maxItems` was confirmed
-(Apify documents it as the charged-items cap for pay-per-result actors). `timeout` was confirmed
-only from search-result text — `docs.apify.com` refused to render for both the reviewer and the
-implementer. A wrong parameter name would be ignored rather than harmful, but it means the run
-would not self-terminate when our poll budget expires. **Confirm on the first live sweep** by
-checking the run's configured timeout in the Apify console.
+What remains uncovered is an outage lasting longer than the whole poll budget. The fix would be
+to persist the run id and dataset id at run start so a later tick can read a dataset already
+paid for, rather than starting a new run. That needs a column and a resume path, and was judged
+out of proportion mid-implementation. Two things bound the damage: `maxItems` caps the charge
+regardless, and the sweep is daily rather than hourly, so the worst case is one duplicated day.
+
+**Reading Apify's error body improved diagnostics and re-opened the token risk from the other
+side.** Surfacing the response body is what distinguishes a bad key from a spent monthly budget
+(both are 403). But untrusted upstream text can echo our request URI, and the token travels in
+the query string — proxies, WAFs and API gateways do this routinely, and it was reproduced with
+a 502 gateway page. Every interpolated body is therefore redacted against the token and
+truncated before it can reach `data/relay.log`, which is a file the operator downloads and
+shares. **Any future change that puts upstream text into an error message must redact it.**
 
 ## Out of scope
 
