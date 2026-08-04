@@ -148,10 +148,21 @@ test('an already-inverted stored window does not fail an unrelated patch', () =>
   expect(validateSettingsPatch({ weekly_cap: 50 }, bad)).toEqual([]);
 });
 
+// -5 is chosen, not 99: it fails its own range (min 0) AND -5 <= 8 is true, so without the
+// suppression guard the cross-field comparison would also fire, producing two failures.
 test('a range failure on an hour suppresses the cross-field message', () => {
-  const out = validateSettingsPatch({ workday_end_hour: 99 }, stored());
+  const out = validateSettingsPatch({ workday_end_hour: -5 }, stored());
   expect(out).toHaveLength(1);                       // not also "must be after the start hour"
   expect(out[0].message).toBe('Workday end hour must be between 0 and 23.');
+});
+
+// Symmetric case: the failing key is the *start* hour this time, exercising the other half
+// of the failed.has(a) && failed.has(b) guard. Stored end is 20, and 20 <= 99 is true, so
+// without suppression this would also produce a second, cross-field failure.
+test('a range failure on the start hour also suppresses the cross-field message', () => {
+  const out = validateSettingsPatch({ workday_start_hour: 99 }, stored({ workday_end_hour: 20 }));
+  expect(out).toHaveLength(1);
+  expect(out[0].message).toBe('Workday start hour must be between 0 and 23.');
 });
 
 test('max_delay_ms below min_delay_ms is rejected, equal is allowed', () => {
