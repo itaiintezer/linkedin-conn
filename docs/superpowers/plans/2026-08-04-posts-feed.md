@@ -686,7 +686,12 @@ import type { FeedPost, Post, PostFilter, TrackedProfile } from '../types.js';
 Then append:
 
 ```ts
-/** What upsertMany accepts. Everything the extractor produces, minus the row's own id. */
+/** What upsertMany accepts. Everything the extractor produces, minus the row's own id.
+ *
+ *  MOVED IN TASK 4 to `src/types.ts`, beside `Post` and `FeedPost`, matching the
+ *  `Connection`/`ConnectionInput` precedent — and so that `core/` modules don't have to
+ *  type-import a plain data shape from `db/`. Declared here originally; import it from
+ *  `../types.js` in any later task. */
 export interface PostInput {
   post_urn: string;
   post_url: string;
@@ -1079,8 +1084,7 @@ Expected: FAIL — cannot resolve `../../src/core/apify-posts-extract.js`.
  * read — the same containment `apify-extract.ts` provides for the profile actor, so a
  * harvestapi rename is one file and one test rather than a hunt.
  */
-import type { ApifyPost } from '../types.js';
-import type { PostInput } from '../db/posts-repos.js';
+import type { ApifyPost, PostInput } from '../types.js';
 import { normalizePostUrl, normalizeProfileUrl } from './url.js';
 
 /** Trim to a non-empty string, or null. Everything downstream expects null, not ''. */
@@ -1238,7 +1242,7 @@ export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput
 export function attribute(
   items: ApifyPost[],
   profileIdByUrl: Map<string, number>,
-): { rows: PostInput[]; unattributed: number } {
+): { rows: PostInput[]; unattributed: number; unusable: number } {
   const rows: PostInput[] = [];
   let unattributed = 0;
   for (const raw of items) {
@@ -1849,7 +1853,6 @@ Add `PostsHaltReason` to the existing type import at the top of `repositories.ts
  * the LinkedIn browser session — so no guardrail, no pacing, no browser mutex.
  */
 import type { Repos } from '../db/repositories.js';
-import type { PostInput } from '../db/posts-repos.js';
 import type { ApifyPostsClient, PostedLimit } from '../core/apify-posts-client.js';
 import { attribute } from '../core/apify-posts-extract.js';
 import { normalizeProfileUrl } from '../core/url.js';
@@ -1986,7 +1989,9 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
           // Do NOT wrap this call in a transaction of your own: upsertMany opens its own
           // unconditionally, and SQLite refuses a nested BEGIN ("cannot start a transaction
           // within a transaction"). Same constraint as ConnectionRepo.upsertMany.
-          const stored = repos.posts.upsertMany(rows as PostInput[], nowIso);
+          // No cast: attribute() already returns PostInput[], and a cast here would mask a
+          // genuine future mismatch between the extractor's output and upsertMany's input.
+          const stored = repos.posts.upsertMany(rows, nowIso);
           result.postsAdded += stored.added;
           result.postsRejected += stored.rejected;
           if (stored.rejected > 0) {
@@ -2433,7 +2438,7 @@ Add the imports:
 
 ```ts
 import { type ApifyPostsClient, HttpApifyPostsClient, COST_PER_POST_USD } from '../core/apify-posts-client.js';
-import { runPostsSweep } from '../worker/posts-sweep.js';
+import { runPostsSweep, isPostsSweepRunning } from '../worker/posts-sweep.js';
 import { extractProfileUrls, normalizeProfileUrl } from '../core/url.js';
 import type { PostFilter, TrackReject } from '../types.js';
 ```
@@ -2995,6 +3000,13 @@ around line 780, before `POST /api/engagements`) so they are in scope.
    */
   app.post('/api/posts/sweep-now', async (req, reply) => {
     const s = repos.settings.get();
+    // A sweep already in flight must not be joined by a second one: two concurrent runs
+    // double-bill, and the scheduled tick can be mid-sweep when the operator clicks. The
+    // worker refuses re-entry itself (it throws), but answering 409 here gives the operator
+    // a real explanation instead of a 400 from a thrown error.
+    if (isPostsSweepRunning()) {
+      return reply.code(409).send({ error: 'a posts sweep is already running — wait for it to finish' });
+    }
     if (repos.trackedProfiles.countActive() === 0) {
       return reply.code(400).send({ error: 'no profiles are being tracked' });
     }
