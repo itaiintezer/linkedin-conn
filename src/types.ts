@@ -604,7 +604,7 @@ export interface TrackReject {
  * One item from harvestapi~linkedin-profile-posts. Every field optional: this is untrusted
  * upstream JSON, and the extractor's job is to survive any of it being absent or reshaped.
  *
- * Field names verified against a 26,256-item corpus of real actor output at
+ * Field names verified against a 13,128-item corpus of real actor output at
  * `C:\Projects\prospecting\icp_cache_posts` (2026-08-04). Two findings that overrode the
  * original spec (ported from the *profile* actor, where these names are correct but this
  * one never sends them): `author.position`/`author.headline` occur 0 times — the real
