@@ -730,7 +730,7 @@
       </div>
       <!-- Grouped by what each number paces: the two engines have independent caps,
            while the working-hours window (and pause / halt) governs both. -->
-      <form id="settingsForm" class="form-grid settings-grid card-surface">
+      <form id="settingsForm" class="form-grid settings-grid card-surface" novalidate>
         <div class="section-divider span-all">
           <span>
             <span class="kind-ico" aria-hidden="true">
@@ -739,9 +739,9 @@
             Connection requests
           </span>
         </div>
-        <div class="field"><label for="setWeeklyCap">Weekly cap <span class="hint">invites</span></label><input id="setWeeklyCap" type="number" min="0" /></div>
-        <div class="field"><label for="setBatchSize">Batch size <span class="hint">invites</span></label><input id="setBatchSize" type="number" min="1" /></div>
-        <div class="field"><label for="setBatchesPerDay">Batches / day <span class="hint">invites</span></label><input id="setBatchesPerDay" type="number" min="0" /></div>
+        <div class="field"><label for="setWeeklyCap">Weekly cap <span class="hint">invites</span></label><input id="setWeeklyCap" type="number" /></div>
+        <div class="field"><label for="setBatchSize">Batch size <span class="hint">invites</span></label><input id="setBatchSize" type="number" /></div>
+        <div class="field"><label for="setBatchesPerDay">Batches / day <span class="hint">invites</span></label><input id="setBatchesPerDay" type="number" /></div>
 
         <div class="section-divider span-all is-msg">
           <span>
@@ -751,10 +751,10 @@
             Messages
           </span>
         </div>
-        <div class="field"><label for="setMsgWeeklyCap">Weekly cap <span class="hint">messages</span></label><input id="setMsgWeeklyCap" type="number" min="0" /></div>
-        <div class="field"><label for="setMsgBatchSize">Batch size <span class="hint">messages</span></label><input id="setMsgBatchSize" type="number" min="1" /></div>
-        <div class="field"><label for="setMsgBatchesPerDay">Batches / day <span class="hint">messages</span></label><input id="setMsgBatchesPerDay" type="number" min="0" /></div>
-        <div class="field"><label for="setReplyChecks">Reply checks / day <span class="hint">1–24</span></label><input id="setReplyChecks" type="number" min="1" max="24" /></div>
+        <div class="field"><label for="setMsgWeeklyCap">Weekly cap <span class="hint">messages</span></label><input id="setMsgWeeklyCap" type="number" /></div>
+        <div class="field"><label for="setMsgBatchSize">Batch size <span class="hint">messages</span></label><input id="setMsgBatchSize" type="number" /></div>
+        <div class="field"><label for="setMsgBatchesPerDay">Batches / day <span class="hint">messages</span></label><input id="setMsgBatchesPerDay" type="number" /></div>
+        <div class="field"><label for="setReplyChecks">Reply checks / day <span class="hint" data-range-for="reply_checks_per_day">1–4</span></label><input id="setReplyChecks" type="number" /></div>
 
         <div class="section-divider span-all">
           <span>
@@ -764,10 +764,10 @@
             Event invites
           </span>
         </div>
-        <div class="field"><label for="setEventsPerDay">Events / day <span class="hint">runs</span></label><input id="setEventsPerDay" type="number" min="0" max="10" /></div>
-        <div class="field"><label for="setEventInviteCap">Invites / event <span class="hint">lifetime</span></label><input id="setEventInviteCap" type="number" min="1" /></div>
-        <div class="field"><label for="setEventBucketCeiling">Locations / run</label><input id="setEventBucketCeiling" type="number" min="1" max="50" /></div>
-        <div class="field"><label for="setEventBudget">Run budget <span class="hint">minutes</span></label><input id="setEventBudget" type="number" min="1" max="120" /></div>
+        <div class="field"><label for="setEventsPerDay">Events / day <span class="hint">runs</span></label><input id="setEventsPerDay" type="number" /></div>
+        <div class="field"><label for="setEventInviteCap">Invites / event <span class="hint">lifetime</span></label><input id="setEventInviteCap" type="number" /></div>
+        <div class="field"><label for="setEventBucketCeiling">Locations / run</label><input id="setEventBucketCeiling" type="number" /></div>
+        <div class="field"><label for="setEventBudget">Run budget <span class="hint">minutes</span></label><input id="setEventBudget" type="number" /></div>
         <p class="hint span-all settings-note">An event run reserves this many minutes of the day for itself, and the send planner routes connection requests and messages around the window. Locations are worked densest-first; whoever is left over rolls into the next day&rsquo;s run.</p>
 
         <div class="section-divider span-all is-eng">
@@ -778,23 +778,23 @@
             Post engagements
           </span>
         </div>
-        <div class="field"><label for="setEngageWeeklyCap">Weekly cap <span class="hint">reactions</span></label><input id="setEngageWeeklyCap" type="number" min="0" /></div>
-        <div class="field"><label for="setEngageBatchSize">Batch size <span class="hint">reactions</span></label><input id="setEngageBatchSize" type="number" min="1" /></div>
-        <div class="field"><label for="setEngageBatchesPerDay">Batches / day <span class="hint">reactions</span></label><input id="setEngageBatchesPerDay" type="number" min="0" /></div>
-        <div class="field"><label for="setEngageCommentCap">Comments / day <span class="hint">capped separately</span></label><input id="setEngageCommentCap" type="number" min="0" /></div>
+        <div class="field"><label for="setEngageWeeklyCap">Weekly cap <span class="hint">reactions</span></label><input id="setEngageWeeklyCap" type="number" /></div>
+        <div class="field"><label for="setEngageBatchSize">Batch size <span class="hint">reactions</span></label><input id="setEngageBatchSize" type="number" /></div>
+        <div class="field"><label for="setEngageBatchesPerDay">Batches / day <span class="hint">reactions</span></label><input id="setEngageBatchesPerDay" type="number" /></div>
+        <div class="field"><label for="setEngageCommentCap">Comments / day <span class="hint">capped separately</span></label><input id="setEngageCommentCap" type="number" /></div>
         <p class="hint span-all settings-note">A reaction is cheap; a comment is public and attributable, so it gets its own daily ceiling. Once today&rsquo;s comment budget is spent the engine keeps reacting and leaves the comment for another day &mdash; it never drops one silently.</p>
 
         <div class="section-divider span-all"><span>Both engines</span></div>
-        <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" min="0" max="23" /></div>
-        <div class="field"><label for="setEnd">Workday end hour</label><input id="setEnd" type="number" min="0" max="23" /></div>
-        <div class="field"><label for="setRosterSync">Connection syncs / day <span class="hint">1–24</span></label><input id="setRosterSync" type="number" min="1" max="24" /></div>
+        <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" /></div>
+        <div class="field"><label for="setEnd">Workday end hour</label><input id="setEnd" type="number" /></div>
+        <div class="field"><label for="setRosterSync">Connection syncs / day <span class="hint" data-range-for="roster_sync_per_day">1–24</span></label><input id="setRosterSync" type="number" /></div>
         <p class="hint span-all settings-note">Invites and messages are paced independently but share this window — and one pause, one halt. A captcha or lost session stops both.</p>
 
         <div class="field span-all">
           <button class="btn btn-green" type="submit">Save settings</button>
         </div>
       </form>
-      <div class="toast" id="settingsResult" hidden></div>
+      <div class="toast" id="settingsResult" role="status" aria-live="polite" hidden></div>
 
       <div class="panel-head sub">
         <div class="panel-title">
