@@ -704,13 +704,24 @@ export interface PostInput {
 /**
  * The feed's three filters, defined ONCE so the API and the UI cannot drift.
  *
- * `new` deliberately re-admits a post whose engagement ended `failed` or `skipped`: the
- * alternative is a post that can never be retried from the feed and is invisible under
- * every chip.
+ * These are a deliberate PARTITION: every post falls in exactly one chip, never none and
+ * never two. An earlier draft keyed `queued` and `new` off status alone, which left
+ * `needs_attention` under no chip at all (invisible in the UI that owns posts, and unprunable
+ * because engagement_id is not NULL) and put a reacted-but-failed post under both `new` and
+ * `engaged` — where the feed offered to queue it and every attempt 409'd on the duplicate URN.
+ *
+ * `reacted_at` outranks `status` because a reaction on LinkedIn is a fact, while a status is
+ * our bookkeeping about it. `failed`/`skipped` without a reaction return to `new` so they can
+ * be retried from the feed. Everything else with an engagement is in flight — including
+ * `needs_attention`, because a human still has to act on it.
+ *
+ * NOTE `queued` relies on `e.status` being NULL for a post with no engagement row, and on
+ * `NULL NOT IN (...)` evaluating to NULL rather than true. That is what keeps an
+ * engagement-less post out of `queued`, and it is why the LEFT JOIN cannot become an inner one.
  */
 const FILTER_SQL: Record<PostFilter, string> = {
-  new: "(p.engagement_id IS NULL OR e.status IN ('failed','skipped'))",
-  queued: "e.status IN ('queued','scheduled','sending')",
+  new: "(p.engagement_id IS NULL OR (e.reacted_at IS NULL AND e.status IN ('failed','skipped')))",
+  queued: "(e.reacted_at IS NULL AND e.status NOT IN ('failed','skipped'))",
   engaged: 'e.reacted_at IS NOT NULL',
 };
 
@@ -728,7 +739,7 @@ export class PostRepo {
    * have-I-seen-this bookkeeping, so a repeated or overlapping sweep is free. Note this
    * dedupes STORAGE and not the Apify bill; that is what the postedLimit window is for.
    */
-  upsertMany(items: PostInput[], firstSeenAtIso: string): number {
+  upsertMany(items: PostInput[], firstSeenAtIso: string): { added: number; rejected: number } {
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO posts
         (post_urn, post_url, tracked_profile_id, author_name, author_headline, content,
@@ -1828,6 +1839,9 @@ export interface PostsSweepResult {
   runs: number;
   profilesSwept: number;
   postsAdded: number;
+  /** Posts the schema refused — a malformed posted_at from Apify. Billed but unusable, so
+   *  this must be visible rather than swallowed by INSERT OR IGNORE. */
+  postsRejected: number;
   unattributed: number;
   pruned: number;
   /** True when every run succeeded. Only a clean pass stamps posts_swept_at. */
@@ -1865,7 +1879,8 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
   const now = opts.now ?? new Date();
   const nowIso = now.toISOString();
   const result: PostsSweepResult = {
-    runs: 0, profilesSwept: 0, postsAdded: 0, unattributed: 0, pruned: 0, clean: true,
+    runs: 0, profilesSwept: 0, postsAdded: 0, postsRejected: 0, unattributed: 0,
+    pruned: 0, clean: true,
   };
 
   running = true;
@@ -1902,7 +1917,16 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
           if (unattributed > 0) {
             log.warn('posts', 'dropped unattributable items', { count: unattributed, postedLimit });
           }
-          result.postsAdded += repos.posts.upsertMany(rows as PostInput[], nowIso);
+          // upsertMany returns { added, rejected }: `rejected` is a post the CHECK constraints
+          // refused (a malformed posted_at from Apify), which OR IGNORE would otherwise
+          // discard indistinguishably from a duplicate — and we would re-bill for it every
+          // sweep, forever, with nothing to show the operator.
+          const stored = repos.posts.upsertMany(rows as PostInput[], nowIso);
+          result.postsAdded += stored.added;
+          result.postsRejected += stored.rejected;
+          if (stored.rejected > 0) {
+            log.warn('posts', 'posts rejected by the schema', { count: stored.rejected, postedLimit });
+          }
           for (const m of batch) repos.trackedProfiles.markSwept(m.id, nowIso);
           result.profilesSwept += batch.length;
         } catch (e) {
@@ -1931,7 +1955,7 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
 
     log.info('posts', 'sweep finished', {
       runs: result.runs, profiles: result.profilesSwept, added: result.postsAdded,
-      pruned: result.pruned, clean: result.clean,
+      rejected: result.postsRejected, pruned: result.pruned, clean: result.clean,
     });
     return result;
   } finally {
@@ -3391,7 +3415,15 @@ function postAge(iso) {
   return days <= 30 ? `${days}d ago` : new Date(iso).toISOString().slice(0, 10);
 }
 
-/** Which chip a post belongs to, mirroring the server's FILTER_SQL. */
+/**
+ * Which chip a post belongs to, mirroring the server's FILTER_SQL partition exactly.
+ *
+ * Order matters and matches the SQL: a reaction outranks the status, because a reaction on
+ * LinkedIn is a fact while a status is bookkeeping. Then `failed`/`skipped` return to `new`
+ * so they can be retried; everything else with an engagement is in flight, `needs_attention`
+ * included. Every post lands in exactly one chip — if you change this, change FILTER_SQL in
+ * `src/db/posts-repos.ts` in the same commit or the badge and the filter will disagree.
+ */
 function postPhase(p) {
   if (p.engagement_reacted_at) return 'engaged';
   if (p.engagement_status && !['failed', 'skipped'].includes(p.engagement_status)) return 'queued';
@@ -4092,9 +4124,19 @@ Add a `## Posts` section after `## Post engagements`, covering:
 - All seven endpoints with a `curl` example each, mirroring the existing sections' style.
 - The three reject reasons for `POST /api/tracked-profiles` in a table (`invalid_url`,
   `already_tracked`, `cap_reached`), and the partial-cap-fill rule.
-- The `filter` definitions verbatim: `new` is `engagement_id IS NULL` **or** a `failed` /
-  `skipped` engagement; `queued` is `queued`/`scheduled`/`sending`; `engaged` is
-  `reacted_at IS NOT NULL`.
+- The `filter` definitions, stated as the **partition** they are — every post is in exactly
+  one chip, never none and never two:
+  - `engaged` — the engagement has a `reacted_at`. This outranks status, because a reaction on
+    LinkedIn is a fact and a status is only our bookkeeping about it.
+  - `new` — no engagement at all, **or** an engagement that ended `failed`/`skipped` without
+    reacting, so it can be retried from the feed.
+  - `queued` — an engagement that has not reacted and is not `failed`/`skipped`. That includes
+    `needs_attention`, because a human still has to act on it.
+
+  Say explicitly that a post whose reaction landed but whose *comment* failed shows as
+  `engaged`, not `new` — the reaction is already on LinkedIn, so the feed must not offer to
+  queue it again (the enqueue would 409 on the duplicate URN). Fixing the comment is
+  `POST /api/engagements/:id/retry`, which is reachable from the Attention list.
 - That `POST /api/posts/engage` has **no** `comment` field, and why.
 - That `sweep-now` is long and must not be retried, like `run-now`.
 - That the sweep is gated by `paused` but **not** by the guardrail.
