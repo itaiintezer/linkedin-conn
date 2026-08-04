@@ -467,6 +467,11 @@ async function sweepNow() {
 function initPosts() {
   for (const chip of $$('.posts-chip')) {
     chip.addEventListener('click', () => {
+      /* Dropped WHOLE while a page is in flight, state included. Changing the filter and then
+         losing the fetch to refreshPosts's re-entrancy guard would strand this chip: the row
+         would still highlight the filter on screen while postsState held the one it never
+         loaded, so this chip's own next click would early-return below and do nothing. */
+      if (postsState.loading) return;
       if (postsState.filter === chip.dataset.filter) return;
       postsState.filter = chip.dataset.filter;
       /* A filter change is a fresh page: carrying the old cursor forward would page into the

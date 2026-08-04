@@ -635,3 +635,31 @@ test('a failed Track posts leaves the button usable and says why', async () => {
   });
   expect(btn.disabled).toBe(false);
 });
+
+test('a chip click while a page is in flight is dropped whole, not half-applied', async () => {
+  // Half-applying it — filter changed, fetch dropped by the re-entrancy guard — would strand
+  // that chip: its own next click early-returns because postsState already holds the filter it
+  // never loaded, so the chip is dead until another one is visited.
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => { release = r; });
+  const calls: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    calls.push(url);
+    if (calls.length === 1) await gate;
+    return { ok: true, status: 200, json: async () => feedPayload({ filter: 'queued' }) } as Response;
+  }));
+  internals.initPosts();
+  (document.querySelector('[data-filter="queued"]') as HTMLButtonElement).click();
+  (document.querySelector('[data-filter="engaged"]') as HTMLButtonElement).click();
+  expect(internals.postsState.filter).toBe('queued');
+  expect(calls).toHaveLength(1);
+
+  release();
+  await vi.waitFor(() => {
+    const active = document.querySelector('.posts-chip.is-active') as HTMLElement;
+    expect(active.dataset.filter).toBe('queued');
+  });
+  // And the dropped chip still works once the feed has settled.
+  (document.querySelector('[data-filter="engaged"]') as HTMLButtonElement).click();
+  await vi.waitFor(() => expect(calls.some((u) => u.includes('filter=engaged'))).toBe(true));
+});
