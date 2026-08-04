@@ -2,6 +2,7 @@ import type { DB } from './database.js';
 import type {
   Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind,
   Connection, ConnectionInput, ConnectionSource, EnrichStatus, EnrichedProfile, EnrichHaltReason,
+  PostsHaltReason,
 } from '../types.js';
 import { firstNameFrom } from '../core/first-name.js';
 import type { ReservationWindow } from '../core/reservations.js';
@@ -227,6 +228,25 @@ export class AppStateRepo {
     this.db.prepare(
       'UPDATE app_state SET enrich_halted = 0, enrich_halt_reason = NULL, enrich_halt_detail = NULL, enrich_halted_at = NULL WHERE id = 1',
     ).run();
+  }
+
+  /** Latch the posts sweep off. An ERROR latch, not a spend cap. */
+  haltPosts(reason: PostsHaltReason, detail: string, atIso: string): void {
+    this.db.prepare(
+      'UPDATE app_state SET posts_halted = 1, posts_halt_reason = ?, posts_halt_detail = ?, posts_halted_at = ? WHERE id = 1',
+    ).run(reason, detail, atIso);
+  }
+
+  /** Clear the latch entirely — a half-cleared halt would render a stale reason. */
+  clearPostsHalt(): void {
+    this.db.prepare(
+      'UPDATE app_state SET posts_halted = 0, posts_halt_reason = NULL, posts_halt_detail = NULL, posts_halted_at = NULL WHERE id = 1',
+    ).run();
+  }
+
+  /** Stamped ONLY on a clean sweep, so a failed pass is retried by the next tick. */
+  markPostsSwept(atIso: string): void {
+    this.db.prepare('UPDATE app_state SET posts_swept_at = ? WHERE id = 1').run(atIso);
   }
 
   /** Increment the consecutive-failure counter and return the new value. */
