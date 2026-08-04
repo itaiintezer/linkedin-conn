@@ -8,6 +8,7 @@
  */
 import { test, expect, beforeEach, afterEach } from 'vitest';
 import { loadApp, byId, stubFetchRoutes, type AppInternals } from './helpers/load-app.js';
+import { SETTING_RULES } from '../../src/core/settings-rules.js';
 
 let app: AppInternals;
 const realFetch = globalThis.fetch;
@@ -68,6 +69,36 @@ test('a response with no rules still populates the form', async () => {
   stubSettings({ rules: undefined });
   await app.loadSettings();
   expect(byId<HTMLInputElement>('setWeeklyCap').value).toBe('120');
+});
+
+/*
+ * The three below check the map itself rather than a code path through it.
+ *
+ * They exist because the behavioural tests above barely touch it: they name four fields, and
+ * both walkers skip an input they can't find (`if (!input) return`). A mistyped id in any of
+ * the other fourteen entries is therefore invisible — the setting silently stops loading and
+ * saving, and every test still passes. These pin all 18 in both directions instead, the same
+ * way the rule table is pinned against the real settings columns rather than a hand list.
+ */
+
+test('every id in SETTINGS_FIELDS resolves to an element', () => {
+  const missing = app.SETTINGS_FIELDS.filter(({ id }) => !document.getElementById(id));
+  expect(missing.map((f) => `${f.key} -> #${f.id}`)).toEqual([]);
+});
+
+test('every key in SETTINGS_FIELDS has a server-side rule', () => {
+  const unruled = app.SETTINGS_FIELDS.filter(({ key }) => !SETTING_RULES[key]);
+  expect(unruled.map((f) => f.key)).toEqual([]);
+});
+
+/* The reverse direction, so a new input added to the HTML can't sit there unwired. Scoped by
+   containment and type rather than an id prefix: #setApifyKey is a password field in its own
+   form, is write-only, and must never join this list. */
+test('every numeric input in the settings form is in SETTINGS_FIELDS', () => {
+  const mapped = new Set(app.SETTINGS_FIELDS.map((f) => f.id));
+  const inputs = [...byId('settingsForm').querySelectorAll('input[type="number"]')];
+  expect(inputs.map((el) => el.id).filter((id) => !mapped.has(id))).toEqual([]);
+  expect(inputs).toHaveLength(app.SETTINGS_FIELDS.length);
 });
 
 test('submitting posts every field, keyed by setting name', async () => {
