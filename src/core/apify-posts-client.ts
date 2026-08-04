@@ -24,16 +24,28 @@
  *     budget would give up on it anyway, so an abandoned run stops billing instead of running
  *     to completion nobody reads. Both are documented query params on this endpoint:
  *     https://docs.apify.com/api/v2/act-runs-post
- *  4. A wall-clock `maxRunMs` deadline is enforced independently in BOTH the poll loop and the
- *     dataset-paging loop, so neither can run longer than the stated budget regardless of how
- *     `maxPolls`/`pollMs`/page counts interact.
- *  5. Dataset paging carries its own page cap tied to the same billing ceiling, so a pagination
- *     bug that never returns an empty page throws instead of looping — and eventually
- *     OOM-ing — forever.
+ *  4. A wall-clock `maxRunMs` deadline is checked at the top of every iteration of BOTH the
+ *     poll loop and the dataset-paging loop. That keeps both loops within roughly one retry
+ *     cycle of the stated budget — a check at the top of a loop can't preempt a retry cycle
+ *     already under way inside that iteration — not exactly bounded by it.
+ *  5. Dataset paging carries a generous absolute page cap that is NOT derived from `maxItems`
+ *     (that's a billing ceiling Apify explicitly does not use to bound dataset size — see
+ *     readDataset). Hitting it logs loudly and returns what was already read rather than
+ *     throwing: that data is already paid for, and discarding it only guarantees paying for
+ *     it again on the next sweep.
+ *
+ * TOKEN SAFETY: the token travels only in the query string this client itself constructs
+ * (never in a `path`, which every error message is free to include). Response bodies and
+ * transport-error text come from outside this process — an untrusted proxy or gateway can
+ * echo a request URI back in its own error page — so anything built from them is passed
+ * through `redact()` before it can reach an Error message and, from there, data/relay.log.
  */
 import type { ApifyPost } from '../types.js';
+import { log } from './log.js';
 
 const ACTOR_ID = 'harvestapi~linkedin-profile-posts';
+// Matches the component tag posts-repos.ts already uses for this feature.
+const LOG_COMPONENT = 'posts';
 
 /** $1.50–2.00 per 1,000 posts, pay-per-result. The conservative end, for the cost readout. */
 export const COST_PER_POST_USD = 0.002;
@@ -51,6 +63,13 @@ const DEFAULT_TIMEOUT_MS = 60_000;         // per HTTP request, not per run
 // after an ambiguous 5xx risks starting a second billable run for the same work.
 const DEFAULT_RETRY_ATTEMPTS = 3;
 const DEFAULT_RETRY_BACKOFF_MS = 2_000;
+// A generous ABSOLUTE guard against a broken pagination loop, not a size prediction — see the
+// class doc comment and readDataset for why this must not be derived from maxItems.
+const DEFAULT_MAX_DATASET_PAGES = 64;
+// Longest error body we'll fold into a thrown message. `preview` (the non-array-shape case)
+// already capped at 200; this keeps a verbose gateway/HTML error page from doing the same
+// thing at 10x the size.
+const MAX_ERROR_BODY_CHARS = 500;
 
 export type PostedLimit = '24h' | 'week' | 'month';
 
@@ -81,6 +100,8 @@ export interface HttpApifyPostsClientOptions {
   /** Attempts (including the first) for each idempotent GET. Never applied to run-start. */
   retryAttempts?: number;
   retryBackoffMs?: number;
+  /** Absolute page-count guard for dataset reads. See DEFAULT_MAX_DATASET_PAGES. */
+  maxDatasetPages?: number;
 }
 
 // Apify's actual run-status enum uses hyphens only (e.g. `TIMED-OUT`); there is no
@@ -92,6 +113,24 @@ interface ApifyResult {
   headers: Headers | undefined;
 }
 
+function isRetryableHttpStatus(status: number): boolean {
+  // 429 (rate limited) and 5xx (server/gateway trouble) are characteristically transient.
+  // Everything else (400/401/403/404/...) will not resolve itself by waiting.
+  return status === 429 || status >= 500;
+}
+
+/**
+ * Thrown by request() so callers can tell a transient failure (worth another poll, or another
+ * retry attempt) from a permanent one (bad auth, not found, bad request — retrying only delays
+ * the inevitable, and on a poll would delay the sweep worker's auth-failure latch for nothing).
+ */
+class ApifyRequestError extends Error {
+  constructor(message: string, public readonly status: number | undefined, public readonly retryable: boolean) {
+    super(message);
+    this.name = 'ApifyRequestError';
+  }
+}
+
 export class HttpApifyPostsClient implements ApifyPostsClient {
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -101,6 +140,7 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
   private readonly maxRunMs: number;
   private readonly retryAttempts: number;
   private readonly retryBackoffMs: number;
+  private readonly maxDatasetPages: number;
 
   constructor(private readonly token: string, opts: HttpApifyPostsClientOptions = {}) {
     this.fetchImpl = opts.fetchImpl ?? fetch;
@@ -111,6 +151,7 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
     this.maxRunMs = opts.maxRunMs ?? DEFAULT_MAX_RUN_MS;
     this.retryAttempts = opts.retryAttempts ?? DEFAULT_RETRY_ATTEMPTS;
     this.retryBackoffMs = opts.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
+    this.maxDatasetPages = opts.maxDatasetPages ?? DEFAULT_MAX_DATASET_PAGES;
   }
 
   async fetchPosts(urls: string[], opts: FetchPostsOptions): Promise<ApifyPost[]> {
@@ -121,7 +162,7 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
     const deadline = Date.now() + this.maxRunMs;
     const { runId, datasetId } = await this.startRun(urls, opts);
     const finalDatasetId = await this.awaitRun(runId, datasetId, deadline);
-    return this.readDataset(finalDatasetId, deadline, urls.length * opts.maxPosts);
+    return this.readDataset(finalDatasetId, deadline);
   }
 
   /**
@@ -178,6 +219,7 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
 
   /** Poll until terminal. Returns the dataset id the finished run reports. */
   private async awaitRun(runId: string, fallbackDatasetId: string, deadline: number): Promise<string> {
+    let lastPollError: unknown;
     for (let i = 0; i < this.maxPolls; i++) {
       if (Date.now() > deadline) {
         throw new Error(`Apify run ${runId} exceeded the ${this.maxRunMs}ms run budget while polling`);
@@ -186,9 +228,25 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
       // wait before the very first check) and the loop never sleeps once more right before
       // giving up on the last iteration.
       if (i > 0) await this.sleep(this.pollMs);
-      const { body: payload } = await this.requestWithRetry(
-        `/v2/actor-runs/${runId}`, { method: 'GET', headers: { Accept: 'application/json' } }, 'poll',
-      );
+
+      let payload: unknown;
+      try {
+        ({ body: payload } = await this.requestWithRetry(
+          `/v2/actor-runs/${runId}`, { method: 'GET', headers: { Accept: 'application/json' } }, 'poll',
+        ));
+      } catch (e) {
+        // A retryable failure (5xx, network blip, our own client-side timeout) shouldn't be
+        // fatal to a loop that may still have most of its poll/time budget left — treat it
+        // like a non-terminal status and let maxPolls/deadline keep bounding us. A
+        // non-retryable failure (401/403/404) will never resolve, so fail fast instead of
+        // spending the rest of the budget re-asking the same question.
+        if (e instanceof ApifyRequestError && e.retryable) {
+          lastPollError = e;
+          continue;
+        }
+        throw e;
+      }
+
       const data = (payload as { data?: { status?: unknown; defaultDatasetId?: string } })?.data;
       const status = data?.status;
       // Shape drift (the field renamed, or missing entirely) must not silently burn all
@@ -207,26 +265,29 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
     // Deliberately does not abort the run: it may still be doing billable work, and a second
     // sweep would pay for it again. The next pass reaches these profiles via their unchanged
     // last_swept_at, and INSERT OR IGNORE makes any overlap free.
-    throw new Error(`Apify run ${runId} did not finish within ${this.maxPolls} polls`);
+    const detail = lastPollError instanceof Error ? `; last poll error: ${lastPollError.message}` : '';
+    throw new Error(`Apify run ${runId} did not finish within ${this.maxPolls} polls${detail}`);
   }
 
-  private async readDataset(
-    datasetId: string, deadline: number, expectedMaxItems: number,
-  ): Promise<ApifyPost[]> {
+  private async readDataset(datasetId: string, deadline: number): Promise<ApifyPost[]> {
     const out: ApifyPost[] = [];
-    // Tied to the same maxItems ceiling we asked Apify to bill against, so a pagination bug
-    // (offset ignored, param renamed) that keeps returning full pages throws instead of
-    // paging — and eventually OOM-ing — forever. +2 pages of slack: one for the terminating
-    // empty page, one because skipHidden-style filtering can shave a page down without that
-    // meaning the dataset actually ended.
-    const maxPages = Math.max(1, Math.ceil(expectedMaxItems / PAGE_SIZE)) + 2;
     let pages = 0;
     for (let offset = 0; ; offset += PAGE_SIZE) {
       if (Date.now() > deadline) {
         throw new Error(`Apify dataset ${datasetId} read exceeded the ${this.maxRunMs}ms run budget`);
       }
-      if (pages++ >= maxPages) {
-        throw new Error(`Apify dataset ${datasetId} pagination did not terminate after ${maxPages} pages`);
+      if (pages++ >= this.maxDatasetPages) {
+        // NOT derived from maxItems: Apify's docs are explicit that maxItems bounds what we
+        // are CHARGED for, not what the dataset holds, so deriving a page cap from it would
+        // throw away a legitimately large, already-paid-for result. This is a generous
+        // absolute guard against a broken pagination loop (offset ignored, param renamed)
+        // instead. Returning what was read — rather than throwing — matters because that
+        // data is already paid for: discarding it only guarantees paying for it again when
+        // the next sweep re-fetches these profiles.
+        log.error(LOG_COMPONENT, 'dataset pagination hit the absolute page cap; returning partial data', {
+          datasetId, pages, itemsRead: out.length,
+        });
+        return out;
       }
       // skipHidden strips `#`-prefixed fields (none of which this client reads) without
       // filtering rows out of the page. skipEmpty (the other half of `clean=true`) does the
@@ -238,7 +299,7 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
         path, { method: 'GET', headers: { Accept: 'application/json' } }, `dataset page (offset=${offset})`,
       );
       if (!Array.isArray(page)) {
-        const preview = JSON.stringify(page)?.slice(0, 200);
+        const preview = this.redact(JSON.stringify(page) ?? 'undefined').slice(0, 200);
         throw new Error(
           `Apify dataset ${datasetId} returned an unexpected shape (${typeof page}) instead of an array: ${preview}`,
         );
@@ -249,8 +310,10 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
       if (page.length === 0) return out;
       // When Apify reports the authoritative total, trust it instead of waiting for an empty
       // page: it ends pagination one request earlier and isn't subject to the ambiguity above.
-      const total = headers?.get?.('X-Apify-Pagination-Total');
-      if (total != null && offset + page.length >= Number(total)) return out;
+      // A present-but-empty/unparseable header must NOT be treated as "total 0" (Number('')
+      // is 0), which would truncate the whole dataset after the first page.
+      const total = Number(headers?.get?.('X-Apify-Pagination-Total'));
+      if (Number.isFinite(total) && total > 0 && offset + page.length >= total) return out;
     }
   }
 
@@ -263,15 +326,30 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
         return await this.request(path, init, label);
       } catch (e) {
         lastErr = e;
+        // Non-retryable (permanent) failures get no benefit from another attempt — stop now
+        // rather than spending retryAttempts x retryBackoffMs finding out again.
+        if (!(e instanceof ApifyRequestError) || !e.retryable) throw e;
       }
     }
     throw lastErr;
   }
 
+  /** Untrusted upstream text (a response body, or a transport error's own message) may echo
+   *  our request URI — which carries the token — back at us, e.g. a WAF or gateway error page
+   *  quoting "the request to <url> failed". Strip both the raw and URL-encoded token forms. */
+  private redact(s: string): string {
+    if (!this.token) return s;
+    let out = s.split(this.token).join('[token redacted]');
+    const encoded = encodeURIComponent(this.token);
+    if (encoded !== this.token) out = out.split(encoded).join('[token redacted]');
+    return out;
+  }
+
   /**
    * One HTTP call. The token travels in the query string and MUST NEVER reach an error
    * message: those land in data/relay.log, which the operator downloads and shares when
-   * troubleshooting. So every throw below names the label/path/status/body, never the URL.
+   * troubleshooting. Every throw below is built from the label/path/status (always
+   * token-free by construction) plus redact()ed upstream text — never the URL itself.
    */
   private async request(path: string, init: RequestInit, label: string): Promise<ApifyResult> {
     const sep = path.includes('?') ? '&' : '?';
@@ -284,16 +362,24 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
     } catch (e) {
       const err = e as (Error & { cause?: { message?: string } });
       if (err?.name === 'AbortError') {
-        throw new Error(`Apify ${label} timed out client-side after ${this.timeoutMs}ms (path ${path})`);
+        // Our own client-side timeout: the server may just be slow, not down, so worth
+        // another poll/attempt.
+        throw new ApifyRequestError(
+          `Apify ${label} timed out client-side after ${this.timeoutMs}ms (path ${path})`,
+          undefined, true,
+        );
       }
       // A raw transport failure (DNS, connection refused/reset, TLS) is an error we did not
-      // construct. Node/undici's own message and cause are already token-free (verified: they
-      // report reason/host, never a full request URL for these failure modes) — wrap rather
-      // than rethrow raw so the label/path give the operator context Node's message lacks.
+      // construct. Node/undici's own message and cause were verified token-free for DNS
+      // failure and abort (they report reason/host, never a full request URL) — redact()ed
+      // anyway as defense in depth against a fetch polyfill or proxy that behaves differently.
       const cause = err?.cause?.message;
-      throw new Error(
-        `Apify ${label} transport failure at ${path}: ${err?.message ?? String(e)}`
-        + (cause ? ` (${cause})` : ''),
+      throw new ApifyRequestError(
+        this.redact(
+          `Apify ${label} transport failure at ${path}: ${err?.message ?? String(e)}`
+          + (cause ? ` (${cause})` : ''),
+        ),
+        undefined, true,
       );
     } finally {
       clearTimeout(timer);
@@ -302,11 +388,15 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
       // Reading the body releases the connection instead of leaving it to GC, and — more
       // importantly — Apify's own error body distinguishes cases an opaque status can't: it
       // returns HTTP 403 for both a bad API key and a spent monthly usage cap, and only the
-      // body says which. The body carries no token (the token is only ever in our own URL).
+      // body says which. The body is untrusted upstream text, though — a proxy/WAF/gateway
+      // page can echo our request URI (token included) back at us — so it is redact()ed and
+      // length-capped before it can reach an Error message.
       let bodyText = '';
       try { bodyText = await res.text(); } catch { /* unreadable body; fall back to status only */ }
-      throw new Error(
+      bodyText = this.redact(bodyText).slice(0, MAX_ERROR_BODY_CHARS);
+      throw new ApifyRequestError(
         `Apify ${label} failed (HTTP ${res.status}) at ${path}` + (bodyText ? `: ${bodyText}` : ''),
+        res.status, isRetryableHttpStatus(res.status),
       );
     }
     const body = await res.json();

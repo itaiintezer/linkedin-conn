@@ -7,6 +7,7 @@
  */
 import { test, expect, vi } from 'vitest';
 import { HttpApifyPostsClient } from '../../src/core/apify-posts-client.js';
+import { log } from '../../src/core/log.js';
 
 const TOKEN = 'apify_api_SECRETVALUE';
 const RUN_ID = 'run123';
@@ -143,9 +144,26 @@ test('trusts an authoritative X-Apify-Pagination-Total header instead of waiting
   expect(urls).toHaveLength(4); // no extra request just to fetch a terminating empty page
 });
 
-test('dataset pagination throws instead of looping forever when pages never come back empty', async () => {
+test('does not truncate the dataset when X-Apify-Pagination-Total is present but empty/unparseable', async () => {
+  const page = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `urn:li:activity:${i}` }));
+  const { impl, urls } = scriptedFetch([
+    { body: startedRun },
+    { body: succeeded },
+    // A present-but-blank header (e.g. a proxy stripping its value) must not be read as
+    // "total 0" (Number('') === 0), which would truncate after this very first page.
+    { body: page(500), headers: fakeHeaders({ 'X-Apify-Pagination-Total': '' }) },
+    { body: page(200) }, // more data a "total 0" bug would have silently hidden
+    { body: [] },        // the real end
+  ]);
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
+  const items = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 2000, postedLimit: '24h' });
+  expect(items).toHaveLength(700);
+  expect(urls).toHaveLength(5);
+});
+
+test('hitting the absolute page cap returns partial data with a loud log, instead of discarding an already-paid-for run', async () => {
   const page1000 = () => Array.from({ length: 1000 }, (_, i) => ({ id: `urn:li:activity:${i}` }));
-  // 1 url x maxPosts 3 => expectedMaxItems 3 => maxPages = ceil(3/1000) + 2 = 3
   const { impl } = scriptedFetch([
     { body: startedRun },
     { body: succeeded },
@@ -153,9 +171,18 @@ test('dataset pagination throws instead of looping forever when pages never come
     { body: page1000() },
     { body: page1000() },
   ]);
-  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
-  await expect(client.fetchPosts(['https://www.linkedin.com/in/a'],
-    { maxPosts: 3, postedLimit: '24h' })).rejects.toThrow(/did not terminate after/i);
+  const errorSpy = vi.spyOn(log, 'error').mockImplementation(() => {});
+  // maxDatasetPages is a generous ABSOLUTE guard, not derived from maxItems (maxItems is a
+  // billing ceiling Apify explicitly does not use to bound dataset size) — set small here
+  // purely so the test doesn't need to script 64+ pages to exercise the cap.
+  const client = new HttpApifyPostsClient(TOKEN, {
+    fetchImpl: impl, sleep: async () => {}, maxDatasetPages: 3,
+  });
+  const items = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' });
+  expect(items).toHaveLength(3000); // kept, not thrown away — it was already billed for
+  expect(errorSpy).toHaveBeenCalled();
+  errorSpy.mockRestore();
 });
 
 test('a non-array dataset page throws with a shape hint', async () => {
@@ -222,6 +249,44 @@ test('surfaces Apify\'s own error body for a 403 — status alone can\'t disting
   expect(err.message).toMatch(/403/);
   expect(err.message).toMatch(/monthly usage hard limit exceeded/);
   expect(err.message).not.toContain('SECRETVALUE');
+});
+
+test('redacts the token if an untrusted upstream error body echoes back the request URI', async () => {
+  // Reproduces a proxy/WAF/gateway error page that quotes the failing request, token
+  // included — a real leak path that reading the error body (fix for the 403 case above)
+  // would otherwise open.
+  const gatewayPage = `Bad Gateway: upstream request to https://api.apify.com/v2/acts/`
+    + `harvestapi~linkedin-profile-posts/runs?maxItems=3&timeout=1200&token=${TOKEN} failed`;
+  const { impl } = scriptedFetch([{ status: 502, body: gatewayPage }]);
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
+  const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' }).catch((e: Error) => e) as Error;
+  expect(err.message).toContain('[token redacted]');
+  expect(err.message).not.toContain('SECRETVALUE');
+});
+
+test('redacts the token from a non-array dataset shape\'s body preview too', async () => {
+  const leaky = { message: `token=${TOKEN} leaked into a broken dataset response` };
+  const { impl } = scriptedFetch([
+    { body: startedRun }, { body: succeeded }, { body: leaky },
+  ]);
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
+  const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' }).catch((e: Error) => e) as Error;
+  expect(err.message).toContain('[token redacted]');
+  expect(err.message).not.toContain('SECRETVALUE');
+});
+
+test('caps the interpolated error body length so a huge gateway page cannot bloat the log', async () => {
+  const hugeBody = 'x'.repeat(5000);
+  const { impl } = scriptedFetch([{ status: 502, body: hugeBody }]);
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
+  const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' }).catch((e: Error) => e) as Error;
+  // Well under the raw ~5000-char body: capped at 500 chars of body plus a short prefix
+  // naming the label/path/status, not thousands of characters of gateway HTML.
+  expect(err.message.length).toBeLessThan(700);
+  expect(err.message).not.toContain('x'.repeat(600));
 });
 
 test('a hung request aborts after timeoutMs with a clear, token-free message', async () => {
@@ -320,7 +385,20 @@ test('retries a transient poll failure before giving up', async () => {
   expect(callCount).toBe(4); // start, poll (fails), poll (retried, succeeds), dataset page
 });
 
-test('gives up after exhausting retries on a persistently failing poll, surfacing the real cause', async () => {
+test('retries a transient 5xx poll response (HTTP-status-based retry, not just transport exceptions)', async () => {
+  const { impl } = scriptedFetch([
+    { body: startedRun },
+    { status: 502, body: { error: 'bad gateway' } },
+    { body: succeeded },
+    { body: [] },
+  ]);
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
+  const items = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' });
+  expect(items).toEqual([]);
+});
+
+test('a persistently-failing poll keeps consuming the poll budget instead of aborting the whole run, and names the cause when it finally gives up', async () => {
   let callCount = 0;
   const impl = (async () => {
     callCount++;
@@ -328,12 +406,27 @@ test('gives up after exhausting retries on a persistently failing poll, surfacin
     throw new Error('ECONNREFUSED');
   }) as unknown as typeof fetch;
   const client = new HttpApifyPostsClient(TOKEN, {
-    fetchImpl: impl, sleep: async () => {}, retryAttempts: 3,
+    fetchImpl: impl, sleep: async () => {}, retryAttempts: 2, maxPolls: 2,
   });
   const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
     { maxPosts: 3, postedLimit: '24h' }).catch((e: Error) => e) as Error;
-  expect(err.message).toMatch(/ECONNREFUSED/);
-  expect(callCount).toBe(1 + 3); // run start + exactly 3 poll attempts, not retried forever
+  expect(err.message).toMatch(/did not finish within 2 polls/i);
+  expect(err.message).toMatch(/ECONNREFUSED/); // names the cause, doesn't just say "didn't finish"
+  expect(callCount).toBe(1 + 2 * 2); // run start + 2 polls x 2 retry attempts each
+});
+
+test('fails fast on a non-retryable poll error (401) instead of retrying it or consuming the poll budget', async () => {
+  const { impl, urls } = scriptedFetch([
+    { body: startedRun },
+    { status: 401, body: {} },
+  ]);
+  const client = new HttpApifyPostsClient(TOKEN, {
+    fetchImpl: impl, sleep: async () => {}, retryAttempts: 3, maxPolls: 240,
+  });
+  const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' }).catch((e: Error) => e) as Error;
+  expect(err.message).toMatch(/401/);
+  expect(urls).toHaveLength(2); // run start + exactly one poll attempt — no retry, no more polls
 });
 
 test('never retries the run-start POST — an ambiguous failure there must not risk a second billable run', async () => {
