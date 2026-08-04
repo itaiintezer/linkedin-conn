@@ -253,11 +253,216 @@ async function refreshPosts(append = false) {
   }
 }
 
-/* Replaced in Task 13 with the real selection bar renderer. */
-function renderPostsSelection() {}
+/**
+ * Show the bulk bar only while something is selected, and keep its count honest.
+ *
+ * Drives the checkboxes FROM postsState rather than the other way round, so a refresh that
+ * replaces every card puts the ticks back where they were.
+ */
+function renderPostsSelection() {
+  const n = postsState.selected.size;
+  const count = $('#postsSelectionCount');
+  if (count) count.textContent = `${fmtInt(n)} selected`;
+  // Hidden at zero, deliberately: a permanently visible queue affordance beside a feed is how
+  // engagements get queued that nobody meant to queue.
+  const bar = $('#postsSelectionBar');
+  if (bar) bar.hidden = n === 0;
+  for (const card of $$('.post-card')) {
+    const on = postsState.selected.has(Number(card.dataset.postId));
+    card.classList.toggle('is-selected', on);
+    const box = card.querySelector('[data-act="select"]');
+    if (box) box.checked = on;
+  }
+}
 
-/* Replaced in Task 13 with the real tracking table. */
-async function refreshTracked() {}
+/** The tracking manager's table. */
+async function refreshTracked() {
+  const body = $('#postsTrackedRows');
+  if (!body) return;
+  let payload;
+  try {
+    payload = await api('/api/tracked-profiles');
+  } catch (err) {
+    postsToast(`Could not load the tracked profiles: ${err.message}`, true);
+    return;
+  }
+  const rows = Array.isArray(payload && payload.tracked) ? payload.tracked : [];
+  body.replaceChildren();
+  for (const t of rows) {
+    const tr = el('tr', {});
+    tr.dataset.trackedId = String(t.id);
+
+    // full_name and last_sweep_error are third-party strings like the post bodies: the name
+    // comes from the scrape, the error from whatever Apify said. `text:` only.
+    const who = el('td', {}, el('div', { text: t.full_name || t.profile_url }));
+    if (t.full_name) who.appendChild(el('div', { class: 'post-meta', text: t.profile_url }));
+    if (t.last_sweep_error) {
+      who.appendChild(el('div', { class: 'post-error', text: t.last_sweep_error }));
+    }
+    tr.appendChild(who);
+
+    tr.appendChild(el('td', { text: fmtInt(t.post_count ?? 0) }));
+    tr.appendChild(el('td', { text: t.last_swept_at ? postAge(t.last_swept_at) : 'never' }));
+
+    const remove = el('button', { class: 'btn btn-ghost', type: 'button', text: 'Remove' });
+    remove.dataset.act = 'untrack';
+    tr.appendChild(el('td', {}, remove));
+
+    body.appendChild(tr);
+  }
+  const cap = $('#postsTrackCount');
+  if (cap) cap.textContent = `${fmtInt(rows.length)} of ${fmtInt(payload.cap ?? 0)} tracked`;
+}
+
+/**
+ * What a single engage actually did.
+ *
+ * The response is the authority, not the picked reaction: `reaction` is immutable once an
+ * engagement exists, so a re-queue keeps the one it was created with. Echoing the operator's
+ * choice back at them would claim a reaction that will never be sent — the one place this
+ * screen could lie about something irreversible.
+ */
+function queueOneSummary(res, picked) {
+  const kept = res && res.engagement ? res.engagement.reaction : null;
+  if (res && res.requeued) {
+    return kept && kept !== picked
+      ? `Re-queued with its original ${postReactionLabel(kept)} — a queued reaction cannot be changed, so ${postReactionLabel(picked)} was not applied.`
+      : `Re-queued as ${postReactionLabel(kept || picked)} for another attempt.`;
+  }
+  if (res && res.adopted) {
+    return `Already queued as ${postReactionLabel(kept || picked)} — linked to this post, nothing new was added.`;
+  }
+  return `Queued ${postReactionLabel(kept || picked)}.`;
+}
+
+/**
+ * What a bulk engage actually did, from the three id arrays rather than the one total.
+ *
+ * `added` is their sum, and reading it out loud as "queued 5 as Insightful" would attribute
+ * the picked reaction to rows that kept their own. So creates, re-queues and adoptions are
+ * counted apart, and a rejection is NAMED — "3 of 5 queued" leaves the operator guessing
+ * which two and why.
+ */
+function bulkQueueSummary(res, reaction) {
+  const size = (v) => (Array.isArray(v) ? v.length : 0);
+  const created = size(res && res.post_ids);
+  const requeued = size(res && res.requeued);
+  const adopted = size(res && res.adopted);
+  const rejected = Array.isArray(res && res.rejected) ? res.rejected : [];
+
+  const bits = [];
+  if (created > 0) bits.push(`Queued ${fmtInt(created)} as ${postReactionLabel(reaction)}`);
+  if (requeued > 0) {
+    bits.push(`re-queued ${fmtInt(requeued)} with their original reaction, not ${postReactionLabel(reaction)}`);
+  }
+  if (adopted > 0) bits.push(`${fmtInt(adopted)} already queued`);
+  if (rejected.length > 0) bits.push(`${fmtInt(rejected.length)} skipped: ${rejected[0].message}`);
+  return bits.length === 0 ? 'Nothing was queued.' : `${bits.join(' · ')}.`;
+}
+
+/** Queue one post. `comment` is omitted entirely when empty, never sent as ''. */
+async function queuePost(card, id, button) {
+  const reaction = card.querySelector('[data-act="reaction"]')?.value || 'like';
+  const box = card.querySelector('[data-act="comment"]');
+  // Only a REVEALED box counts: text left in a collapsed composer was not the operator's
+  // intent, and a comment goes out under their own name.
+  const comment = box && !box.hidden ? box.value.trim() : '';
+  const payload = comment === '' ? { reaction } : { reaction, comment };
+  if (button) button.disabled = true;
+  try {
+    const res = await api(`/api/posts/${id}/engage`, { method: 'POST', body: payload });
+    postsToast(queueOneSummary(res, reaction));
+    await refreshPosts(false);
+  } catch (err) {
+    postsToast(`Not queued: ${err.message}`, true);
+  } finally {
+    // The card is replaced by the refresh above, so this re-enables a detached node on the
+    // happy path and the real button on the failed one — which is the one that matters.
+    if (button) button.disabled = false;
+  }
+}
+
+/**
+ * Bulk: one reaction across the selection. No comment parameter exists here by design —
+ * see POST /api/posts/engage. Identical comment text on several posts is a recognizable spam
+ * pattern under the operator's own name, and the daily comment cap is 10.
+ */
+async function bulkQueue() {
+  const ids = [...postsState.selected];
+  if (ids.length === 0) return;
+  const reaction = $('#postsBulkReaction')?.value || 'like';
+  const btn = $('#postsBulkQueue');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/posts/engage', { method: 'POST', body: { post_ids: ids, reaction } });
+    // Cleared only once the server has answered: a thrown call leaves the selection intact so
+    // the operator can retry it rather than re-tick a page of cards.
+    postsState.selected.clear();
+    postsToast(bulkQueueSummary(res, reaction), Number(res && res.added) === 0);
+    await refreshPosts(false);
+  } catch (err) {
+    postsToast(`Nothing was queued: ${err.message}`, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** Add whatever is in the paste box to the tracked set. */
+async function addTracked() {
+  const area = $('#postsTrackText');
+  const text = area ? area.value.trim() : '';
+  if (text === '') return;
+  const btn = $('#postsTrackAdd');
+  if (btn) btn.disabled = true;
+  try {
+    // Sent verbatim: the server owns the parsing (extractProfileUrls), so a second copy of
+    // "what counts as a profile URL" cannot drift from it here.
+    const res = await api('/api/tracked-profiles', { method: 'POST', body: { text } });
+    if (area) area.value = '';
+    const rejects = Array.isArray(res && res.rejected) ? res.rejected : [];
+    postsToast(rejects.length === 0
+      ? `Now tracking ${fmtInt(res.added)} ${res.added === 1 ? 'profile' : 'profiles'}.`
+      : `Tracking ${fmtInt(res.added)} · ${fmtInt(rejects.length)} skipped: ${rejects[0].message}`,
+    res.added === 0);
+    await refreshTracked();
+    await refreshPosts(false);
+  } catch (err) {
+    postsToast(`Nothing was tracked: ${err.message}`, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** Untrack. Soft server-side, so the posts already collected stay in the feed. */
+async function untrack(id) {
+  try {
+    await api(`/api/tracked-profiles/${id}`, { method: 'DELETE' });
+    await refreshTracked();
+    await refreshPosts(false);
+  } catch (err) {
+    postsToast(`Could not untrack: ${err.message}`, true);
+  }
+}
+
+/**
+ * Manual sweep. Long on purpose — it returns only after the actor run finishes, so the button
+ * is disabled for the duration rather than inviting a second click that would bill again.
+ */
+async function sweepNow() {
+  const btn = $('#postsSweepNow');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sweeping…'; }
+  try {
+    const res = await api('/api/posts/sweep-now', { method: 'POST', body: {} });
+    postsToast(res && typeof res.postsAdded === 'number'
+      ? `Swept ${fmtInt(res.profilesSwept)} profiles · ${fmtInt(res.postsAdded)} new posts.`
+      : 'Sweep finished.');
+    await refreshPosts(false);
+  } catch (err) {
+    postsToast(`Sweep failed: ${err.message}`, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sweep now'; }
+  }
+}
 
 function initPosts() {
   for (const chip of $$('.posts-chip')) {
@@ -274,6 +479,52 @@ function initPosts() {
   }
 
   $('#postsMore')?.addEventListener('click', () => { void refreshPosts(true); });
+
+  /* ONE delegated listener on the feed rather than per-card handlers: a re-render replaces
+     every card, and re-binding handlers each time is how listeners leak. */
+  $('#postsFeed')?.addEventListener('click', (ev) => {
+    const target = ev.target.closest?.('[data-act]');
+    if (!target) return;
+    const card = target.closest('.post-card');
+    if (!card) return;
+    const act = target.dataset.act;
+    const id = Number(card.dataset.postId);
+
+    if (act === 'select') {
+      if (target.checked) postsState.selected.add(id); else postsState.selected.delete(id);
+      renderPostsSelection();
+      return;
+    }
+    if (act === 'expand') {
+      const body = card.querySelector('.post-body');
+      const clamped = body.classList.toggle('is-clamped');
+      target.textContent = clamped ? 'Show more' : 'Show less';
+      return;
+    }
+    if (act === 'comment-toggle') {
+      const box = card.querySelector('[data-act="comment"]');
+      if (!box) return;
+      box.hidden = !box.hidden;
+      if (!box.hidden) box.focus();
+      return;
+    }
+    if (act === 'queue') void queuePost(card, id, target);
+  });
+
+  $('#postsSelectionClear')?.addEventListener('click', () => {
+    postsState.selected.clear();
+    renderPostsSelection();
+  });
+
+  $('#postsBulkQueue')?.addEventListener('click', () => { void bulkQueue(); });
+  $('#postsTrackAdd')?.addEventListener('click', () => { void addTracked(); });
+  $('#postsSweepNow')?.addEventListener('click', () => { void sweepNow(); });
+
+  $('#postsTrackedRows')?.addEventListener('click', (ev) => {
+    const btn = ev.target.closest?.('[data-act="untrack"]');
+    if (!btn) return;
+    void untrack(Number(btn.closest('tr').dataset.trackedId));
+  });
 
   $('#postsManageToggle')?.addEventListener('click', () => {
     const panel = $('#postsManage');

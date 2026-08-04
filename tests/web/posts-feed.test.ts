@@ -6,7 +6,7 @@
  * tests/web suites.
  */
 import { test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { loadApp, type AppInternals } from './helpers/load-app.js';
+import { loadApp, stubFetchRoutes, type AppInternals } from './helpers/load-app.js';
 
 let internals: AppInternals;
 const realFetch = globalThis.fetch;
@@ -206,4 +206,360 @@ test('Load more pages forward with the cursor the server handed back', async () 
     // Appended, not replaced: paging must not throw away the page already being read.
     expect(document.querySelectorAll('#postsFeed .post-card')).toHaveLength(4);
   });
+});
+
+/* ---------- selection, bulk and per-post engage ---------- */
+
+/**
+ * Capture every fetch, and answer everything with one payload.
+ *
+ * `initPosts()` is called first in these tests on purpose: selection and queueing run through
+ * ONE delegated listener on #postsFeed rather than per-card handlers, because a re-render
+ * replaces every card and re-binding handlers each time is how listeners leak.
+ */
+function stubFetch(payload: unknown = feedPayload()) {
+  const calls: { url: string; method: string; body: unknown }[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({
+      url, method: init?.method ?? 'GET',
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    });
+    return { ok: true, status: 200, json: async () => payload } as Response;
+  }));
+  return calls;
+}
+
+const selectFirst = () =>
+  (document.querySelector('.post-card [data-act="select"]') as HTMLInputElement).click();
+
+test('the bulk bar stays hidden until something is selected', () => {
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  expect(document.getElementById('postsSelectionBar')!.hidden).toBe(true);
+
+  selectFirst();
+  expect(document.getElementById('postsSelectionBar')!.hidden).toBe(false);
+  expect(document.getElementById('postsSelectionCount')!.textContent).toContain('1');
+});
+
+test('selection survives a re-render', () => {
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  selectFirst();
+  // A refresh replaces every card; reading checkboxes off the DOM would lose this.
+  internals.renderPostsFeed(feedPayload());
+  expect(internals.postsState.selected.has(1)).toBe(true);
+  expect((document.querySelector('.post-card [data-act="select"]') as HTMLInputElement).checked)
+    .toBe(true);
+  expect(document.querySelector('.post-card')!.classList.contains('is-selected')).toBe(true);
+});
+
+test('Clear empties the selection and hides the bar', () => {
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  selectFirst();
+  (document.getElementById('postsSelectionClear') as HTMLButtonElement).click();
+  expect(internals.postsState.selected.size).toBe(0);
+  expect(document.getElementById('postsSelectionBar')!.hidden).toBe(true);
+});
+
+test('bulk queue posts the selected ids and the chosen reaction, and no comment', async () => {
+  const calls = stubFetch();
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  selectFirst();
+  (document.getElementById('postsBulkReaction') as HTMLSelectElement).value = 'insightful';
+  (document.getElementById('postsBulkQueue') as HTMLButtonElement).click();
+
+  await vi.waitFor(() => {
+    const bulk = calls.find((c) => c.url.includes('/api/posts/engage'));
+    expect(bulk).toBeTruthy();
+    expect(bulk!.method).toBe('POST');
+    expect(bulk!.body).toEqual({ post_ids: [1], reaction: 'insightful' });
+    // The bulk payload must never carry a comment: identical text on several posts is a spam
+    // pattern under the operator's own name.
+    expect(Object.keys(bulk!.body as object)).not.toContain('comment');
+  });
+});
+
+test('bulk queue does nothing when nothing is selected', async () => {
+  const calls = stubFetch();
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  (document.getElementById('postsBulkQueue') as HTMLButtonElement).click();
+  await new Promise((r) => setTimeout(r, 5));
+  expect(calls.filter((c) => c.url.includes('/api/posts/engage'))).toHaveLength(0);
+});
+
+test('bulk reports creates, re-queues and adoptions separately, never as one number', async () => {
+  /* A re-queued engagement keeps its ORIGINAL reaction — `reaction` is immutable after
+     creation — so reading `added` out loud as "queued 5 as Insightful" would claim four
+     reactions nobody chose. This is the one place the UI can lie about an irreversible act. */
+  stubFetchRoutes({
+    '/api/posts': { body: feedPayload() },
+    '/api/posts/engage': {
+      body: { added: 5, post_ids: [1], adopted: [2, 5], requeued: [3, 4], rejected: [] },
+    },
+  });
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  selectFirst();
+  (document.getElementById('postsBulkReaction') as HTMLSelectElement).value = 'insightful';
+  (document.getElementById('postsBulkQueue') as HTMLButtonElement).click();
+
+  await vi.waitFor(() => {
+    const msg = document.getElementById('postsToast')!.textContent!;
+    expect(msg).toContain('Queued 1');
+    expect(msg).toContain('2 already queued');
+    expect(msg).toMatch(/re-queued 2 .*original reaction/i);
+    // The picked reaction must never be attributed to the four that kept their own.
+    expect(msg).not.toContain('Queued 5');
+  });
+});
+
+test('a bulk rejection is named, not just counted', async () => {
+  stubFetchRoutes({
+    '/api/posts': { body: feedPayload() },
+    '/api/posts/engage': {
+      body: {
+        added: 0, post_ids: [], adopted: [], requeued: [],
+        rejected: [{ post_id: 1, reason: 'duplicate', message: 'already reacted as engagement 8 (sent)' }],
+      },
+    },
+  });
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  selectFirst();
+  (document.getElementById('postsBulkQueue') as HTMLButtonElement).click();
+
+  await vi.waitFor(() => {
+    // "0 of 1 queued" leaves the operator guessing which one and why.
+    expect(document.getElementById('postsToast')!.textContent)
+      .toContain('already reacted as engagement 8');
+  });
+});
+
+test('a failed bulk queue keeps the selection so it can be retried', async () => {
+  stubFetchRoutes({
+    '/api/posts': { body: feedPayload() },
+    '/api/posts/engage': { status: 500, error: 'database is locked' },
+  });
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  selectFirst();
+  (document.getElementById('postsBulkQueue') as HTMLButtonElement).click();
+
+  await vi.waitFor(() => {
+    expect(document.getElementById('postsToast')!.textContent).toContain('database is locked');
+  });
+  expect(internals.postsState.selected.has(1)).toBe(true);
+  expect((document.getElementById('postsBulkQueue') as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('per-post Queue sends the card reaction and the comment when one was typed', async () => {
+  const calls = stubFetch();
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  const card = document.querySelector('.post-card') as HTMLElement;
+  (card.querySelector('[data-act="reaction"]') as HTMLSelectElement).value = 'celebrate';
+  (card.querySelector('[data-act="comment-toggle"]') as HTMLButtonElement).click();
+  const box = card.querySelector('[data-act="comment"]') as HTMLTextAreaElement;
+  expect(box.hidden).toBe(false);
+  box.value = 'Congrats!';
+  (card.querySelector('[data-act="queue"]') as HTMLButtonElement).click();
+
+  await vi.waitFor(() => {
+    const one = calls.find((c) => c.url === '/api/posts/1/engage');
+    expect(one).toBeTruthy();
+    expect(one!.body).toEqual({ reaction: 'celebrate', comment: 'Congrats!' });
+  });
+});
+
+test('a per-post Queue with no comment omits the field entirely', async () => {
+  const calls = stubFetch();
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  const card = document.querySelector('.post-card') as HTMLElement;
+  (card.querySelector('[data-act="queue"]') as HTMLButtonElement).click();
+  await vi.waitFor(() => {
+    const one = calls.find((c) => c.url === '/api/posts/1/engage');
+    expect(one!.body).toEqual({ reaction: 'like' });
+  });
+});
+
+test('a per-post re-queue reports the reaction the row kept, not the one just picked', async () => {
+  stubFetchRoutes({
+    '/api/posts': { body: feedPayload() },
+    '/api/posts/1/engage': {
+      body: {
+        post_id: 1, requeued: true,
+        engagement: { id: 9, status: 'queued', reaction: 'celebrate', comment: null },
+      },
+    },
+  });
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  const card = document.querySelector('.post-card') as HTMLElement;
+  (card.querySelector('[data-act="reaction"]') as HTMLSelectElement).value = 'insightful';
+  (card.querySelector('[data-act="queue"]') as HTMLButtonElement).click();
+
+  await vi.waitFor(() => {
+    const msg = document.getElementById('postsToast')!.textContent!;
+    expect(msg).toContain('Celebrate');
+    expect(msg).toMatch(/Insightful.*not applied/i);
+  });
+});
+
+test('a refused per-post Queue says why and leaves the button usable', async () => {
+  stubFetchRoutes({
+    '/api/posts': { body: feedPayload() },
+    '/api/posts/1/engage': { status: 409, error: 'already queued as engagement 8 (sending)' },
+  });
+  internals.initPosts();
+  internals.renderPostsFeed(feedPayload());
+  const card = document.querySelector('.post-card') as HTMLElement;
+  (card.querySelector('[data-act="queue"]') as HTMLButtonElement).click();
+
+  await vi.waitFor(() => {
+    expect(document.getElementById('postsToast')!.textContent)
+      .toContain('already queued as engagement 8');
+  });
+  expect((document.querySelector('[data-act="queue"]') as HTMLButtonElement).disabled).toBe(false);
+});
+
+test('Show more unclamps a long body', () => {
+  internals.initPosts();
+  const long = `Alert triage is an ownership problem. ${'The rota is the tell. '.repeat(12)}`;
+  internals.renderPostsFeed(feedPayload({
+    posts: [{ ...feedPayload().posts[0], content: long }],
+  }));
+  const card = document.querySelector('.post-card') as HTMLElement;
+  const body = card.querySelector('.post-body')!;
+  expect(body.classList.contains('is-clamped')).toBe(true);
+  const expand = card.querySelector('[data-act="expand"]') as HTMLButtonElement;
+  expand.click();
+  expect(body.classList.contains('is-clamped')).toBe(false);
+  expect(expand.textContent).toBe('Show less');
+});
+
+test('a body short enough to fit gets no expander at all', () => {
+  // A "Show more" that visibly does nothing is worse than none: the clamp is two lines.
+  internals.renderPostsFeed(feedPayload());
+  expect(document.querySelector('.post-card [data-act="expand"]')).toBeNull();
+});
+
+test('the tracking table lists profiles with a Remove button', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true, status: 200,
+    json: async () => ({
+      tracked: [{ id: 3, profile_url: 'https://www.linkedin.com/in/dana',
+        full_name: 'Dana Reingold', post_count: 12, last_swept_at: '2026-08-04T09:00:00.000Z',
+        last_sweep_error: null }],
+      cap: 200, swept_at: '2026-08-04T09:00:00.000Z',
+    }),
+  } as Response)));
+  await internals.refreshTracked();
+  const rows = document.querySelectorAll('#postsTrackedRows tr');
+  expect(rows).toHaveLength(1);
+  expect(rows[0].textContent).toContain('Dana Reingold');
+  expect(rows[0].querySelector('[data-act="untrack"]')).not.toBeNull();
+  expect(document.getElementById('postsTrackCount')!.textContent).toContain('200');
+});
+
+test('a per-profile sweep error is surfaced in the tracking table', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true, status: 200,
+    json: async () => ({
+      tracked: [{ id: 3, profile_url: 'https://www.linkedin.com/in/dana', full_name: null,
+        post_count: 0, last_swept_at: null, last_sweep_error: 'Apify run FAILED' }],
+      cap: 200, swept_at: null,
+    }),
+  } as Response)));
+  await internals.refreshTracked();
+  expect(document.querySelector('#postsTrackedRows .post-error')!.textContent)
+    .toContain('Apify run FAILED');
+});
+
+test('a tracked profile name is text, never markup', async () => {
+  // full_name comes from the same scrape as the post bodies.
+  const calls = stubFetchRoutes({
+    '/api/tracked-profiles': {
+      body: {
+        tracked: [{ id: 3, profile_url: 'https://www.linkedin.com/in/dana',
+          full_name: '<img src=x onerror="window.__xss=1">', post_count: 0,
+          last_swept_at: null, last_sweep_error: '<b>boom</b>' }],
+        cap: 200, swept_at: null,
+      },
+    },
+  });
+  await internals.refreshTracked();
+  expect(calls).toHaveLength(1);
+  expect(document.querySelector('#postsTrackedRows img')).toBeNull();
+  expect(document.querySelector('#postsTrackedRows b')).toBeNull();
+});
+
+test('Remove untracks the row, then reloads the table and the feed', async () => {
+  const calls = stubFetchRoutes({
+    '/api/tracked-profiles': {
+      body: {
+        tracked: [{ id: 3, profile_url: 'https://www.linkedin.com/in/dana', full_name: 'Dana',
+          post_count: 1, last_swept_at: null, last_sweep_error: null }],
+        cap: 200, swept_at: null,
+      },
+    },
+    '/api/tracked-profiles/3': { body: { ok: true, id: 3 } },
+    '/api/posts': { body: feedPayload() },
+  });
+  internals.initPosts();
+  await internals.refreshTracked();
+  (document.querySelector('#postsTrackedRows [data-act="untrack"]') as HTMLButtonElement).click();
+  await vi.waitFor(() => {
+    const del = calls.find((c) => c.path === '/api/tracked-profiles/3');
+    expect(del).toBeTruthy();
+    expect(del!.method).toBe('DELETE');
+    expect(calls.some((c) => c.path.startsWith('/api/posts?'))).toBe(true);
+  });
+});
+
+test('pasting profiles into the tracking box posts the raw text and reports rejects', async () => {
+  const calls = stubFetchRoutes({
+    '/api/tracked-profiles': {
+      body: {
+        added: 1, ids: [4],
+        rejected: [{ profile_url: 'nope', reason: 'invalid_url', message: 'not a LinkedIn profile URL: nope' }],
+        tracked: [], cap: 200, swept_at: null,
+      },
+    },
+    '/api/posts': { body: feedPayload() },
+  });
+  internals.initPosts();
+  (document.getElementById('postsTrackText') as HTMLTextAreaElement).value =
+    'https://www.linkedin.com/in/dana\nnope';
+  (document.getElementById('postsTrackAdd') as HTMLButtonElement).click();
+
+  await vi.waitFor(() => {
+    const post = calls.find((c) => c.method === 'POST' && c.path === '/api/tracked-profiles');
+    expect(post).toBeTruthy();
+    // The server owns the parsing (extractProfileUrls); the box sends its text verbatim.
+    expect(post!.body).toEqual({ text: 'https://www.linkedin.com/in/dana\nnope' });
+    expect(document.getElementById('postsToast')!.textContent)
+      .toContain('not a LinkedIn profile URL: nope');
+  });
+});
+
+test('Sweep now disables itself for the duration and reports what it found', async () => {
+  stubFetchRoutes({
+    '/api/posts/sweep-now': { body: { runs: 1, profilesSwept: 4, postsAdded: 9 } },
+    '/api/posts': { body: feedPayload() },
+  });
+  internals.initPosts();
+  const btn = document.getElementById('postsSweepNow') as HTMLButtonElement;
+  btn.click();
+  // Long on purpose — a second click would bill a second actor run.
+  expect(btn.disabled).toBe(true);
+  await vi.waitFor(() => {
+    expect(document.getElementById('postsToast')!.textContent).toContain('9');
+    expect(btn.disabled).toBe(false);
+  });
+  expect(btn.textContent).toBe('Sweep now');
 });
