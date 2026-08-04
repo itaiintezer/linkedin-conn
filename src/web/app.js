@@ -1815,6 +1815,79 @@ function applySettingRules(rules) {
   });
 }
 
+/**
+ * Show or clear one field's error message.
+ *
+ * The <p> is created on demand rather than shipped empty in index.html — eighteen unused
+ * error slots would be eighteen more things to keep in step with SETTINGS_FIELDS.
+ */
+function setFieldError(input, message) {
+  const field = input.closest('.field');
+  if (!field) return;
+  let note = field.querySelector('.field-error');
+  if (!message) {
+    if (note) note.remove();
+    input.classList.remove('is-invalid');
+    input.removeAttribute('aria-invalid');
+    input.removeAttribute('aria-describedby');
+    return;
+  }
+  if (!note) {
+    note = document.createElement('p');
+    note.className = 'field-error';
+    note.id = `${input.id}-err`;
+    field.appendChild(note);
+  }
+  note.textContent = message;
+  input.classList.add('is-invalid');
+  input.setAttribute('aria-invalid', 'true');
+  input.setAttribute('aria-describedby', note.id);
+}
+
+/**
+ * Check every settings input against the served rules, marking each offending field.
+ * Returns the failures; empty means the form is safe to post.
+ *
+ * Runs on load as well as on submit. Two ceilings tightened when this shipped (reply checks
+ * 24->4, events/day 10->2), so a database written by an older build can hold a value the
+ * rules now reject. The load-time pass names it the moment Settings opens, rather than
+ * letting the operator edit something unrelated and get a rejection about a field they
+ * never touched.
+ *
+ * The rules come from the server, so this can only ever agree with what POST will accept —
+ * but POST re-checks regardless. This is the message, not the guarantee.
+ */
+function validateSettings() {
+  const failures = [];
+  const values = {};
+  SETTINGS_FIELDS.forEach(({ key, id }) => {
+    const input = $(`#${id}`);
+    if (!input) return;
+    setFieldError(input, null);
+    if (input.value === '') return;
+    const n = Number(input.value);
+    values[key] = n;
+    const rule = settingRules[key];
+    if (!rule) return;
+    let message = null;
+    if (!Number.isInteger(n)) message = `${rule.label} must be a whole number.`;
+    else if (n < rule.min || n > rule.max) message = `${rule.label} must be between ${rule.min} and ${rule.max}.`;
+    if (message) { setFieldError(input, message); failures.push({ id, message }); }
+  });
+
+  // The one cross-field rule with two form fields. Skipped when either hour already failed
+  // its own range — "must be after the start hour" stacked on "must be between 0 and 23" is
+  // noise, and the server applies the same restraint.
+  const alreadyBad = failures.some((f) => f.id === 'setStart' || f.id === 'setEnd');
+  if (!alreadyBad && values.workday_start_hour !== undefined && values.workday_end_hour !== undefined
+      && values.workday_end_hour <= values.workday_start_hour) {
+    const message = `Workday end hour must be after the start hour (currently ${values.workday_start_hour}).`;
+    setFieldError($('#setEnd'), message);
+    failures.push({ id: 'setEnd', message });
+  }
+  return failures;
+}
+
 async function loadSettings() {
   try {
     const s = await api('/api/settings');
@@ -1823,6 +1896,7 @@ async function loadSettings() {
       const input = $(`#${id}`);
       if (input) input.value = s[key] ?? '';
     });
+    validateSettings();   // flag anything the stored row already violates
     renderApifyKey(s);
     refreshConnections();
     loadLogs();
@@ -2577,12 +2651,23 @@ function initSettings() {
   $('#settingsForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const result = $('#settingsResult');
-    const patch = {};
-    SETTINGS_FIELDS.forEach(({ key, id }) => {
-      const v = $(`#${id}`).value;
-      if (v !== '') patch[key] = Number(v);
-    });
+    // Local check first: no request goes out for a value the server would only reject.
+    const failures = validateSettings();
+    if (failures.length) {
+      const first = $(`#${failures[0].id}`);
+      if (first) first.focus();
+      toast(result, failures.length === 1 ? failures[0].message : `Fix ${failures.length} settings before saving.`, true);
+      return;
+    }
     try {
+      // Inside the try on purpose: a missing input id throws here, and outside the try that
+      // becomes an unhandled rejection in an async listener — no toast, nothing in the
+      // result box, a Save button that visibly does nothing. Loud beats silent.
+      const patch = {};
+      SETTINGS_FIELDS.forEach(({ key, id }) => {
+        const v = $(`#${id}`).value;
+        if (v !== '') patch[key] = Number(v);
+      });
       await api('/api/settings', { method: 'POST', body: patch });
       toast(result, 'Settings saved.');
     } catch (err) {

@@ -111,3 +111,82 @@ test('submitting posts every field, keyed by setting name', async () => {
   expect((post.body as Record<string, number>).weekly_cap).toBe(90);
   expect((post.body as Record<string, number>).workday_end_hour).toBe(20);
 });
+
+/** Submit and let the async handler settle, so the caller's stub has recorded any POST. */
+async function submit() {
+  byId('settingsForm').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+  await new Promise((r) => setTimeout(r, 0));
+}
+
+/**
+ * The writes the form has made. Counted rather than compared against `calls.length`, because
+ * loadSettings() fans out to refreshConnections() without awaiting it and that chain tails
+ * into GET /api/enrichment/status — a GET that lands during the submit tick and would make a
+ * total-call count look like a save that never happened.
+ */
+const posts = (calls: { method: string }[]) => calls.filter((c) => c.method === 'POST').length;
+
+test('an out-of-range entry blocks the save and marks the field', async () => {
+  const calls = stubSettings();
+  await app.loadSettings();
+  byId<HTMLInputElement>('setWeeklyCap').value = '5000';
+  await submit();
+
+  expect(posts(calls)).toBe(0);                                       // nothing was posted
+  const err = byId('setWeeklyCap').closest('.field')!.querySelector('.field-error')!;
+  expect(err.textContent).toBe('Weekly cap (invites) must be between 0 and 150.');
+  expect(byId('setWeeklyCap').getAttribute('aria-invalid')).toBe('true');
+});
+
+test('a fixed value clears the error and lets the save through', async () => {
+  const calls = stubSettings();
+  await app.loadSettings();
+  byId<HTMLInputElement>('setWeeklyCap').value = '5000';
+  await submit();
+  byId<HTMLInputElement>('setWeeklyCap').value = '90';
+  await submit();
+
+  expect(byId('setWeeklyCap').closest('.field')!.querySelector('.field-error')).toBeNull();
+  expect(calls.some((c) => c.method === 'POST')).toBe(true);
+});
+
+test('an inverted workday window is caught in the form', async () => {
+  const calls = stubSettings();
+  await app.loadSettings();
+  byId<HTMLInputElement>('setStart').value = '18';
+  byId<HTMLInputElement>('setEnd').value = '9';
+  await submit();
+
+  expect(posts(calls)).toBe(0);
+  const err = byId('setEnd').closest('.field')!.querySelector('.field-error')!;
+  expect(err.textContent).toBe('Workday end hour must be after the start hour (currently 18).');
+});
+
+/* The two tightened ceilings (reply checks 24->4, events/day 10->2) mean a live database can
+   hold a value the rules now reject. Flagging it only on submit would reject a field the
+   operator never touched, with no clue which one. */
+test('a stored value the rules now reject is flagged the moment Settings opens', async () => {
+  stubSettings({ reply_checks_per_day: 6 });
+  await app.loadSettings();
+
+  const err = byId('setReplyChecks').closest('.field')!.querySelector('.field-error')!;
+  expect(err.textContent).toBe('Reply checks / day must be between 1 and 4.');
+});
+
+test('a whole-number rule rejects a decimal', async () => {
+  stubSettings();
+  await app.loadSettings();
+  byId<HTMLInputElement>('setWeeklyCap').value = '12.5';
+  await submit();
+  const err = byId('setWeeklyCap').closest('.field')!.querySelector('.field-error')!;
+  expect(err.textContent).toBe('Weekly cap (invites) must be a whole number.');
+});
+
+test('several failures are counted in the toast, not listed', async () => {
+  stubSettings();
+  await app.loadSettings();
+  byId<HTMLInputElement>('setWeeklyCap').value = '5000';
+  byId<HTMLInputElement>('setReplyChecks').value = '99';
+  await submit();
+  expect(byId('settingsResult').textContent).toBe('Fix 2 settings before saving.');
+});
