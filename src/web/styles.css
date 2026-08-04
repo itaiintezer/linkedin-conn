@@ -142,12 +142,19 @@ body > *:not(.atmosphere) { position: relative; z-index: 1; }
   background: linear-gradient(150deg, var(--brand) 0%, var(--brand-700) 100%);
   box-shadow: 0 6px 16px -4px var(--brand-glow), inset 0 1px 0 rgba(255,255,255,0.25);
 }
-.brand-text h1 {
+.brand-text {
   margin: 0; font-family: var(--display);
   font-size: 22px; font-weight: 600; line-height: 1;
   letter-spacing: -0.5px; color: var(--ink);
 }
-.brand-text p { display: none; }  /* subtitle removed in the one-line bar */
+/* The whole lockup — mark and wordmark — is the dashboard button. */
+.brand-home {
+  display: flex; align-items: center; gap: 11px;
+  margin: 0; padding: 0; border: none; background: none;
+  font: inherit; letter-spacing: inherit; color: inherit; cursor: pointer;
+}
+.brand-home:hover { color: var(--brand-700); }
+.brand-home:focus-visible { outline: 2px solid var(--brand); outline-offset: 4px; border-radius: 4px; }
 
 .login-status {
   display: flex; align-items: center; gap: 11px; flex: none;
@@ -1072,7 +1079,31 @@ body > .modal-overlay {
 .section-divider::before, .section-divider::after { content:""; height:1px; background:var(--line); flex:1; }
 .cohort-stat { font-size:12px; color:var(--ink-3); margin:2px 0 6px; font-family:var(--mono); }
 
-.docs-layout { display:grid; grid-template-columns:200px 1fr; gap:22px; align-items:start; }
+/* Docs, folded into Settings as a collapsed section. The summary carries the same
+   display-serif h3 + grey sub as the screen's other section heads so it reads as one of
+   them, not as an afterthought. */
+.docs-block { margin-top: 42px; border-top: 1px solid var(--line); padding-top: 22px; }
+.docs-block > summary {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  cursor: pointer; user-select: none; list-style: none;
+  font-family: var(--display); font-size: 21px; font-weight: 600; color: var(--ink);
+}
+.docs-block > summary::-webkit-details-marker { display: none; }
+.docs-block > summary::before {
+  content: '›'; font-family: var(--mono); font-size: 20px; line-height: 1; color: var(--ink-3);
+  transition: transform .16s ease;
+}
+.docs-block[open] > summary::before { transform: rotate(90deg); }
+.docs-block > summary:hover { color: var(--brand-700); }
+.docs-block > summary:focus-visible { outline: 2px solid var(--brand); outline-offset: 4px; border-radius: 6px; }
+.docs-summary-sub { font-family: var(--sans); font-size: 14.5px; font-weight: 400; color: var(--ink-3); }
+.docs-block .docs-layout { margin-top: 22px; }
+
+/* minmax(0, 1fr), not 1fr: a grid track's automatic minimum is its content's min-content
+   width, so a wide code line or table pushed the pane past the viewport and gave the whole
+   page a horizontal scrollbar. Capping the floor at 0 lets .md-table and pre.md-pre scroll
+   inside themselves, which is what their own overflow rules are for. */
+.docs-layout { display:grid; grid-template-columns:200px minmax(0, 1fr); gap:22px; align-items:start; }
 .docs-nav { display:flex; flex-direction:column; gap:4px; position:sticky; top:90px; }
 .docs-nav-item { text-align:left; border:none; background:none; padding:8px 12px; border-radius:8px; font:inherit; font-size:13.5px; font-weight:600; color:var(--ink-3); cursor:pointer; }
 .docs-nav-item.is-active { color:var(--brand-ink); background:var(--brand-50); }
