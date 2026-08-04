@@ -3,6 +3,8 @@ import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
+import { armedCampaign } from '../helpers/event-fixtures.js';
+import { dueEventRun } from '../../src/worker/event-campaign.js';
 
 let app: ReturnType<typeof buildServer>;
 let repos: Repos;
@@ -279,4 +281,80 @@ test('a new campaign inherits the current caps from settings', async () => {
   const created = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('keren')] })).json();
   expect(created.event.invite_cap).toBe(42);
   expect(created.event.bucket_ceiling).toBe(3);
+});
+
+/* ---------- POST /api/run-now belt=event (Task 7) ---------- */
+// This file's own `conn`/arm-via-two-calls pattern (create then POST .../arm) has no
+// single-call "give me a runnable campaign" helper, so we reach for the shared
+// `armedCampaign` fixture (tests/helpers/event-fixtures.ts) rather than hand-rolling a new
+// one — same minimum-runnable state tests/worker/run-now.test.ts already exercises.
+//
+// Unlike tests/worker/run-now.test.ts (which calls `preflight`/`moveEventWindow` directly
+// against a pinned `NOW`), everything below goes through the real HTTP endpoint, and
+// POST /api/run-now stamps `now = new Date()` itself (src/api/server.ts) — the real wall
+// clock. `repos.eventRuns.start` also stamps `started_at` via SQLite's own real-time
+// `datetime('now')`. Both clocks are therefore already the same real clock, so there is no
+// fixed-vs-real mismatch to patch around here (unlike the worker-level tests) — no
+// `UPDATE event_runs SET started_at = ...` patch is needed in this file.
+function armAnEventCampaign(): number {
+  return armedCampaign(repos, new Date());
+}
+
+test('POST /api/run-now belt=event opens the window now for the armed campaign', async () => {
+  const id = armAnEventCampaign();
+
+  const res = await post('/api/run-now', { belt: 'event' });
+
+  expect(res.statusCode).toBe(200);
+  const body = res.json();
+  expect(body.belt).toBe('event');
+  expect(body.event_id).toBe(id);
+  expect(body.started).toBe(false);               // runEventTick fires it, not this request
+  // The window IS this belt's payload now (there is no `promoted` count for an event run —
+  // see the comment in src/api/server.ts) — assert it rather than just the envelope fields.
+  expect(typeof body.from).toBe('string');
+  expect(typeof body.to).toBe('string');
+  expect(new Date(body.to).getTime()).toBeGreaterThan(new Date(body.from).getTime());
+  expect(dueEventRun(repos, new Date())?.event.id).toBe(id);
+});
+
+test('POST /api/run-now belt=event refuses once the daily run budget is spent', async () => {
+  const id = armAnEventCampaign();
+  repos.settings.update({ events_per_day: 1 });
+  const run = repos.eventRuns.start(id, 'live', null);
+  repos.eventRuns.finish(run.id, 'complete', 1, new Date().toISOString());
+
+  const res = await post('/api/run-now', { belt: 'event' });
+
+  expect(res.statusCode).toBe(409);
+  expect(res.json().code).toBe('daily_cap');
+});
+
+test('POST /api/run-now belt=event refuses when no campaign is armed', async () => {
+  const res = await post('/api/run-now', { belt: 'event' });
+  expect(res.statusCode).toBe(409);
+  expect(res.json().code).toBe('nothing_armed');
+});
+
+// The per-campaign endpoint (POST /api/events/:id/run-now) is the deliberate override that
+// events_per_day must NOT reach: it is how an operator forces a specific campaign out
+// regardless of how many event runs already happened today. If this test passed merely
+// because the campaign had drifted out of 'armed' status (that endpoint's own separate
+// guard), it would look green while proving nothing about the daily cap at all — so the
+// status is checked and restored before asserting anything.
+test('the per-campaign run-now stays uncapped as the deliberate override', async () => {
+  const id = armAnEventCampaign();
+  repos.settings.update({ events_per_day: 1 });
+  const run = repos.eventRuns.start(id, 'live', null);
+  repos.eventRuns.finish(run.id, 'complete', 1, new Date().toISOString());
+
+  // eventRuns.start/finish do not themselves touch eventCampaigns.status — but re-arm
+  // defensively so a future change to that assumption can't turn this into a false pass.
+  if (repos.eventCampaigns.findById(id)!.status !== 'armed') {
+    repos.eventCampaigns.update(id, { status: 'armed', armed_at: new Date().toISOString() });
+  }
+
+  const res = await post(`/api/events/${id}/run-now`, {});
+
+  expect(res.statusCode).toBe(200);
 });

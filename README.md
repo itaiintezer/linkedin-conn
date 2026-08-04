@@ -399,8 +399,8 @@ Two deliberate limits:
 
 - If LinkedIn shows a captcha/checkpoint, the queue auto-pauses and the dashboard shows a
   banner linking to a screenshot of the page that tripped it (saved in `data/incidents/`).
-  Resolve it in the browser window, then click **Resume**. One checkpoint halts **both**
-  engines, whichever pass tripped it — including a checkpoint hit during the inbox read.
+  Resolve it in the browser window, then click **Resume**. One checkpoint halts **every**
+  conveyor, whichever pass tripped it — including a checkpoint hit during the inbox read.
 - If LinkedIn reports its own weekly invitation limit, The Machine pauses (amber banner)
   and requeues the profile it was about to send. The message pass doesn't get to run
   standalone after that either: the account was just rate-limited, so both wait for your
@@ -413,9 +413,13 @@ Two deliberate limits:
   free of the weekly cap): one read of the messaging inbox, and a messaged contact whose
   conversation's last message isn't yours is marked **replied**. Upgrade-only — a failed or
   empty read changes nothing and doesn't consume the day's slot.
-- Consecutive sends are spaced by `min_delay_ms`/`max_delay_ms` (20–90s by default), in both
-  passes and across the boundary between them. That applies to **Run batch now** as well, so
-  a manual batch takes minutes rather than seconds — deliberately.
+- Consecutive sends are spaced by `min_delay_ms`/`max_delay_ms` (20–90s by default), within
+  every sender pass and across the boundaries between them — the gap is about consecutive
+  contacts with LinkedIn, not about which pipeline they came from, so adding a pipeline never
+  opens a hole in it. That applies to each conveyor's **Run now** button as well, so a manual
+  batch takes minutes rather than seconds — deliberately. (Event invites are the exception:
+  that button only moves the run's window to now and returns immediately; the invitations
+  follow over the next few minutes.)
 
 ### Reply matching, and what it can't do
 

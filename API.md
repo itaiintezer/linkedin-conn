@@ -812,12 +812,8 @@ every row carries a `source` discriminator as well.
 ## Ops
 
 - `POST /api/pause`, `POST /api/resume` — halt/continue sending. One pause covers both kinds.
-- `POST /api/run-now` — send one batch immediately, even outside working hours. Promotes up
-  to one batch **per kind** (each against its own `batch_size`), then runs the invite pass
-  and the message pass. Response `{ "ok": true, "promoted": N }` counts both.
-  The response is sent after the whole batch completes, and consecutive sends are paced by
-  `min_delay_ms`/`max_delay_ms` here too — so this call can legitimately take several
-  minutes.
+- `POST /api/run-now` — trigger one pipeline's next batch manually. Full detail in
+  **POST /api/run-now** below.
 - `POST /api/recheck-acceptance` — reconcile acceptances now (read-only; runs even while
   paused). Returns the acceptance-check result.
 - `POST /api/recheck-replies` — same contract for the messages funnel: one read of the
@@ -842,6 +838,80 @@ every row carries a `source` discriminator as well.
   page the browser was on, which checkpoint pattern matched, and links to the
   screenshot + HTML snapshot captured at that moment (served under `/incidents/…`,
   stored in `data/incidents/`, newest 60 kept).
+
+### POST /api/run-now
+
+Trigger one pipeline's next batch manually. Body:
+
+```json
+{ "belt": "invite" | "message" | "engagement" | "event" }
+```
+
+`belt` is optional. Omitting it (or sending `"all"`) means **every sender belt** — invite,
+message and engagement together. `event` is never folded into that alias: it has no due-now
+queue for `all` to reach into. Each of the four dashboard conveyor cards has its own **Run
+now** button posting its own belt; there is no longer one button meaning "invites and
+messages together".
+
+A click is two separable steps, reported honestly rather than collapsed into one `{ok:true}`:
+**promote** is a durable DB write making that belt's backlog due now, **kick** is a
+best-effort attempt to grab the shared browser. `promoted` counts rows now due, not rows
+newly moved — a second click at the same instant re-stamps the same rows and reports the same
+number. `started` says whether *this* request's kick actually got the browser; losing that
+race still leaves the promotion standing, so the next 60s sender tick sends it anyway. That
+is the retry rule: on `started: false` you do not need to call again.
+
+```json
+{ "ok": true, "belt": "invite", "promoted": 7, "started": true }
+{ "ok": true, "belt": "invite", "promoted": 7, "started": false, "deferred": "browser busy" }
+{ "ok": true, "belt": "invite", "promoted": 0, "started": false, "deferred": "nothing queued" }
+```
+
+`belt: "event"` has no due-now queue at all: "promote" instead rewrites the next armed
+campaign's reserved window to start now, and the existing `runEventTick` fires it within 60
+seconds. The response deliberately **omits `promoted`** — an event run has no row count to
+report, and a hardcoded `1` behind the same field name would mislead a client reading it
+uniformly. `started` is always `false` here (there is no synchronous kick to win or lose), so
+this shape never carries `deferred` either:
+
+```json
+{ "ok": true, "belt": "event", "started": false, "event_id": 3, "from": "…", "to": "…" }
+```
+
+Refusals are `409`, checked **before** any promotion — a batch promoted while paused would
+all fire the instant the operator resumes, outside the planned spread. Both `code`
+(machine-readable) and `error` (the sentence to show) are always present:
+
+```json
+{ "ok": false, "belt": "invite", "code": "paused", "error": "Paused — Manual pause" }
+```
+
+| `code` | applies to | means |
+|---|---|---|
+| `paused` | every belt, including `all` | the engine is paused; `error` carries the reason |
+| `guardrail` | every belt, including `all` | a checkpoint or failure streak has halted sending |
+| `not_logged_in` | every belt, including `all` | no live LinkedIn session |
+| `capped` | invite / message / engagement | that belt's weekly cap is spent. Per-belt, so `all` promotes nothing from a capped belt rather than refusing outright |
+| `nothing_armed` | `event` only | no armed campaign to run |
+| `already_running` | `event` only | a campaign is running right now |
+| `daily_cap` | `event` only | `events_per_day` already reached today |
+
+An unrecognised `belt` is `400` (`{ "ok": false, "error": "unknown belt: …" }`) rather than a
+silent fallback to `all` — a typo'd belt must never quietly promote every pipeline.
+
+Not a normal outcome, but listed so a client is not surprised by it: `belt: "event"` can
+answer `500` with `code: "internal_error"` if the window move fails after pre-flight already
+passed. That is unreachable by design — pre-flight and the move are synchronous with nothing
+awaited between them — so treat it as a bug to report, not a condition to handle.
+
+Consecutive sends are still paced by `min_delay_ms`/`max_delay_ms`, so a manual batch is not
+a fast path: on the three sender belts this call blocks for the whole batch and can
+legitimately take minutes. `belt: "event"` is the exception — it returns as soon as the
+window is moved, and the campaign itself plays out afterwards in the background. `force: true`
+is set on the sender call, so a manual run may fire outside working hours by design.
+
+The older per-campaign `POST /api/events/:id/run-now` (Events tab) is a separate, deliberately
+**uncapped** override and is unaffected by any of this.
 
 ## Reply tracking
 
