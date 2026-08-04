@@ -581,3 +581,22 @@ export interface TrackReject {
   reason: TrackRejectReason;
   message: string;
 }
+
+/**
+ * One item from harvestapi~linkedin-profile-posts. Every field optional: this is untrusted
+ * upstream JSON, and the extractor's job is to survive any of it being absent or reshaped.
+ */
+export interface ApifyPost {
+  id?: unknown;
+  type?: unknown;
+  linkedinUrl?: unknown;
+  content?: unknown;
+  postedAt?: unknown;
+  author?: { name?: unknown; linkedinUrl?: unknown; position?: unknown; headline?: unknown } | null;
+  engagement?: { likes?: unknown; reactions?: unknown; comments?: unknown } | null;
+  /** Echoes the exact input URL, which is how a batched run's items split per profile. */
+  query?: { targetUrl?: unknown } | null;
+  /** Present on a reshare: the post being reshared. */
+  repost?: unknown;
+  resharedPost?: unknown;
+}
