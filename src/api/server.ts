@@ -7,7 +7,8 @@ import { INCIDENTS_DIR } from '../config.js';
 import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
 import type {
-  BrowserDriver, CampaignKind, Engagement, EngagementStatus, ProfileStatus, Reaction, Settings,
+  BrowserDriver, CampaignKind, Engagement, EngagementStatus, PostFilter, ProfileStatus, Reaction,
+  Settings, TrackReject,
 } from '../types.js';
 import { isCampaignKind, parseKind } from '../core/campaign-kind.js';
 import { parseReaction, DEFAULT_REACTION } from '../core/engagement-action.js';
@@ -25,6 +26,10 @@ import { runReplyCheck } from '../worker/reply-checker.js';
 import { runRosterSync } from '../worker/roster-sync.js';
 import { parseRosterInput } from '../core/roster-input.js';
 import { HttpApifyClient, COST_PER_PROFILE_USD, type ApifyClient } from '../core/apify-client.js';
+import {
+  type ApifyPostsClient, HttpApifyPostsClient, COST_PER_POST_USD,
+} from '../core/apify-posts-client.js';
+import { runPostsSweep, isPostsSweepRunning } from '../worker/posts-sweep.js';
 import { runEnrichment, enrichmentProgress, isEnrichmentRunning, pauseEnrichment } from '../worker/enrichment.js';
 import { extractProfile, isEmptyProfile } from '../core/apify-extract.js';
 import { searchConnections } from '../core/connection-search.js';
@@ -101,6 +106,9 @@ export function buildServer(
     /** Injected so tests never reach Apify. Production builds a real HTTP client per run
      *  from the key currently in settings, so a re-keyed operator takes effect immediately. */
     apifyClientFactory?: (token: string) => ApifyClient;
+    /** Injected so tests never reach Apify. Production builds a real client per sweep from
+     *  the key currently in settings. */
+    apifyPostsClientFactory?: (token: string) => ApifyPostsClient;
     /** Injected so tests never reach the network. Used only to expand a lnkd.in shortlink
      *  on the engagement enqueue path; production falls through to globalThis.fetch. */
     fetchImpl?: typeof fetch;
@@ -112,6 +120,8 @@ export function buildServer(
   // runSenderOnce falls back to the real timer-based sleep; tests inject a no-op so a
   // multi-profile run-now batch never performs a real 20-90s wait, regardless of batch size.
   const senderOptions = opts.senderOptions ?? {};
+  const postsClientFactory = opts.apifyPostsClientFactory
+    ?? ((t: string) => new HttpApifyPostsClient(t));
   mkdirSync(incidentsDir, { recursive: true }); // @fastify/static requires the root to exist
 
   app.setErrorHandler((err, _req, reply) => {
@@ -953,6 +963,82 @@ export function buildServer(
       last_error: null, skip_reason: 'dismissed', scheduled_for: null,
     });
     return { ok: true };
+  });
+
+  // --- Posts feed ---------------------------------------------------------------------
+  //
+  // Registered after createEngagement (above) on purpose: the engage routes below delegate
+  // every validation judgement to it, so it has to be in scope.
+
+  /**
+   * The tracked set: who gets swept.
+   *
+   * Accepts `{ profile_urls: [...] }` (the Connections "Track posts" button) or
+   * `{ text: "..." }` (the paste box), because a pasted blob is the other real-world input
+   * shape and making the browser parse it would duplicate extractProfileUrls.
+   *
+   * Bulk-shaped with rejects reported BY URL AND REASON, like POST /api/events: finding out
+   * later that a URL was junk is far too late.
+   */
+  app.post('/api/tracked-profiles', async (req, reply) => {
+    const b = (req.body ?? {}) as { profile_urls?: unknown; text?: unknown };
+    const raws: string[] = Array.isArray(b.profile_urls)
+      ? b.profile_urls.map((u) => (typeof u === 'string' ? u.trim() : ''))
+      : typeof b.text === 'string' ? extractProfileUrls(b.text) : [];
+    if (raws.length === 0) return reply.code(400).send({ error: 'no profile urls supplied' });
+
+    const s = repos.settings.get();
+    const rejected: TrackReject[] = [];
+    const added: number[] = [];
+    // Recomputed per item rather than once: each successful add consumes a slot, so a batch
+    // straddling the cap must stop exactly at it.
+    for (const raw of raws) {
+      const url = normalizeProfileUrl(raw);
+      if (url === null) {
+        rejected.push({ profile_url: raw, reason: 'invalid_url',
+          message: `not a LinkedIn profile URL: ${raw === '' ? '(empty)' : raw}` });
+        continue;
+      }
+      const existing = repos.trackedProfiles.findByUrl(url);
+      if (existing && existing.active === 1) {
+        rejected.push({ profile_url: url, reason: 'already_tracked',
+          message: `already tracked (id ${existing.id})` });
+        continue;
+      }
+      // A reactivation consumes a slot too, so it is counted here rather than exempted.
+      if (repos.trackedProfiles.countActive() >= s.tracked_profile_cap) {
+        rejected.push({ profile_url: url, reason: 'cap_reached',
+          message: `tracking cap of ${s.tracked_profile_cap} reached — remove some profiles first` });
+        continue;
+      }
+      const conn = repos.connections.findByUrl(url);
+      const row = repos.trackedProfiles.add(url, conn?.id ?? null,
+        Array.isArray(b.profile_urls) ? 'search' : 'urls');
+      added.push(row.id);
+    }
+
+    if (added.length > 0) {
+      defaultLog.info('api', 'profiles tracked', { added: added.length, rejected: rejected.length });
+    }
+    // Always 201, even when everything was rejected: the per-item verdicts are the payload,
+    // not the status code. Same contract as POST /api/engagements.
+    return reply.code(201).send({ added: added.length, ids: added, rejected });
+  });
+
+  app.get('/api/tracked-profiles', async () => ({
+    tracked: repos.trackedProfiles.withCounts(),
+    cap: repos.settings.get().tracked_profile_cap,
+    swept_at: repos.appState.get().posts_swept_at,
+  }));
+
+  /** Untrack. Soft (active = 0) so posts keep a valid parent and history survives. */
+  app.delete('/api/tracked-profiles/:id', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const row = repos.trackedProfiles.findById(id);
+    if (!row) return reply.code(404).send({ error: `no tracked profile ${id}` });
+    repos.trackedProfiles.deactivate(id);
+    defaultLog.info('api', 'profile untracked', { id, url: row.profile_url });
+    return { ok: true, id };
   });
 
   app.get('/api/metrics', async () => {
