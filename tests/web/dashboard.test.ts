@@ -209,7 +209,6 @@ function beltRoutes(runNow: Record<string, unknown>): Record<string, { body?: un
   return {
     '/api/run-now': runNow,
     '/api/status': { body: status() },
-    '/api/queue': { body: [] },
     '/api/queue/grouped': { body: { cohorts: [], events: [] } },
   };
 }
