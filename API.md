@@ -743,6 +743,73 @@ because 90 comments a day under the operator's own name is a materially differen
 90 likes; it is applied at **planning** time as well as at send time, so comment-bearing tasks
 do not sit consuming slots they can never use.
 
+#### Ranges
+
+**Every numeric setting below is range-checked on `POST /api/settings`, and the whole patch is
+validated before anything is written.** If any key in the patch fails, the response is `400`
+and **nothing in the patch is applied — not even the keys that were fine.** There is no partial
+write to reason about: either every key in the request took effect, or none did. Retry with a
+corrected patch rather than assuming the good half already landed.
+
+All 23 keys below take whole numbers only; a non-integer or out-of-range value fails the same
+way. `min` and `max` are both inclusive.
+
+| Key | Range | Key | Range |
+|---|---|---|---|
+| `weekly_cap` | 0–150 | `batch_size` | 1–25 |
+| `batches_per_day` | 0–12 | `msg_weekly_cap` | 0–700 |
+| `msg_batch_size` | 1–10 | `msg_batches_per_day` | 0–12 |
+| `reply_checks_per_day` | 1–4 | `events_per_day` | 0–2 |
+| `event_invite_cap` | 1–1000 | `event_bucket_ceiling` | 1–50 |
+| `event_run_budget_minutes` | 1–120 | `engage_weekly_cap` | 0–1000 |
+| `engage_batch_size` | 1–50 | `engage_batches_per_day` | 0–12 |
+| `engage_comment_daily_cap` | 0–50 | `workday_start_hour` | 0–23 |
+| `workday_end_hour` | 0–23 | `roster_sync_per_day` | 1–24 |
+| `min_delay_ms` | 5000–600000 | `max_delay_ms` | 5000–600000 |
+| `enrich_ttl_days` | 1–3650 | `enrich_concurrency` | 1–32 |
+| `event_shard_threshold` | 1–1000 | | |
+
+Two rules also compare a key against another one, not just against its own range:
+
+- `workday_end_hour` must be **strictly after** `workday_start_hour`. Equal is rejected, not
+  just inverted — an end hour equal to the start hour is a zero-length send window, which would
+  otherwise silently schedule nothing.
+- `max_delay_ms` must be **at least** `min_delay_ms`. Equal **is** allowed here — a fixed delay
+  (no jitter) is a deliberate, valid configuration, unlike a zero-length workday.
+
+Both rules read against the **stored** value for whichever side the patch doesn't touch — a
+patch that sends only `workday_end_hour` is still checked against the `workday_start_hour`
+already saved, not skipped. Conversely, a rule does not fire at all when the patch touches
+**neither** of its two keys — an install can already hold an inverted or equal pair (nothing
+enforced this before these rules existed), and re-validating it on every unrelated patch would
+leave that operator unable to change anything else, including pausing.
+
+The `400` body:
+
+```json
+{ "error": "Workday end hour must be after the start hour (currently 9).", "fields": [{ "key": "workday_end_hour", "message": "Workday end hour must be after the start hour (currently 9)." }] }
+```
+
+**This shape is unusual for this API — everywhere else, an error body is the bare `{ "error":
+"…" }` on its own (see `POST /api/run-now`, the FTS `400`, etc.).** Settings carries `fields` as
+well because one patch can independently violate several unrelated keys at once — a single
+profile URL or message template can't. `error` always repeats `fields[0].message` — that's the
+one sentence to relay to a non-technical operator. `fields` is the full list, for anything that
+wants to know about every failure, not just the first.
+
+Ordering is deterministic: per-field failures come back in the same order as the table above,
+then any cross-field failures. So the same patch always produces the same `error` sentence,
+regardless of what order the keys appear in the request body.
+
+Not every allow-listed key is range-checked — these seven pass through unvalidated: `paused`,
+`pause_reason`, `onboarded`, `weekdays_only`, `note_quota_exhausted`, `expiry_days`,
+`apify_api_key`.
+
+`GET /api/settings` returns this same table under a `rules` property, shaped
+`{ "<key>": { "label", "min", "max" } }`. The dashboard's Settings form reads it to configure
+each input's bounds rather than hardcoding them twice. `label` is the operator-facing name for
+the key and is what appears verbatim inside `message` above.
+
 ## Queue
 
 ### GET /api/profiles?status=X&kind=Y
@@ -823,8 +890,10 @@ every row carries a `source` discriminator as well.
   `guardrail`) means nothing changed and the day's slot was not consumed. `ambiguous` and
   `unmatched` are counts of profiles (not rows) deliberately left pending — see
   **Reply tracking** below.
-- `GET /api/settings`, `POST /api/settings` — pacing/limits (allow-listed keys only).
-  Message-side keys: `msg_weekly_cap` (default 250), `msg_batch_size` (5),
+- `GET /api/settings`, `POST /api/settings` — pacing/limits (allow-listed keys only). Every
+  numeric key is range-checked on write; a `400` applies **nothing** in the patch, not even the
+  keys that were fine — see **Ranges** under Settings above. Message-side keys:
+  `msg_weekly_cap` (default 250), `msg_batch_size` (5),
   `msg_batches_per_day` (6), `reply_checks_per_day` (2). Engagement-side keys:
   `engage_weekly_cap` (500), `engage_batch_size` (15), `engage_batches_per_day` (6),
   `engage_comment_daily_cap` (10). Values are stored as given — pass numbers, not numeric
