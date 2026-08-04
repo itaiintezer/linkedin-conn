@@ -790,11 +790,14 @@ The `400` body:
 { "error": "Workday end hour must be after the start hour (currently 9).", "fields": [{ "key": "workday_end_hour", "message": "Workday end hour must be after the start hour (currently 9)." }] }
 ```
 
-**This shape is unusual for this API — everywhere else, an error body is the bare `{ "error":
-"…" }` on its own (see `POST /api/run-now`, the FTS `400`, etc.).** Settings carries `fields` as
-well because one patch can independently violate several unrelated keys at once — a single
-profile URL or message template can't. `error` always repeats `fields[0].message` — that's the
-one sentence to relay to a non-technical operator. `fields` is the full list, for anything that
+**This shape is unusual for this API — most error bodies here carry just an `error` string**
+(see `POST /api/profiles`'s `{ "error": "invalid linkedin profile url" }`, or the FTS `400`).
+`POST /api/run-now` folds `error` into a larger response alongside `ok`/`belt`/`code`, but even
+that carries only ever one error, not a list. Settings is the only endpoint that reports
+**multiple, independent** failures via `fields`, because one patch can violate several unrelated
+keys at once — a single profile URL or message template can't. `error` always repeats
+`fields[0].message` — that's the one sentence to relay to a non-technical operator. `fields` is
+the full list, for anything that
 wants to know about every failure, not just the first.
 
 Ordering is deterministic: per-field failures come back in the same order as the table above,
