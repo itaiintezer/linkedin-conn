@@ -4278,9 +4278,18 @@ Add the four operator-facing settings (`posts_sweep_per_day`, `posts_max_per_swe
 `posts_retention_days`, `tracked_profile_cap`) to the settings table, and note that
 `posts_sweep_batch_size` exists but is a safety valve rather than a dial.
 
-State the cost model in one line: **billing is per post returned, so the sweep window is
-derived from staleness (24h when fresh, a week when stale or new) — widening it re-bills posts
-already stored.**
+State the cost model in one line: **billing is per post returned, so the sweep window is bounded
+by each profile's own last sweep — widening it re-bills posts already stored.**
+
+> **CORRECTED.** An earlier draft of this line said the window was "derived from staleness (24h
+> when fresh, a week when stale or new)". That design was built and then **reverted**: comparing
+> a 24h elapsed-time threshold against a cadence that is also a day means the threshold is
+> essentially always exceeded (the tick gate keys on the calendar date, so consecutive sweeps
+> land 24h + δ apart), so `'week'` became the steady-state window and the intended $1.60/mo
+> became ~$36/mo. The shipped code bounds a previously-swept profile on its exact `last_swept_at`
+> via Apify's `postedLimitDate`, and only falls back to a relative `'week'` for a never-swept
+> profile or an unreadable stamp. See `src/worker/posts-sweep.ts`'s `windowFor` and the design
+> doc's "Bound the window by the last sweep's timestamp". Do not reimplement the threshold.
 
 - [ ] **Step 4: Verify the Docs tab still renders**
 
