@@ -137,3 +137,94 @@ test('DELETE on an unknown id is a 404, not a silent success', async () => {
 test('an empty request is a 400', async () => {
   expect((await post('/api/tracked-profiles', { profile_urls: [] })).statusCode).toBe(400);
 });
+
+/** Insert a tracked profile and n posts, oldest first by index. */
+async function seed(n: number): Promise<number> {
+  await post('/api/tracked-profiles', { profile_urls: ['https://www.linkedin.com/in/dana'] });
+  const tp = repos.trackedProfiles.findByUrl('https://www.linkedin.com/in/dana')!;
+  repos.posts.upsertMany(
+    Array.from({ length: n }, (_, i) => ({
+      post_urn: `urn:li:activity:${i}`,
+      post_url: `https://www.linkedin.com/feed/update/urn:li:activity:${i}/`,
+      tracked_profile_id: tp.id,
+      author_name: 'Dana Reingold', author_headline: 'VP Security',
+      content: `Post number ${i}`,
+      // Ascending dates, so index 0 is the OLDEST and index n-1 the newest.
+      posted_at: new Date(Date.UTC(2026, 6, 1 + i)).toISOString(),
+      is_repost: 0, reaction_count: null, comment_count: null, raw_json: null,
+    })),
+    '2026-08-04T10:00:00.000Z',
+  );
+  return tp.id;
+}
+
+test('GET /api/posts returns newest first with counts', async () => {
+  await seed(3);
+  const res = await app.inject({ method: 'GET', url: '/api/posts' });
+  expect(res.statusCode).toBe(200);
+  const body = res.json();
+  expect(body.posts.map((p: { post_urn: string }) => p.post_urn))
+    .toEqual(['urn:li:activity:2', 'urn:li:activity:1', 'urn:li:activity:0']);
+  expect(body.counts).toEqual({ new: 3, queued: 0, engaged: 0 });
+  expect(body.filter).toBe('new');          // the default
+  expect(body.tracked).toBe(1);
+  expect(body.author_display).toBeUndefined();
+  expect(body.posts[0].author_display).toBe('Dana Reingold');
+});
+
+test('the feed pages by keyset, not offset', async () => {
+  await seed(5);
+  const first = (await app.inject({ method: 'GET', url: '/api/posts?limit=2' })).json();
+  expect(first.posts).toHaveLength(2);
+  expect(first.next_cursor).toBeTruthy();
+
+  const second = (await app.inject({
+    method: 'GET', url: `/api/posts?limit=2&before=${encodeURIComponent(first.next_cursor)}`,
+  })).json();
+  expect(second.posts.map((p: { post_urn: string }) => p.post_urn))
+    .toEqual(['urn:li:activity:2', 'urn:li:activity:1']);
+});
+
+test('next_cursor is null on the last page', async () => {
+  await seed(2);
+  const res = (await app.inject({ method: 'GET', url: '/api/posts?limit=10' })).json();
+  expect(res.posts).toHaveLength(2);
+  expect(res.next_cursor).toBeNull();
+});
+
+test('an unknown filter is a 400 rather than silently becoming new', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/posts?filter=nonsense' });
+  expect(res.statusCode).toBe(400);
+});
+
+/**
+ * `before` arrives verbatim from a query parameter, so PostRepo.feed's cursor validation is
+ * reachable from outside — and it reports a bad cursor by throwing. Pinned because the answer
+ * depends on the global error handler mapping a status-less throw to 400: left as a 500 this
+ * would read as "the server is broken" rather than "that cursor is junk".
+ */
+test('a malformed cursor is a 400, not a 500', async () => {
+  await seed(2);
+  const res = await app.inject({ method: 'GET', url: '/api/posts?before=garbage' });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/malformed feed cursor/);
+});
+
+test('the cost readout reports posts stored in the trailing window', async () => {
+  await seed(4);
+  const res = (await app.inject({ method: 'GET', url: '/api/posts' })).json();
+  expect(res.cost_30d.posts).toBe(4);
+  expect(res.cost_30d.usd).toBeCloseTo(4 * 0.002, 6);
+});
+
+test('the halt latch travels with the feed so the screen needs one request', async () => {
+  await seed(1);
+  const clean = (await app.inject({ method: 'GET', url: '/api/posts' })).json();
+  expect(clean.halt.halted).toBe(0);
+
+  repos.appState.haltPosts('auth', 'Apify rejected the API key', '2026-08-04T10:00:00.000Z');
+  const halted = (await app.inject({ method: 'GET', url: '/api/posts' })).json();
+  expect(halted.halt.halted).toBe(1);
+  expect(halted.halt.reason).toBe('auth');
+  expect(halted.halt.detail).toBe('Apify rejected the API key');
+});

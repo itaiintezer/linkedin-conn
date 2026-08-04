@@ -1041,6 +1041,72 @@ export function buildServer(
     return { ok: true, id };
   });
 
+  const POST_FILTERS = new Set<PostFilter>(['new', 'queued', 'engaged']);
+  const FEED_LIMIT_DEFAULT = 25;
+  const FEED_LIMIT_MAX = 100;
+
+  /**
+   * One page of the feed, plus everything the screen's header needs, in ONE round-trip —
+   * chip counts, the tracked total, the last sweep and the cost readout. Three separate
+   * endpoints for that would mean four requests to render one screen.
+   *
+   * `before` is the opaque `next_cursor` from the previous page. Keyset rather than offset
+   * because the sweep inserts rows between requests, and offset would skip or repeat posts
+   * as the set shifts underneath the reader.
+   */
+  app.get('/api/posts', async (req, reply) => {
+    const q = (req.query ?? {}) as Record<string, string | undefined>;
+    const filter = (q.filter ?? 'new') as PostFilter;
+    // Refused rather than defaulted: silently answering the `new` feed for a filter the
+    // caller misspelled looks like an empty result, not a mistake.
+    if (!POST_FILTERS.has(filter)) {
+      return reply.code(400).send({ error: `unknown filter: ${String(q.filter)}` });
+    }
+    const asked = Number(q.limit);
+    const limit = Number.isFinite(asked) && asked > 0
+      ? Math.min(Math.floor(asked), FEED_LIMIT_MAX)
+      : FEED_LIMIT_DEFAULT;
+    const cursor = typeof q.before === 'string' && q.before !== '' ? q.before : null;
+
+    // One extra row is fetched to learn whether another page exists, rather than issuing a
+    // second COUNT for the same question.
+    //
+    // A malformed `before` throws out of feed() — deliberately not caught here. The global
+    // error handler maps a status-less throw to 400, which is the right answer for a junk
+    // cursor, and catching it would only let it degrade into a silent page one.
+    const rows = repos.posts.feed(filter, limit + 1, cursor);
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    const nextCursor = rows.length > limit && last
+      ? `${last.posted_at ?? last.first_seen_at}|${last.id}`
+      : null;
+
+    const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const scraped = repos.posts.countSince(since);
+    // NOT named `app`: that is the Fastify instance this route is registered on, and shadowing
+    // it inside the handler is a trap for whoever edits this next.
+    const state = repos.appState.get();
+    return {
+      posts: page,
+      filter,
+      counts: repos.posts.counts(),
+      next_cursor: nextCursor,
+      tracked: repos.trackedProfiles.countActive(),
+      swept_at: state.posts_swept_at,
+      // The halt latch rides along so the screen renders its banner without a second
+      // request. Same treatment as the enrichment halt.
+      halt: {
+        halted: state.posts_halted,
+        reason: state.posts_halt_reason,
+        detail: state.posts_halt_detail,
+        at: state.posts_halted_at,
+      },
+      // Informational only. No enforcement — a spend ceiling was explicitly declined; this
+      // exists so the cost question is a number the operator can watch.
+      cost_30d: { posts: scraped, usd: scraped * COST_PER_POST_USD },
+    };
+  });
+
   app.get('/api/metrics', async () => {
     const rows = repos.db.prepare(`
       SELECT p.cohort_id, c.name AS cohort_name, p.kind, p.status, p.sent_at, p.accepted_at, p.replied_at
