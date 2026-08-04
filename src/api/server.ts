@@ -37,6 +37,7 @@ import { runEventCampaign } from '../worker/event-runner.js';
 import { defaultCohortName } from '../core/cohort-name.js';
 import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE, MAX_COMMENT } from '../core/message.js';
 import { engagementCaps } from '../core/caps.js';
+import { SETTING_RULES, validateSettingsPatch } from '../core/settings-rules.js';
 import type { Logger } from '../core/logger.js';
 import { log as defaultLog } from '../core/log.js';
 import { listDocs, readDoc } from '../core/docs.js';
@@ -1001,12 +1002,22 @@ export function buildServer(
     return { upcoming: ordered.slice(0, limit), total_remaining: ordered.length };
   });
 
-  app.get('/api/settings', async () => publicSettings(repos.settings.get()));
-  app.post('/api/settings', async (req) => {
+  // `rules` rides along so the form can stamp min/max/step onto its inputs — index.html
+  // hardcodes no limits, which is what keeps the two from drifting.
+  app.get('/api/settings', async () => ({ ...publicSettings(repos.settings.get()), rules: SETTING_RULES }));
+  app.post('/api/settings', async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const patch: Record<string, unknown> = {};
     for (const k of Object.keys(body)) {
       if (ALLOWED_SETTINGS_KEYS.has(k)) patch[k] = body[k];
+    }
+    // Validated as a whole BEFORE the write. Applying the legal half of a bad patch would
+    // leave the engine paced by numbers nobody chose, with nothing on screen to say so.
+    // `error` is the one sentence agents relay to the operator (see CLAUDE.md); `fields`
+    // is the machine-readable rest, which matters for the API-only keys that have no form.
+    const failures = validateSettingsPatch(patch, repos.settings.get());
+    if (failures.length) {
+      return reply.code(400).send({ error: failures[0].message, fields: failures });
     }
     repos.settings.update(patch as any);
     return publicSettings(repos.settings.get());
