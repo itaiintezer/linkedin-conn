@@ -285,6 +285,43 @@ posts themselves so you can open one and check it.
 | `engage_batches_per_day` | 6 | Batches per day |
 | `engage_comment_daily_cap` | 10 | Published comments per day |
 
+## Posts feed
+
+The fifth pipeline, and the only one that finds its own work: track a set of profiles and
+their recent posts arrive automatically, ready to react to (and, per-post, comment on) through
+the same engagement pipeline described above. `tracked_profiles` and `posts` are their own
+tables, soft-deleted and URN-keyed respectively, the same reasoning as `engagements` — a
+tracked profile and a post are not people or campaign kinds either.
+
+A background sweep (default once a day) pulls each tracked profile's posts through
+[Apify](https://apify.com)'s `harvestapi~linkedin-profile-posts` actor — the same credential
+as connection enrichment, pasted once under **Settings**. **Billing is per post returned, so
+the sweep window is bounded by each profile's last sweep — widening it re-bills posts already
+stored.** A never-swept profile gets a bounded first look instead of a full history import;
+there is no backfill.
+
+Reacting from the feed queues into the very same pacing, caps and pause/guardrail rails as
+every other pipeline — it does not send anything immediately. Bulk selection only ever places
+a reaction, never a comment, for the same reason bulk comments are refused everywhere else in
+this app: identical text across several posts under your own name reads as automated, and the
+comment budget (`engage_comment_daily_cap`, 10/day by default) is small enough that one click
+could spend the whole day's allowance.
+
+Posts you never engage with age out after `posts_retention_days` — anything you did react to
+or comment on is kept regardless of age, as the record of what was done.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `posts_sweep_per_day` | 1 | Sweep passes per day |
+| `posts_max_per_sweep` | 3 | Posts fetched per profile per sweep |
+| `posts_retention_days` | 30 | Un-engaged posts older than this are dropped from the feed |
+| `tracked_profile_cap` | 200 | Maximum active tracked profiles |
+
+`posts_sweep_batch_size` (default 200) also exists, but it is **not a dial** — it is a safety
+valve that splits one sweep into multiple Apify runs only if the tracked-profile cap is ever
+raised well past its default; in ordinary use one run covers every tracked profile and this
+setting has no visible effect.
+
 ## Connections
 
 Separate from the campaigns, The Machine keeps a **roster** of the people you're actually
@@ -450,6 +487,12 @@ card forces a pass immediately.
   its locations. `409` once armed.
 - `POST /api/engagements` `{ post_url, reaction?, comment? }` — queue a post engagement (or
   `{ items: [...] }` for many); `GET /api/engagements` to read them back.
+- `POST /api/tracked-profiles` `{ profile_urls }` or `{ text }` — track profiles for the posts
+  feed; `GET /api/tracked-profiles` to list them, `DELETE /api/tracked-profiles/:id` to untrack.
+- `GET /api/posts?filter=new|queued|engaged` — the posts feed; `POST /api/posts/:id/engage`
+  or `POST /api/posts/engage` `{ post_ids, reaction? }` to queue reactions from it.
+- `POST /api/posts/sweep-now` — sweep tracked profiles immediately (long-running, like
+  `run-now`; also clears a latched posts halt).
 
 Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 
