@@ -66,6 +66,7 @@
       <button class="tab" data-tab="add">Add List</button>
       <button class="tab" data-tab="cohorts">Cohorts</button>
       <button class="tab" data-tab="connections">Connections</button>
+      <button class="tab" data-tab="posts">Posts</button>
       <button class="tab" data-tab="events">Events</button>
       <button class="tab" data-tab="docs">Docs</button>
       <button class="tab" data-tab="settings">Settings</button>
@@ -721,6 +722,86 @@
       <div class="search-more"><button class="btn" id="searchMore" type="button" hidden>Load more</button></div>
     </section>
 
+    <section class="panel" id="tab-posts" hidden>
+      <div class="panel-head">
+        <div class="panel-title">
+          <h2>Posts</h2>
+          <p class="panel-sub">Recent posts from the profiles you track</p>
+        </div>
+        <div class="panel-actions">
+          <button class="btn btn-ghost" type="button" id="postsManageToggle"
+                  aria-expanded="false" aria-controls="postsManage">Manage tracking</button>
+          <button class="btn" type="button" id="postsSweepNow"
+                  title="Scrape now, ignoring the once-a-day schedule">Sweep now</button>
+        </div>
+      </div>
+
+      <!-- Sweep state and the informational cost readout. No enforcement lives here: a spend
+           ceiling was declined, so this exists purely so the cost is a number, not a guess. -->
+      <div class="posts-status" id="postsStatus"></div>
+
+      <!-- The halt latch, same treatment as the enrichment halt banner. -->
+      <div class="posts-halt" id="postsHalt" hidden></div>
+
+      <!-- Collapsed by default: the feed is the screen, tracking is the occasional chore. -->
+      <div class="card-surface posts-manage" id="postsManage" hidden>
+        <div class="add-field">
+          <label for="postsTrackText">Add profiles to track
+            <span class="hint">one URL per line; anything else on the line is ignored</span>
+          </label>
+          <textarea id="postsTrackText" rows="4"
+                    placeholder="https://www.linkedin.com/in/some-person"></textarea>
+        </div>
+        <div class="posts-manage-actions">
+          <span class="muted" id="postsTrackCount"></span>
+          <button class="btn btn-green" type="button" id="postsTrackAdd">Track posts</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table" id="postsTrackedTable">
+            <thead>
+              <tr><th>Profile</th><th>Posts</th><th>Last swept</th><th></th></tr>
+            </thead>
+            <tbody id="postsTrackedRows"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="posts-chips" id="postsChips" role="tablist" aria-label="Filter posts">
+        <button class="posts-chip is-active" type="button" data-filter="new" role="tab"
+                aria-selected="true">New <span class="posts-chip-n" data-count="new">0</span></button>
+        <button class="posts-chip" type="button" data-filter="queued" role="tab"
+                aria-selected="false">Queued <span class="posts-chip-n" data-count="queued">0</span></button>
+        <button class="posts-chip" type="button" data-filter="engaged" role="tab"
+                aria-selected="false">Engaged <span class="posts-chip-n" data-count="engaged">0</span></button>
+      </div>
+
+      <!-- Appears only once something is selected. An always-present queue affordance beside
+           a feed is how people queue engagements they didn't mean to — the same reasoning
+           already written into the Connections selection bar. -->
+      <div class="selection-bar" id="postsSelectionBar" hidden>
+        <span class="selection-count" id="postsSelectionCount">0 selected</span>
+        <div class="selection-actions">
+          <button class="btn btn-ghost" type="button" id="postsSelectionClear">Clear</button>
+          <label class="visually-hidden" for="postsBulkReaction">Reaction</label>
+          <select id="postsBulkReaction">
+            <option value="like">👍 Like</option>
+            <option value="celebrate">👏 Celebrate</option>
+            <option value="support">🤝 Support</option>
+            <option value="love">❤️ Love</option>
+            <option value="insightful">💡 Insightful</option>
+            <option value="funny">😄 Funny</option>
+          </select>
+          <button class="btn btn-green" type="button" id="postsBulkQueue">Queue reaction</button>
+        </div>
+      </div>
+
+      <div class="posts-feed" id="postsFeed"></div>
+      <div class="empty" id="postsEmpty">No posts yet. Track some profiles, then sweep.</div>
+      <div class="search-more">
+        <button class="btn" type="button" id="postsMore" hidden>Load more</button>
+      </div>
+    </section>
+
     <section class="panel" id="tab-settings" hidden>
       <div class="panel-head">
         <div class="panel-title">
@@ -783,6 +864,13 @@
         <div class="field"><label for="setEngageBatchesPerDay">Batches / day <span class="hint">reactions</span></label><input id="setEngageBatchesPerDay" type="number" min="0" /></div>
         <div class="field"><label for="setEngageCommentCap">Comments / day <span class="hint">capped separately</span></label><input id="setEngageCommentCap" type="number" min="0" /></div>
         <p class="hint span-all settings-note">A reaction is cheap; a comment is public and attributable, so it gets its own daily ceiling. Once today&rsquo;s comment budget is spent the engine keeps reacting and leaves the comment for another day &mdash; it never drops one silently.</p>
+
+        <!-- No kind icon: the sweep is where engagements come FROM, not a fifth pipeline. -->
+        <div class="section-divider span-all"><span>Posts feed</span></div>
+        <div class="field"><label for="setPostsSweepPerDay">Sweeps / day <span class="hint">one is plenty; more multiplies the Apify bill</span></label><input id="setPostsSweepPerDay" type="number" min="0" /></div>
+        <div class="field"><label for="setPostsMaxPerSweep">Posts / profile / sweep <span class="hint">the per-sweep ceiling per person</span></label><input id="setPostsMaxPerSweep" type="number" min="1" /></div>
+        <div class="field"><label for="setPostsRetentionDays">Keep posts for <span class="hint">days; engaged posts are kept forever</span></label><input id="setPostsRetentionDays" type="number" min="1" /></div>
+        <div class="field"><label for="setTrackedProfileCap">Tracked profile cap</label><input id="setTrackedProfileCap" type="number" min="1" /></div>
 
         <div class="section-divider span-all"><span>Both engines</span></div>
         <div class="field"><label for="setStart">Workday start hour</label><input id="setStart" type="number" min="0" max="23" /></div>
@@ -1085,5 +1173,8 @@
 
   <script src="/markdown.js"></script>
   <script src="/app.js"></script>
+  <!-- After app.js, not before: posts.js calls helpers defined there, and classic scripts
+       share one global scope in load order. -->
+  <script src="/posts.js"></script>
 </body>
 </html>

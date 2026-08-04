@@ -507,3 +507,100 @@ test('sweep-now with nothing tracked is a 400', async () => {
   expect(res.json().error).toMatch(/tracked/);
   expect(clientBuilds).toBe(0);
 });
+
+/* ---------- settings validation ----------------------------------------------
+   POST /api/settings allowlists key NAMES and writes values through untouched, which is
+   harmless for pacing dials and is not harmless here: `posts_max_per_sweep` becomes the
+   actor's `maxPosts`, where 0 means "all posts, ever" — the exact value an operator types
+   to mean "off". These tests pin the outermost of the three guards. */
+
+test('posts_max_per_sweep of 0 is refused, because 0 means "everything" to the actor', async () => {
+  const before = repos.settings.get().posts_max_per_sweep;
+  const res = await post('/api/settings', { posts_max_per_sweep: 0 });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/posts_max_per_sweep/);
+  expect(res.json().error).toMatch(/1 or more/);
+  expect(repos.settings.get().posts_max_per_sweep).toBe(before);   // nothing was written
+});
+
+test('posts_retention_days and tracked_profile_cap also refuse 0', async () => {
+  for (const key of ['posts_retention_days', 'tracked_profile_cap', 'posts_sweep_batch_size']) {
+    const res = await post('/api/settings', { [key]: 0 });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(new RegExp(key));
+  }
+});
+
+test('a fractional posts setting is refused', async () => {
+  const res = await post('/api/settings', { posts_max_per_sweep: 2.5 });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/posts_max_per_sweep/);
+  expect(res.json().error).toMatch(/whole number/);
+});
+
+/* `NaN` and `Infinity` do not survive JSON, but a client that sends `null` produces exactly
+   the same failure mode the plan warns about: the actor falls back to its own default of 10.
+   A non-numeric type is refused for the same reason. */
+test('a non-finite or non-numeric posts setting is refused', async () => {
+  for (const bad of [null, 'lots', true, {}]) {
+    const res = await post('/api/settings', { posts_max_per_sweep: bad });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatch(/posts_max_per_sweep/);
+  }
+});
+
+/* Numeric strings are refused rather than coerced: the dashboard sends real numbers, and
+   silently accepting '30' would make the guard's own contract ("must be a whole number")
+   a lie that the next caller relies on. */
+test("a numeric string is refused rather than coerced", async () => {
+  const res = await post('/api/settings', { posts_retention_days: '30' });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/posts_retention_days/);
+});
+
+test('valid posts settings are accepted and stored', async () => {
+  const res = await post('/api/settings', {
+    posts_sweep_per_day: 2,
+    posts_max_per_sweep: 5,
+    posts_retention_days: 60,
+    tracked_profile_cap: 300,
+    posts_sweep_batch_size: 250,
+  });
+  expect(res.statusCode).toBe(200);
+  const s = repos.settings.get();
+  expect(s.posts_sweep_per_day).toBe(2);
+  expect(s.posts_max_per_sweep).toBe(5);
+  expect(s.posts_retention_days).toBe(60);
+  expect(s.tracked_profile_cap).toBe(300);
+  expect(s.posts_sweep_batch_size).toBe(250);
+});
+
+/* The one posts setting where 0 is meaningful: it only gates the tick, so "never sweep
+   automatically" costs nothing and must stay reachable. */
+test('posts_sweep_per_day of 0 is accepted — it means "never sweep automatically"', async () => {
+  const res = await post('/api/settings', { posts_sweep_per_day: 0 });
+  expect(res.statusCode).toBe(200);
+  expect(repos.settings.get().posts_sweep_per_day).toBe(0);
+});
+
+test('a negative posts_sweep_per_day is still refused', async () => {
+  const res = await post('/api/settings', { posts_sweep_per_day: -1 });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/posts_sweep_per_day/);
+});
+
+/* One bad field rejects the whole patch. A partial write would leave the operator looking at
+   a "failed" toast over a form that half-saved. */
+test('one invalid field rejects the whole patch', async () => {
+  const res = await post('/api/settings', { posts_retention_days: 45, posts_max_per_sweep: 0 });
+  expect(res.statusCode).toBe(400);
+  expect(repos.settings.get().posts_retention_days).not.toBe(45);
+});
+
+/* The guard is scoped to the posts keys: every other setting keeps the established
+   write-through behaviour, and this task is not the place to change that. */
+test('the guard does not touch the other settings keys', async () => {
+  const res = await post('/api/settings', { engage_batches_per_day: 0 });
+  expect(res.statusCode).toBe(200);
+  expect(repos.settings.get().engage_batches_per_day).toBe(0);
+});

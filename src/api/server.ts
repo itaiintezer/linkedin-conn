@@ -64,7 +64,56 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'event_run_budget_minutes', 'event_shard_threshold',
   'engage_weekly_cap', 'engage_batch_size', 'engage_batches_per_day',
   'engage_comment_daily_cap',
+  'posts_sweep_per_day', 'posts_max_per_sweep', 'posts_sweep_batch_size',
+  'posts_retention_days', 'tracked_profile_cap',
 ]);
+
+/**
+ * Minimum for each posts setting — and the reason value validation exists here at all, when
+ * every other setting is written straight through.
+ *
+ * Write-through is fine for a pacing dial: a silly batch size just produces odd spacing.
+ * `posts_max_per_sweep` is not that. It reaches the Apify actor as `maxPosts`, where
+ * **0 means "all posts, ever"** — and 0 is exactly what an operator types to mean "off". One
+ * save would turn a ~$1.60/month sweep into an unbounded scrape of every tracked profile's
+ * entire posting history, repeating unattended every day until someone notices the bill. A
+ * non-number fails in the other direction: it serializes to `null` and the actor quietly
+ * substitutes its own default of 10, so the operator's ceiling silently stops applying.
+ *
+ * `posts_sweep_per_day` is the one that may be 0: it only gates the tick, so "never sweep
+ * automatically" is a legitimate — and free — choice.
+ *
+ * `HttpApifyPostsClient` also refuses `maxPosts < 1`, and the run start passes Apify's
+ * `maxItems` charge ceiling, so this is the outermost of three layers. It is the layer that
+ * matters most: the settings row is operator-editable, persists, and is read by an
+ * unattended tick, so a bad value written once spends money every day.
+ */
+const POSTS_SETTINGS_MINIMUMS: Record<string, number> = {
+  posts_sweep_per_day: 0,
+  posts_max_per_sweep: 1,
+  posts_sweep_batch_size: 1,
+  posts_retention_days: 1,
+  tracked_profile_cap: 1,
+};
+
+/**
+ * A plain-language refusal for one settings field, or null when the value is acceptable.
+ * Keys outside `POSTS_SETTINGS_MINIMUMS` are always acceptable — this guard deliberately does
+ * not change the established behaviour of the other settings.
+ *
+ * Numeric strings are refused rather than coerced, on purpose: the dashboard sends real
+ * numbers, so a string is a caller bug worth surfacing, and coercing would also quietly
+ * accept `''` and `null` — both of which become 0, the precise value this guard exists to
+ * reject. `Number.isInteger` covers NaN and Infinity too.
+ */
+function badPostsSetting(key: string, value: unknown): string | null {
+  const min = POSTS_SETTINGS_MINIMUMS[key];
+  if (min === undefined) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min) {
+    return `${key} must be a whole number, ${min} or more`;
+  }
+  return null;
+}
 
 /**
  * Strip the Apify credential from anything leaving over HTTP, replacing it with a boolean.
@@ -1370,11 +1419,17 @@ export function buildServer(
   });
 
   app.get('/api/settings', async () => publicSettings(repos.settings.get()));
-  app.post('/api/settings', async (req) => {
+  app.post('/api/settings', async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const patch: Record<string, unknown> = {};
     for (const k of Object.keys(body)) {
       if (ALLOWED_SETTINGS_KEYS.has(k)) patch[k] = body[k];
+    }
+    // Checked before anything is written: a partial save would leave the operator reading a
+    // "failed" toast over a form that half-applied.
+    for (const k of Object.keys(patch)) {
+      const bad = badPostsSetting(k, patch[k]);
+      if (bad) return reply.code(400).send({ error: bad });
     }
     repos.settings.update(patch as any);
     return publicSettings(repos.settings.get());

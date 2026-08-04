@@ -1786,6 +1786,10 @@ async function loadSettings() {
     $('#setEngageBatchSize').value = s.engage_batch_size ?? '';
     $('#setEngageBatchesPerDay').value = s.engage_batches_per_day ?? '';
     $('#setEngageCommentCap').value = s.engage_comment_daily_cap ?? '';
+    $('#setPostsSweepPerDay').value = s.posts_sweep_per_day ?? '';
+    $('#setPostsMaxPerSweep').value = s.posts_max_per_sweep ?? '';
+    $('#setPostsRetentionDays').value = s.posts_retention_days ?? '';
+    $('#setTrackedProfileCap').value = s.tracked_profile_cap ?? '';
     renderApifyKey(s);
     refreshConnections();
     loadLogs();
@@ -2560,6 +2564,10 @@ function initSettings() {
       engage_batch_size: num('#setEngageBatchSize'),
       engage_batches_per_day: num('#setEngageBatchesPerDay'),
       engage_comment_daily_cap: num('#setEngageCommentCap'),
+      posts_sweep_per_day: num('#setPostsSweepPerDay'),
+      posts_max_per_sweep: num('#setPostsMaxPerSweep'),
+      posts_retention_days: num('#setPostsRetentionDays'),
+      tracked_profile_cap: num('#setTrackedProfileCap'),
     };
     Object.keys(patch).forEach((k) => patch[k] === undefined && delete patch[k]);
     try {
