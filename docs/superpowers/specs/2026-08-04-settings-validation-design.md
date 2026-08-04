@@ -1,7 +1,15 @@
 # Settings validation — design
 
 **Date:** 2026-08-04
-**Status:** approved, not yet implemented
+**Status:** implemented
+
+> The implementation makes two conscious simplifications against this document, both recorded
+> in `docs/superpowers/plans/2026-08-04-settings-validation.md`. A value the rules already
+> reject at load time shows the same range sentence as any other failure rather than a bespoke
+> "is now capped at 4 (currently 6)" one, and the form does not render the server's `fields[]`
+> — it applies the same rules locally, so a server rejection is unreachable from the dashboard.
+> `fields[]` is still in the 400 body for API consumers. Both are deliberate; neither is
+> missing work.
 
 ## Problem
 

@@ -224,8 +224,9 @@ test('text a number input cannot parse blocks the save instead of reporting succ
 
   expect(posts(calls)).toBe(0);
   expect(byId('settingsResult').textContent).not.toBe('Settings saved.');
+  // The same sentence a decimal gets: one frame for one class of failure, matching the server.
   expect(input.closest('.field')!.querySelector('.field-error')!.textContent)
-    .toBe('Weekly cap (invites) needs a whole number.');
+    .toBe('Weekly cap (invites) must be a whole number.');
 });
 
 test('editing a marked field clears its error without waiting for the next save', async () => {
@@ -267,15 +268,64 @@ test('the load-time flag explains itself rather than just turning a field red', 
 
   expect(byId('settingsResult').hidden).toBe(false);
   expect(byId('settingsResult').textContent).toBe(
-    'A saved value is now outside the safe range — the limit was lowered. '
-    + 'Fix the field marked in red; no settings can be saved until you do.',
+    'Some saved settings are outside the allowed range. '
+    + 'Fix the fields marked in red — nothing can be saved until you do.',
   );
+});
+
+/* The same toast has to cover a stored inverted window, where no ceiling moved. An earlier
+   wording asserted "the limit was lowered", which this case makes false. */
+test('the load-time flag also fires for a stored inverted window, naming no cause', async () => {
+  stubSettings({ workday_start_hour: 18, workday_end_hour: 9 });
+  await app.loadSettings();
+
+  expect(byId('setEnd').closest('.field')!.querySelector('.field-error')!.textContent)
+    .toBe('Workday end hour must be after the start hour (currently 18).');
+  expect(byId('settingsResult').textContent).not.toContain('limit was lowered');
 });
 
 test('a clean load says nothing', async () => {
   stubSettings();
   await app.loadSettings();
   expect(byId('settingsResult').hidden).toBe(true);
+});
+
+/*
+ * A failed GET used to be survivable in silence: index.html carried its own min/max and the
+ * form still looked like a form. With those attributes gone and an empty box now a failure,
+ * silence means eighteen blanks and a Save that answers "Fix 18 settings before saving." —
+ * eighteen red fields accusing the operator of mistyping values they never saw.
+ */
+test('a failed settings fetch says so, instead of leaving 18 blanks to blame the operator', async () => {
+  stubFetchRoutes({ '/api/settings': { status: 500, error: 'boom' } });
+  await app.loadSettings();
+
+  expect(byId('settingsResult').hidden).toBe(false);
+  expect(byId('settingsResult').textContent).toBe(
+    'Could not load your settings. The boxes below are empty because nothing loaded, '
+    + 'not because your settings are gone — reload the page before saving anything.',
+  );
+  expect(byId('settingsResult').className).toContain('error');
+  expect(byId<HTMLInputElement>('setWeeklyCap').value).toBe('');   // the state being explained
+});
+
+/*
+ * SETTINGS_FIELDS order is load-bearing, not cosmetic: a failing submit focuses failures[0],
+ * so if this list disagrees with the screen the operator is scrolled past their first bad
+ * field to a later one. It drifted once already — the three "both engines" fields sat at
+ * positions 8-10 here while rendering 16-18. The DOM and SETTING_RULES already agree, so this
+ * pins all three together rather than picking one as the authority.
+ */
+test('SETTINGS_FIELDS, the DOM and SETTING_RULES are all in the same order', () => {
+  const domOrder = [...byId('settingsForm').querySelectorAll('input[type="number"]')].map((el) => el.id);
+  const mapOrder = app.SETTINGS_FIELDS.map((f) => f.id);
+  expect(mapOrder).toEqual(domOrder);
+
+  // Rule-table order, narrowed to the keys the form actually renders (SETTING_RULES also
+  // carries API-only settings that have no input).
+  const formKeys = new Set(app.SETTINGS_FIELDS.map((f) => f.key));
+  const ruleOrder = Object.keys(SETTING_RULES).filter((k) => formKeys.has(k));
+  expect(app.SETTINGS_FIELDS.map((f) => f.key)).toEqual(ruleOrder);
 });
 
 /* The prose ranges in the labels were the last hardcoded limits in index.html once the

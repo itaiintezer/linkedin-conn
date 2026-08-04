@@ -92,8 +92,8 @@ function effective(patch: Record<string, unknown>, current: Settings, key: keyof
  * Ordering: per-field failures come first, in table order — they all come from one loop over
  * `Object.entries(SETTING_RULES)`. Cross-field failures are appended afterward, in the fixed
  * sequence they're written below, NOT interleaved at their table position. That ordering must
- * stay deterministic: a caller reports `failures[0].message` as the headline error (see Task 3),
- * so the same patch has to keep producing the same first sentence.
+ * stay deterministic: `POST /api/settings` (`src/api/server.ts`) reports `failures[0].message`
+ * as the headline `error`, so the same patch has to keep producing the same first sentence.
  *
  * Two deliberate restraints:
  *  - A cross-field rule runs ONLY when the patch touches one of its keys. An install can

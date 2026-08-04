@@ -1778,6 +1778,10 @@ function initCohorts() {
  * Load, validation and submit all walk this list. The id<->key mapping used to be spelled
  * out separately in loadSettings() and in the submit handler, which meant a new setting had
  * to be added in two places and a typo in either was silent.
+ *
+ * ORDER IS SIGNIFICANT and must stay in step with the DOM and with SETTING_RULES, which
+ * already agree with each other. A failing submit focuses failures[0], so an order that
+ * disagrees with the screen scrolls the operator past the first bad field to a later one.
  */
 const SETTINGS_FIELDS = [
   { key: 'weekly_cap', id: 'setWeeklyCap' },
@@ -1787,9 +1791,6 @@ const SETTINGS_FIELDS = [
   { key: 'msg_batch_size', id: 'setMsgBatchSize' },
   { key: 'msg_batches_per_day', id: 'setMsgBatchesPerDay' },
   { key: 'reply_checks_per_day', id: 'setReplyChecks' },
-  { key: 'workday_start_hour', id: 'setStart' },
-  { key: 'workday_end_hour', id: 'setEnd' },
-  { key: 'roster_sync_per_day', id: 'setRosterSync' },
   { key: 'events_per_day', id: 'setEventsPerDay' },
   { key: 'event_invite_cap', id: 'setEventInviteCap' },
   { key: 'event_bucket_ceiling', id: 'setEventBucketCeiling' },
@@ -1798,7 +1799,16 @@ const SETTINGS_FIELDS = [
   { key: 'engage_batch_size', id: 'setEngageBatchSize' },
   { key: 'engage_batches_per_day', id: 'setEngageBatchesPerDay' },
   { key: 'engage_comment_daily_cap', id: 'setEngageCommentCap' },
+  { key: 'workday_start_hour', id: 'setStart' },
+  { key: 'workday_end_hour', id: 'setEnd' },
+  { key: 'roster_sync_per_day', id: 'setRosterSync' },
 ];
+
+/** The input id carrying a setting, so cross-field code never hardcodes one. */
+function settingFieldId(key) {
+  const field = SETTINGS_FIELDS.find((f) => f.key === key);
+  return field ? field.id : null;
+}
 
 /** Ranges from the last GET /api/settings, keyed by setting name. Empty until one lands. */
 let settingRules = {};
@@ -1885,7 +1895,9 @@ function validateSettings() {
     // report "Settings saved." over a value that never left the box. Every settings column is
     // NOT NULL with a default, so an empty box is always operator-caused.
     if (input.value === '') {
-      const message = `${rule ? rule.label : 'This setting'} needs a whole number.`;
+      // Same sentence as a decimal gets: both are "that isn't a whole number", and the
+      // operator gains nothing from the two cases being worded apart.
+      const message = `${rule ? rule.label : 'This setting'} must be a whole number.`;
       setFieldError(input, message);
       failures.push({ id, message });
       return;
@@ -1902,12 +1914,17 @@ function validateSettings() {
   // The one cross-field rule with two form fields. Skipped when either hour already failed
   // its own range — "must be after the start hour" stacked on "must be between 0 and 23" is
   // noise, and the server applies the same restraint.
-  const alreadyBad = failures.some((f) => f.id === 'setStart' || f.id === 'setEnd');
+  //
+  // Ids come from SETTINGS_FIELDS rather than being spelled out: keyed off setting names the
+  // way the server's copy is, renaming an input can't silently disable the suppression.
+  const startId = settingFieldId('workday_start_hour');
+  const endId = settingFieldId('workday_end_hour');
+  const alreadyBad = failures.some((f) => f.id === startId || f.id === endId);
   if (!alreadyBad && values.workday_start_hour !== undefined && values.workday_end_hour !== undefined
       && values.workday_end_hour <= values.workday_start_hour) {
     const message = `Workday end hour must be after the start hour (currently ${values.workday_start_hour}).`;
-    setFieldError($('#setEnd'), message);
-    failures.push({ id: 'setEnd', message });
+    setFieldError($(`#${endId}`), message);
+    failures.push({ id: endId, message });
   }
   return failures;
 }
@@ -1921,16 +1938,25 @@ async function loadSettings() {
       if (input) input.value = s[key] ?? '';
     });
     // Flag anything the stored row already violates. Nobody typed these, so the red field
-    // needs a reason attached — otherwise Settings just opens angry at the operator.
+    // needs a reason attached — otherwise Settings just opens angry at the operator. The
+    // wording names no cause: this fires for a lowered ceiling AND for a stored inverted
+    // workday window, and the per-field message underneath already says which.
     if (validateSettings().length) {
       toast($('#settingsResult'),
-        'A saved value is now outside the safe range — the limit was lowered. '
-        + 'Fix the field marked in red; no settings can be saved until you do.', true);
+        'Some saved settings are outside the allowed range. '
+        + 'Fix the fields marked in red — nothing can be saved until you do.', true);
     }
     renderApifyKey(s);
     refreshConnections();
     loadLogs();
-  } catch (_) { /* ignore */ }
+  } catch (_) {
+    // Not ignorable any more. The inputs carry no min/max of their own and an empty box is
+    // now a validation failure, so a failed GET leaves 18 blanks that Save would report as
+    // 18 mistakes the operator never made. Name the real cause instead.
+    toast($('#settingsResult'),
+      'Could not load your settings. The boxes below are empty because nothing loaded, '
+      + 'not because your settings are gone — reload the page before saving anything.', true);
+  }
 }
 
 /**
@@ -2685,10 +2711,12 @@ function initSettings() {
     const input = e.target;
     if (!input || input.tagName !== 'INPUT') return;
     setFieldError(input, null);
-    // The workday failure hangs on #setEnd but quotes #setStart's value, so editing either
-    // hour has to clear it — left alone it keeps naming an hour no longer on screen.
-    if (input.id === 'setStart' || input.id === 'setEnd') {
-      [$('#setStart'), $('#setEnd')].forEach((el) => { if (el) setFieldError(el, null); });
+    // The workday failure hangs on the end hour but quotes the start hour's value, so
+    // editing either has to clear it — left alone it keeps naming an hour no longer on
+    // screen. Ids derived, not spelled out, for the same reason validateSettings derives.
+    const hours = [settingFieldId('workday_start_hour'), settingFieldId('workday_end_hour')];
+    if (hours.includes(input.id)) {
+      hours.forEach((hid) => { const el = $(`#${hid}`); if (el) setFieldError(el, null); });
     }
   });
 
@@ -2710,6 +2738,9 @@ function initSettings() {
       const patch = {};
       SETTINGS_FIELDS.forEach(({ key, id }) => {
         const v = $(`#${id}`).value;
+        // Unreachable: validateSettings() has already failed the submit on any empty box.
+        // Kept as a backstop — but it must never again be the thing that silently drops a
+        // key from the patch and lets "Settings saved." print over an unsaved value.
         if (v !== '') patch[key] = Number(v);
       });
       await api('/api/settings', { method: 'POST', body: patch });
