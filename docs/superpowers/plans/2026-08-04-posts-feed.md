@@ -929,9 +929,10 @@ export interface ApifyPost {
   query?: { targetUrl?: unknown } | null;
   /** Reshare WITH commentary: carries the nested original. */
   repost?: unknown;
-  /** Bare reshare: `author` is the ORIGINAL author and this is the tracked profile.
-   *  `repostedAt.timestamp` equals `postedAt.timestamp` on every observed item, so
-   *  `postedAt` is already the reshare instant — no stale-original-date hazard. */
+  /** Bare reshare: `author` is the ORIGINAL author and this is the tracked profile. Read ONLY
+   *  by isRepost for labelling — never for content or author display, because bare reshares
+   *  are out of scope (see extractPost). `repostedAt.timestamp` equals `postedAt.timestamp`
+   *  on every observed item, so `postedAt` is already the reshare instant. */
   repostedBy?: unknown;
   repostedAt?: unknown;
   /** Never observed in real payloads; kept as forward-compat. */
@@ -1181,11 +1182,27 @@ function isRepost(raw: ApifyPost): number {
   return 0;
 }
 
-/** One item -> one row, or null when it is unusable. */
+/**
+ * One item -> one row, or null when it is unusable.
+ *
+ * TOP-LEVEL `content` IS REQUIRED, and that single rule is what puts bare reshares out of
+ * scope (decided 2026-08-04). A reshare *with* commentary carries the tracked person's own
+ * words in `content` and flows through here as an ordinary post. A BARE reshare carries none,
+ * so it lands here with `content` empty and is dropped.
+ *
+ * Do not "fix" that by recovering text from the nested `repost.content`. On a bare reshare the
+ * `author` object is the ORIGINAL author, not the tracked profile (measured: author and
+ * repostedBy identities differ in 1,122 of 1,122 sampled items), so the card would display a
+ * stranger's name, headline and words on a row that appeared because the operator tracks
+ * someone else. Presenting that honestly needs an author-display override and a "X reshared
+ * this" affordance, and it walks the operator into the pre-existing reshare defect where
+ * comment `data-id`s key on the ugcPost URN and silently lose attribution. Deliberately not
+ * in scope; the ~32% of items this drops are the lowest-signal ones in the feed.
+ */
 export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput | null {
   if (!raw || typeof raw !== 'object') return null;
   const content = str(raw.content);
-  if (content === null) return null;       // nothing to judge, nothing to engage with
+  if (content === null) return null;       // no words of their own — see above
   const ref = identify(raw);
   if (ref === null) return null;
 
@@ -1196,13 +1213,17 @@ export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput
     post_url: ref.url,
     tracked_profile_id: trackedProfileId,
     author_name: author ? str(author.name) : null,
-    author_headline: author ? str(author.position) ?? str(author.headline) : null,
+    // `info` is the real headline field on THIS actor; position/headline are the profile
+    // actor's names and appear zero times here. Kept only as forward-compat.
+    author_headline: author ? str(author.info) ?? str(author.position) ?? str(author.headline) : null,
     content,
     posted_at: parsePostedAt(raw.postedAt),
     is_repost: isRepost(raw),
+    // `likes` is the TOTAL reaction count. `reactions` is an array of {type, count}, so it
+    // can never be a numeric fallback — it is listed for forward-compat only.
     reaction_count: eng ? num(eng.likes) ?? num(eng.reactions) : null,
     comment_count: eng ? num(eng.comments) : null,
-    raw_json: JSON.stringify(raw),
+    raw_json: safeStringify(raw),
   };
 }
 
@@ -1941,7 +1962,10 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
             log.warn('posts', 'items matched no tracked profile', { count: unattributed, postedLimit });
           }
           if (unusable > 0) {
-            log.info('posts', 'items had no text and were skipped', { count: unusable, postedLimit });
+            // Expected and routine, hence info not warn: this is mostly bare reshares, which
+            // are deliberately out of scope. A large number here is normal, not a fault.
+            log.info('posts', 'items carried no text of the profile\'s own (bare reshares) — skipped',
+              { count: unusable, postedLimit });
           }
           // upsertMany returns { added, rejected }: `rejected` is a post the CHECK constraints
           // refused (a malformed posted_at from Apify), which OR IGNORE would otherwise
