@@ -213,6 +213,9 @@ from someone you hadn't. Treat **Replied** as a floor, and your LinkedIn inbox a
   hit).
 - Sends are spaced 20–90 seconds apart, and that includes each conveyor's **Run now**
   button — a manual batch takes a few minutes to finish. That's the point; it isn't stuck.
+  The **Event invites** conveyor is the exception: its button says "Starting…" straight away
+  because all it does is move the run's window to now — the invitations themselves go out
+  over the following minutes, and the card's own pill shows the run in progress.
 
 ## 9. Troubleshooting
 - **Dashboard says "not logged in"** → click **Connect LinkedIn** and log in again.
