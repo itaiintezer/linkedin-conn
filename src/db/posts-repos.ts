@@ -6,6 +6,7 @@
  */
 import type { DB } from './database.js';
 import type { FeedPost, Post, PostFilter, TrackedProfile } from '../types.js';
+import { log } from '../core/log.js';
 
 export class TrackedProfileRepo {
   constructor(private db: DB) {}
@@ -114,13 +115,25 @@ export interface PostInput {
 /**
  * The feed's three filters, defined ONCE so the API and the UI cannot drift.
  *
- * `new` deliberately re-admits a post whose engagement ended `failed` or `skipped`: the
- * alternative is a post that can never be retried from the feed and is invisible under
- * every chip.
+ * A deliberate, TOTAL partition: every post on an active profile lands in exactly one
+ * chip, for every combination of `status` and whether `reacted_at` is set. `reacted_at`
+ * takes precedence over `status` — a reaction is a fact already live on LinkedIn, while
+ * `status` is bookkeeping about the task that produced it, and the two can disagree (a
+ * live reaction whose comment attempt then failed). Concretely:
+ *   - no engagement at all                                        -> new
+ *   - reacted_at IS NOT NULL, any status whatsoever                -> engaged
+ *   - not reacted, status IN (failed, skipped)                     -> new (retryable —
+ *     the alternative is a post that can never be retried from the feed)
+ *   - not reacted, anything else (queued/scheduled/sending, and
+ *     needs_attention/sent) -> queued. `needs_attention` counts as in-flight because a
+ *     human still has to act on it, not because work is progressing unattended.
+ * `queued`'s predicate relies on `e.status` being NULL (via the LEFT JOIN) when there is
+ * no engagement row, and `NULL NOT IN (...)` evaluating to NULL rather than true — that
+ * is what keeps an engagement-less post out of `queued` rather than defaulting into it.
  */
 const FILTER_SQL: Record<PostFilter, string> = {
-  new: "(p.engagement_id IS NULL OR e.status IN ('failed','skipped'))",
-  queued: "e.status IN ('queued','scheduled','sending')",
+  new: "(p.engagement_id IS NULL OR (e.reacted_at IS NULL AND e.status IN ('failed','skipped')))",
+  queued: "(e.reacted_at IS NULL AND e.status NOT IN ('failed','skipped'))",
   engaged: 'e.reacted_at IS NOT NULL',
 };
 
@@ -132,13 +145,28 @@ export class PostRepo {
   constructor(private db: DB) {}
 
   /**
-   * Store a sweep's results. Returns how many rows were genuinely new.
+   * Store a sweep's results. Returns how many rows were genuinely new, and how many were
+   * REJECTED — dropped by a CHECK/NOT NULL violation rather than the duplicate-URN dedupe
+   * this exists for.
    *
-   * INSERT OR IGNORE on the UNIQUE post_urn is the whole dedupe strategy — no cursor, no
-   * have-I-seen-this bookkeeping, so a repeated or overlapping sweep is free. Note this
-   * dedupes STORAGE and not the Apify bill; that is what the postedLimit window is for.
+   * `INSERT OR IGNORE` swallows every constraint failure a row can hit, not just the
+   * UNIQUE post_urn collision it is here for: `changes === 0` is identical whether the row
+   * was a genuine duplicate or a malformed one (an unparseable `posted_at`, a NULL
+   * `post_url`, etc.) that never got a chance to insert. Left undistinguished, that meant a
+   * bad batch from the scrape vanished with zero signal: the operator saw "0 new posts",
+   * the sweep stamped itself clean, and the NEXT sweep re-fetched — and re-billed — the
+   * same posts from Apify and dropped them again, forever. So on `changes === 0` we look
+   * the row up by its URN: present means the duplicate this statement exists to catch and
+   * is silently expected; absent means the insert was rejected, which we count separately
+   * and log loudly enough to actually notice.
+   *
+   * Wrapped in one transaction for the same reason as ConnectionRepo.upsertMany:
+   * unbatched, a realistic ~600-row sweep measured ~430ms of synchronous, event-loop-
+   * blocking writes on a WAL-backed file DB versus ~4ms wrapped — and separately, a FOREIGN
+   * KEY violation (unlike CHECK/NOT NULL) is NOT swallowed by OR IGNORE and throws, so an
+   * un-batched loop could commit the rows before a bad one and then blow up, half-written.
    */
-  upsertMany(items: PostInput[], firstSeenAtIso: string): number {
+  upsertMany(items: PostInput[], firstSeenAtIso: string): { added: number; rejected: number } {
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO posts
         (post_urn, post_url, tracked_profile_id, author_name, author_headline, content,
@@ -146,17 +174,30 @@ export class PostRepo {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     let added = 0;
-    for (const it of items) {
-      // `changes` is 0 when OR IGNORE swallowed a duplicate and 1 on a real insert, which is
-      // exactly the count we want. Number() because it can arrive as a bigint — same wrapping
-      // as EventInviteeRepo and ConnectionRepo already use.
-      added += Number(stmt.run(
-        it.post_urn, it.post_url, it.tracked_profile_id, it.author_name, it.author_headline,
-        it.content, it.posted_at, it.is_repost, it.reaction_count, it.comment_count,
-        it.raw_json, firstSeenAtIso,
-      ).changes);
+    let rejected = 0;
+    this.db.exec('BEGIN');
+    try {
+      for (const it of items) {
+        // Number() because `changes` can arrive as a bigint — same wrapping as
+        // EventInviteeRepo and ConnectionRepo already use.
+        const changes = Number(stmt.run(
+          it.post_urn, it.post_url, it.tracked_profile_id, it.author_name, it.author_headline,
+          it.content, it.posted_at, it.is_repost, it.reaction_count, it.comment_count,
+          it.raw_json, firstSeenAtIso,
+        ).changes);
+        if (changes === 1) { added++; continue; }
+        if (this.findByUrn(it.post_urn)) continue; // genuine duplicate — expected, silent
+        rejected++;
+        log.warn('posts', 'upsertMany rejected a row (constraint violation, not a duplicate)', {
+          post_urn: it.post_urn, posted_at: it.posted_at,
+        });
+      }
+      this.db.exec('COMMIT');
+    } catch (e) {
+      try { this.db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+      throw e;
     }
-    return added;
+    return { added, rejected };
   }
 
   findById(id: number): Post | undefined {
@@ -184,14 +225,24 @@ export class PostRepo {
    * `cursor` is the keyset position — `"<sortKey>|<id>"` from the previous page's last row.
    * Keyset rather than OFFSET because the sweep inserts rows between requests, and OFFSET
    * would skip or repeat posts as the set shifts underneath the reader.
+   *
+   * Validated here because this file owns the format: in a later task this string arrives
+   * verbatim from an HTTP query parameter. `indexOf` rather than `lastIndexOf` is
+   * deliberate — the key is either `posted_at` or `first_seen_at`, both GLOB-checked ISO
+   * shapes in schema.sql that can never contain a `|`, so the first pipe is always the
+   * separator; splitting on the LAST one is what let a cursor with an extra `|` silently
+   * re-serve an already-seen row. `sep <= 0` rejects both no-pipe-found (-1) and an
+   * empty key (0), and a non-integer id is rejected outright rather than silently
+   * producing a wrong page.
    */
   feed(filter: PostFilter, limit: number, cursor: string | null): FeedPost[] {
     const params: unknown[] = [];
     let keyset = '';
     if (cursor !== null) {
-      const sep = cursor.lastIndexOf('|');
-      const key = cursor.slice(0, sep);
+      const sep = cursor.indexOf('|');
       const id = Number(cursor.slice(sep + 1));
+      if (sep <= 0 || !Number.isInteger(id)) throw new Error(`malformed feed cursor: ${cursor}`);
+      const key = cursor.slice(0, sep);
       keyset = `AND (${SORT_KEY} < ? OR (${SORT_KEY} = ? AND p.id < ?))`;
       params.push(key, key, id);
     }
@@ -240,8 +291,17 @@ export class PostRepo {
    * Load-bearing, not hygiene: with no dismiss action, ageing out is the only way a post
    * leaves the New chip. Anything with an engagement is kept regardless of age — that is
    * the record of what was actually done.
+   *
+   * `days <= 0` is refused rather than honoured: `posts_retention_days` is operator-
+   * editable, 0 is the value an operator would guess means "keep everything forever", and
+   * the naive cutoff math does the opposite — it makes every un-engaged post instantly
+   * overdue and wipes the New feed in one tick, recoverable only by re-paying Apify to
+   * re-sweep. A non-finite `days` (NaN, or a bad settings row coercing to undefined) must
+   * not throw out of `new Date(...).toISOString()` either, because this runs inside a
+   * scheduler tick and tick handlers must never throw (see orchestrator.ts).
    */
   prune(days: number, now: Date): number {
+    if (!Number.isFinite(days) || days < 1) return 0;
     const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
     return Number(this.db.prepare(
       `DELETE FROM posts WHERE engagement_id IS NULL

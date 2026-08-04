@@ -5,14 +5,22 @@
  * with it, coverage for its reactivating `add` (including the connection_id backfill
  * rule — fills a NULL, never overwrites a set one), soft-delete via `deactivate`,
  * the per-profile sweep stamps (`markSwept` / `markSweepError`), and `withCounts`'s
- * LEFT JOIN + COUNT. Task 3 adds PostRepo: URN dedupe via `upsertMany`, the feed
- * hiding an untracked profile's posts without deleting them, the retention prune
- * (un-engaged old posts drop, engaged ones survive, `first_seen_at` stands in for a
- * NULL `posted_at`), and `engagement_id` surviving a URN reconcile.
+ * LEFT JOIN + COUNT. Task 3 adds PostRepo: URN dedupe via `upsertMany` (including
+ * disambiguating a genuine duplicate from a row the schema's CHECK/NOT NULL
+ * constraints rejected), the feed hiding an untracked profile's posts without
+ * deleting them, the retention prune (un-engaged old posts drop, engaged ones
+ * survive, `first_seen_at` stands in for a NULL `posted_at`, and a `days` value that
+ * would wipe everything or throw is refused), `engagement_id` surviving a URN
+ * reconcile, keyset pagination end-to-end (including a tie spanning a page boundary
+ * and an interleaved NULL `posted_at`), and that the three feed filters partition
+ * every engagement state — across all seven `EngagementStatus` values crossed with
+ * reacted/not-reacted — into exactly one chip, with `counts()` and `feed()` in
+ * agreement.
  */
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
+import type { EngagementStatus, PostFilter } from '../../src/types.js';
 
 let repos: Repos;
 beforeEach(() => { repos = new Repos(openDatabase(':memory:')); });
@@ -196,15 +204,53 @@ test('upsert dedupes on post_urn and reports how many were new', () => {
     postInput('urn:li:activity:1', a.id, '2026-08-03T09:00:00.000Z'),
     postInput('urn:li:activity:2', a.id, '2026-08-02T09:00:00.000Z'),
   ], now);
-  expect(first).toBe(2);
+  expect(first).toEqual({ added: 2, rejected: 0 });
 
   // Re-sweeping the same posts is a no-op. This is what removes the need for a cursor.
   const second = repos.posts.upsertMany([
     postInput('urn:li:activity:1', a.id, '2026-08-03T09:00:00.000Z'),
     postInput('urn:li:activity:3', a.id, '2026-08-01T09:00:00.000Z'),
   ], now);
-  expect(second).toBe(1);
+  expect(second).toEqual({ added: 1, rejected: 0 });
   expect(repos.posts.countAll()).toBe(3);
+});
+
+test('upsertMany distinguishes a genuine duplicate from a row the schema rejected, and is atomic', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  // Valid, but no milliseconds — an entirely ordinary serialization the CHECK still
+  // refuses, since it pins toISOString()'s exact fixed-width shape.
+  const malformed = { ...postInput('urn:li:activity:bad', a.id, null), posted_at: '2026-07-20T09:00:00Z' };
+
+  const result = repos.posts.upsertMany([
+    postInput('urn:li:activity:ok', a.id, '2026-08-03T09:00:00.000Z'),
+    malformed,
+  ], '2026-08-04T10:00:00.000Z');
+  // The good row is stored; the malformed one is counted as `rejected`, not silently
+  // folded into "0 new" the way a duplicate would be — that distinction is the whole
+  // point, since an operator seeing "0 new posts" for a batch that was actually dropped
+  // would never know to look, and the next sweep would re-fetch and re-drop it forever.
+  expect(result).toEqual({ added: 1, rejected: 1 });
+  expect(repos.posts.countAll()).toBe(1);
+  expect(repos.posts.findByUrn('urn:li:activity:bad')).toBeUndefined();
+
+  // Re-running the identical batch: the good row is now a genuine duplicate (rejected
+  // stays 0 for it), the malformed row is rejected again (it still never made it in).
+  const again = repos.posts.upsertMany([
+    postInput('urn:li:activity:ok', a.id, '2026-08-03T09:00:00.000Z'),
+    malformed,
+  ], '2026-08-04T10:00:00.000Z');
+  expect(again).toEqual({ added: 0, rejected: 1 });
+
+  // Atomicity: a batch where one row trips a FOREIGN KEY violation (unlike a CHECK
+  // failure, this throws rather than being swallowed by OR IGNORE) must not leave the
+  // rows before it committed.
+  const withBadFk = [
+    postInput('urn:li:activity:before-fk', a.id, '2026-08-03T09:00:00.000Z'),
+    { ...postInput('urn:li:activity:bad-fk', a.id + 999, '2026-08-03T09:00:00.000Z') },
+  ];
+  expect(() => repos.posts.upsertMany(withBadFk, '2026-08-04T10:00:00.000Z'))
+    .toThrow(/FOREIGN KEY constraint failed/);
+  expect(repos.posts.findByUrn('urn:li:activity:before-fk')).toBeUndefined();
 });
 
 test('the feed hides posts of an untracked profile without deleting them', () => {
@@ -239,6 +285,125 @@ test('the prune drops un-engaged old posts, keeps engaged ones, and uses first_s
   const left = repos.db.prepare('SELECT post_urn FROM posts ORDER BY post_urn')
     .all() as { post_urn: string }[];
   expect(left.map((r) => r.post_urn)).toEqual(['urn:li:activity:fresh', 'urn:li:activity:keep']);
+});
+
+test('feed() rejects a malformed cursor rather than silently returning a wrong page', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  repos.posts.upsertMany([postInput('urn:li:activity:1', a.id, '2026-08-03T09:00:00.000Z')],
+    '2026-08-04T10:00:00.000Z');
+
+  // No pipe at all — lastIndexOf('|') used to return -1 here, silently taking the first
+  // page as if no cursor had been passed.
+  expect(() => repos.posts.feed('new', 20, 'garbage')).toThrow(/malformed feed cursor/);
+  // Empty string — same shape, same failure mode.
+  expect(() => repos.posts.feed('new', 20, '')).toThrow(/malformed feed cursor/);
+  // Empty key ("|5") — sep === 0 must also be rejected, not just sep === -1.
+  expect(() => repos.posts.feed('new', 20, '|5')).toThrow(/malformed feed cursor/);
+  // Non-integer id half.
+  expect(() => repos.posts.feed('new', 20, '2026-08-03T09:00:00.000Z|abc')).toThrow(/malformed feed cursor/);
+});
+
+test('keyset pagination visits every post exactly once, in order, across ties and a NULL posted_at', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+
+  // A tie group of 4 (ids 1-4) deliberately bigger than the page size, so it splits
+  // across a page boundary and the id-tiebreak has to carry the reader through it.
+  for (let i = 1; i <= 4; i++) {
+    repos.posts.upsertMany([postInput(`urn:p:${i}`, a.id, '2026-07-30T09:00:00.000Z')],
+      '2026-08-04T10:00:00.000Z');
+  }
+  // A second, smaller tie group (ids 5-6).
+  repos.posts.upsertMany([
+    postInput('urn:p:5', a.id, '2026-07-25T09:00:00.000Z'),
+    postInput('urn:p:6', a.id, '2026-07-25T09:00:00.000Z'),
+  ], '2026-08-04T10:00:00.000Z');
+  // A NULL posted_at (id 7), sorting by its first_seen_at instead — interleaved between
+  // the two remaining tie groups below.
+  repos.posts.upsertMany([postInput('urn:p:7', a.id, null)], '2026-07-22T09:00:00.000Z');
+  // A third tie group (ids 8-9), then a lone oldest post (id 10).
+  repos.posts.upsertMany([
+    postInput('urn:p:8', a.id, '2026-07-20T09:00:00.000Z'),
+    postInput('urn:p:9', a.id, '2026-07-20T09:00:00.000Z'),
+  ], '2026-08-04T10:00:00.000Z');
+  repos.posts.upsertMany([postInput('urn:p:10', a.id, '2026-07-15T09:00:00.000Z')],
+    '2026-08-04T10:00:00.000Z');
+
+  // The order ORDER BY COALESCE(posted_at, first_seen_at) DESC, id DESC produces: within
+  // a tie, the highest id (most recently inserted) sorts first.
+  const expectedOrder = [
+    'urn:p:4', 'urn:p:3', 'urn:p:2', 'urn:p:1',   // tie group, newest-inserted-first
+    'urn:p:6', 'urn:p:5',                          // second tie group
+    'urn:p:7',                                     // NULL posted_at, via first_seen_at
+    'urn:p:9', 'urn:p:8',                          // third tie group
+    'urn:p:10',
+  ];
+
+  // Page through with the API's exact cursor construction, at a page size that forces
+  // several boundaries mid-tie-group.
+  const seen: string[] = [];
+  let cursor: string | null = null;
+  for (let guard = 0; guard < 20; guard++) {
+    const page = repos.posts.feed('new', 3, cursor);
+    if (page.length === 0) break;
+    for (const row of page) seen.push(row.post_urn);
+    const last = page[page.length - 1]!;
+    cursor = `${last.posted_at ?? last.first_seen_at}|${last.id}`;
+  }
+
+  expect(seen).toEqual(expectedOrder);
+  expect(new Set(seen).size).toBe(10); // no duplicates
+});
+
+test('the three feed filters partition every engagement state into exactly one chip', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  const statuses: EngagementStatus[] =
+    ['queued', 'scheduled', 'sending', 'needs_attention', 'sent', 'failed', 'skipped'];
+
+  const expectedFilter: Record<string, PostFilter> = {};
+  let n = 0;
+  for (const status of statuses) {
+    for (const reacted of [false, true]) {
+      n += 1;
+      const urn = `urn:state:${n}`;
+      repos.posts.upsertMany([postInput(urn, a.id, '2026-08-03T09:00:00.000Z')],
+        '2026-08-04T10:00:00.000Z');
+      const post = repos.posts.findByUrn(urn)!;
+      const eng = repos.engagements.add(`https://x/${n}`, urn, 'like', null);
+      repos.engagements.setStatus(eng.id, status, reacted ? { reacted_at: '2026-08-04T10:00:00.000Z' } : {});
+      repos.posts.setEngagement(post.id, eng.id);
+
+      // reacted always wins regardless of status; otherwise failed/skipped return to
+      // `new` so they're retryable, and everything else (including needs_attention) is
+      // still in flight.
+      expectedFilter[urn] = reacted ? 'engaged'
+        : (status === 'failed' || status === 'skipped') ? 'new' : 'queued';
+    }
+  }
+  // A post with no engagement at all belongs in `new` too.
+  repos.posts.upsertMany([postInput('urn:state:none', a.id, '2026-08-03T09:00:00.000Z')],
+    '2026-08-04T10:00:00.000Z');
+  expectedFilter['urn:state:none'] = 'new';
+
+  const total = repos.posts.countAll();
+  expect(total).toBe(statuses.length * 2 + 1);
+
+  const filters: PostFilter[] = ['new', 'queued', 'engaged'];
+  const counts = repos.posts.counts();
+  let summed = 0;
+  for (const f of filters) {
+    const urnsInFilter = repos.posts.feed(f, 99, null).map((p) => p.post_urn);
+    // counts() and feed() must agree exactly — this is what proves the SQL behind the
+    // chip badge and the SQL behind the list are the same partition, not two that
+    // happen to coincide today.
+    expect(counts[f]).toBe(urnsInFilter.length);
+    summed += counts[f];
+    // Every URN that landed in this filter must be the one the partition predicts, and
+    // nothing else — proves no post is double-counted across chips.
+    for (const urn of urnsInFilter) expect(expectedFilter[urn]).toBe(f);
+  }
+  // The three counts sum to the total: every post on an active profile is in exactly
+  // one chip, never none and never two.
+  expect(summed).toBe(total);
 });
 
 test('engagement_id survives the engagement URN being reconciled', () => {
