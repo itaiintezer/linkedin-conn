@@ -455,6 +455,47 @@ test('rejects maxPosts that are zero, negative or non-integer before spending an
   expect(spy).not.toHaveBeenCalled();
 });
 
+test('sends postedLimitDate instead of postedLimit, and never both keys', async () => {
+  const { impl, bodies } = scriptedFetch([{ body: startedRun }, { body: succeeded }, { body: [] }]);
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
+
+  // What a previously-swept profile gets: "posts from now back to this instant", exactly. It
+  // replaced a relative '24h' window, which the sweep cadence made unusable — see windowFor.
+  await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimitDate: '2026-08-04T09:00:00.000Z' });
+
+  expect(bodies[0]).toEqual({
+    targetUrls: ['https://www.linkedin.com/in/a'],
+    maxPosts: 3,
+    postedLimitDate: '2026-08-04T09:00:00.000Z',
+    scrapeReactions: false,
+    scrapeComments: false,
+  });
+  // Absent entirely, not present-and-undefined: the actor's precedence with both set is
+  // unspecified, so a gap and an over-bill would look identical.
+  expect(Object.keys(bodies[0] as object)).not.toContain('postedLimit');
+});
+
+test('refuses both window forms, or neither, before spending anything', async () => {
+  const spy = vi.fn();
+  const client = new HttpApifyPostsClient(TOKEN, {
+    fetchImpl: spy as unknown as typeof fetch, sleep: async () => {},
+  });
+  // Reachable from untyped JS or a settings-derived object. With neither, the actor applies its
+  // own default window — an unbounded over-fetch, billed per post.
+  const bad = [
+    { maxPosts: 3, postedLimit: 'week', postedLimitDate: '2026-08-04T09:00:00.000Z' },
+    { maxPosts: 3 },
+  ];
+  for (const opts of bad) {
+    const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+      opts as never).catch((e: Error) => e) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/exactly one of postedLimit or postedLimitDate/);
+  }
+  expect(spy).not.toHaveBeenCalled();
+});
+
 test('an empty tracked list never starts a run', async () => {
   const spy = vi.fn();
   const client = new HttpApifyPostsClient(TOKEN, {

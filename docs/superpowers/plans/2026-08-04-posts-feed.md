@@ -1624,6 +1624,20 @@ git commit -m "feat(posts): Apify posts client using async run+poll, one run for
 
 ### Task 6: `posts-sweep.ts` — one sweep pass
 
+> **REVISED after review — the window derivation below is superseded.** `age <= DAY_MS` compares
+> elapsed time against a fixed relative window while the *cadence* is also a day, and because
+> `daySlot(now, 1)` keys on the calendar date, consecutive sweeps land 24h + δ apart with δ > 0
+> essentially always. So `'week'` became the steady-state window and the bill rose ~20×, while a
+> test pinning the idealized zero-drift boundary passed happily.
+>
+> The shipped code uses `postedLimitDate = last_swept_at` for any previously-swept profile
+> (exact — no gap, no over-fetch, no dependence on tick timing) and keeps `postedLimit: 'week'`
+> only for the never-swept. A tolerance was rejected because a relative `'24h'` is computed at
+> *run* time, so the δ sliver would be fetched by neither pass — silent, permanent loss.
+>
+> See the design doc's "Bound the window by the last sweep's timestamp" for the full reasoning,
+> and treat the shipped `src/worker/posts-sweep.ts` as authoritative over the block below.
+
 **Files:**
 - Create: `src/worker/posts-sweep.ts`
 - Test: `tests/worker/posts-sweep.test.ts`

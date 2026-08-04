@@ -118,9 +118,12 @@ CREATE TABLE IF NOT EXISTS settings (
   -- operator's own name is a materially different risk from 90 likes.
   engage_comment_daily_cap INTEGER NOT NULL DEFAULT 10
   ,
-  -- Posts feed. postedLimit is the cost model, not a filter: INSERT OR IGNORE dedupes
-  -- storage but never the bill, so a 'week' window on a daily sweep re-bills the same
-  -- posts (~20x). The window is derived from per-profile staleness, not configured here.
+  -- Posts feed. The sweep window is the cost model, not a filter: INSERT OR IGNORE dedupes
+  -- storage but never the bill, so a window wider than the gap since the last sweep re-bills
+  -- posts already stored (a relative 'week' on a daily sweep, ~20x). Which is why the window
+  -- is NOT configured here: it is derived per profile from its own last_swept_at — see
+  -- windowFor in worker/posts-sweep.ts, and note the elapsed-time threshold that used to
+  -- live there and why it was wrong.
   posts_sweep_per_day INTEGER NOT NULL DEFAULT 1,
   posts_max_per_sweep INTEGER NOT NULL DEFAULT 3,
   -- Safety valve only. One run covers every tracked profile in practice; this splits the
@@ -424,8 +427,11 @@ CREATE TABLE IF NOT EXISTS tracked_profiles (
   -- Untracking sets this to 0; it never deletes. A delete strands posts.tracked_profile_id,
   -- and cascading it would destroy the record of posts already engaged with.
   active INTEGER NOT NULL DEFAULT 1,
-  -- Chooses THIS profile's postedLimit window and bounds retries. Distinct from
-  -- app_state.posts_swept_at, which gates the pass as a whole.
+  -- Bounds THIS profile's next sweep window — it is sent verbatim as the actor's
+  -- postedLimitDate ("posts from now back to this instant") — and bounds retries. Distinct
+  -- from app_state.posts_swept_at, which gates the pass as a whole. Advanced ONLY by a run
+  -- that actually returned for this profile: advancing it otherwise bounds the next window on
+  -- a sweep that never happened, losing the posts in between for good.
   last_swept_at TEXT,
   last_sweep_error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))

@@ -210,15 +210,34 @@ existing client already documents.
    sweep retries on the next tick instead of being recorded as done. This is the
    acceptance-checker lesson and it is load-bearing.
 2. **Load** `active = 1` tracked profiles.
-3. **Derive the window from staleness**, which is what replaces the rejected backfill concept.
-   Note the two timestamps do different jobs: `app_state.posts_swept_at` gates the *pass*,
-   while per-profile `last_swept_at` chooses that profile's *window* and bounds retries.
-   - `last_swept_at` is **within the last 24h** → `postedLimit: '24h'`
-   - `last_swept_at` is **older than 24h, or `NULL`** (never swept) → `postedLimit: 'week'`
+3. **Bound the window by the last sweep's timestamp**, which is what replaces the rejected
+   backfill concept. Note the two timestamps do different jobs: `app_state.posts_swept_at`
+   gates the *pass*, while per-profile `last_swept_at` bounds that profile's *window* and
+   bounds retries.
+   - `last_swept_at` is set → `postedLimitDate: <last_swept_at>` — "posts from now back to
+     this instant", exactly.
+   - `last_swept_at` is `NULL` (never swept) → `postedLimit: 'week'`, a bounded first look.
 
-   At most two runs per sweep. Steady state pays the cheap `'24h'` price; downtime self-heals;
-   a newly-tracked profile gets their recent posts immediately. No setting, no column, no
-   separate code path.
+   Send one or the other, never both.
+
+   **REVISED 2026-08-04 during implementation, and the reason matters.** The original design
+   compared elapsed time against a fixed relative window: `age <= 24h → postedLimit: '24h'`,
+   else `'week'`. That is broken, because the *cadence* is also a day. The tick gate is
+   `daySlot(now, 1)`, which keys on the local calendar date, so a sweep fires on the first
+   30-minute tick after midnight and consecutive sweeps land 24h **+ δ** apart, with δ > 0
+   essentially always (stable tick phase, plus the sweep runs synchronously inside the tick).
+   So `age > 24h` nearly always held, `'week'` became the steady-state window, and the design's
+   own twentyfold cost difference — $1.60/mo against $36/mo — landed on the wrong side. A test
+   pinning the idealized zero-drift boundary passed happily.
+
+   A tolerance (`age <= 24h + one tick`) would fix the cost and silently lose posts: a relative
+   `'24h'` is computed at *run* time, so the δ sliver between the previous sweep and 24h-before-now
+   is fetched by neither pass. Small per day, permanent, invisible. `postedLimitDate` removes
+   the guess entirely — no over-fetch, no gap, and no dependence on when the tick happens to fire.
+
+   Batching survives: `markSwept` stamps every profile in a pass with the *same* `nowIso`, so
+   profiles swept together share an identical `last_swept_at` and naturally form one group.
+   Group by that value, plus a null group for the never-swept.
 4. **Attribute** each returned item to its profile by `query.targetUrl`, falling back to
    `author.linkedinUrl`. An item matching neither is logged and dropped, never guessed at.
 5. **`INSERT OR IGNORE`** each post on `post_urn`. Stamp `last_swept_at` per profile. On a

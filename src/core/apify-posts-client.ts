@@ -73,16 +73,31 @@ const MAX_ERROR_BODY_CHARS = 500;
 
 export type PostedLimit = '24h' | 'week' | 'month';
 
-export interface FetchPostsOptions {
+/**
+ * THE cost control, and exactly one of the two forms must be sent.
+ *
+ * `INSERT OR IGNORE` dedupes storage but never the bill, so a window wider than the gap since
+ * the last sweep re-bills posts already stored. The two forms exist because they answer
+ * different questions:
+ *
+ *  - `postedLimitDate` — "posts from now back to this instant", exact. What a
+ *    previously-swept profile gets, keyed off its own `last_swept_at`.
+ *  - `postedLimit` — a fixed RELATIVE window, computed by the actor at *run* time. Only safe
+ *    where there is no instant to bound against, i.e. a never-swept profile's first look.
+ *
+ * Modelled as a union so sending both is a compile error, not a judgement call: the actor's
+ * behaviour with both set is unspecified, and either one silently losing to the other is a
+ * gap or an over-bill with nothing to show which. `assertExactlyOneWindow` covers the
+ * untyped-caller boundary.
+ */
+export type PostedWindow =
+  | { postedLimit: PostedLimit; postedLimitDate?: never }
+  | { postedLimitDate: string; postedLimit?: never };
+
+export type FetchPostsOptions = {
   /** Per profile, not per run. Must be a positive integer — see the class doc comment. */
   maxPosts: number;
-  /**
-   * THE cost control. INSERT OR IGNORE dedupes storage but never the bill, so a wide window
-   * on a frequent sweep re-bills posts already stored. Derived from per-profile staleness by
-   * the sweep worker; never widened casually.
-   */
-  postedLimit: PostedLimit;
-}
+} & PostedWindow;
 
 /** Injected everywhere so no test ever spends money. */
 export interface ApifyPostsClient {
@@ -124,11 +139,32 @@ function isRetryableHttpStatus(status: number): boolean {
  * retry attempt) from a permanent one (bad auth, not found, bad request — retrying only delays
  * the inevitable, and on a poll would delay the sweep worker's auth-failure latch for nothing).
  */
-class ApifyRequestError extends Error {
+export class ApifyRequestError extends Error {
   constructor(message: string, public readonly status: number | undefined, public readonly retryable: boolean) {
     super(message);
     this.name = 'ApifyRequestError';
   }
+}
+
+/**
+ * Is this an auth refusal — the one failure class a caller should latch off rather than retry?
+ *
+ * STRUCTURAL, on `status`, and deliberately not a regex over the message. The message now
+ * embeds up to `MAX_ERROR_BODY_CHARS` of untrusted upstream body, so a gateway or WAF error
+ * page that merely quotes the string "HTTP 401" inside a 502 would match a textual test and
+ * latch automatic sweeping off over a transient blip — a silent stop, which is the failure
+ * class this feature keeps working to eliminate.
+ *
+ * Duck-typed on the property rather than `instanceof`, so it still holds across a module
+ * boundary and for any caller that models the same shape.
+ *
+ * 401 and 403 both qualify, but note 403 is AMBIGUOUS at Apify: it is returned for a bad key
+ * AND for "monthly usage hard limit exceeded". Latching is right either way; naming the cause
+ * is not, which is why the message is passed through rather than interpreted.
+ */
+export function isApifyAuthFailure(err: unknown): boolean {
+  const status = (err as { status?: unknown } | null | undefined)?.status;
+  return status === 401 || status === 403;
 }
 
 export class HttpApifyPostsClient implements ApifyPostsClient {
@@ -159,6 +195,7 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
     // that can only return nothing.
     if (urls.length === 0) return [];
     this.assertValidMaxPosts(opts.maxPosts);
+    this.assertExactlyOneWindow(opts);
     const deadline = Date.now() + this.maxRunMs;
     const { runId, datasetId } = await this.startRun(urls, opts);
     const finalDatasetId = await this.awaitRun(runId, datasetId, deadline);
@@ -179,13 +216,39 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
     }
   }
 
+  /**
+   * Exactly one window form, enforced at runtime as well as in the type.
+   *
+   * The union makes both-at-once a compile error, but this client is also reachable from
+   * untyped JS and from a settings-derived object, and BOTH failure directions are silent and
+   * expensive: with neither field the actor applies its own default window (an unbounded
+   * over-fetch, billed per post), and with both its precedence is unspecified, so a gap or an
+   * over-bill would be indistinguishable from a correct run. Throwing here costs one unstarted
+   * run; guessing costs money on every sweep, forever.
+   */
+  private assertExactlyOneWindow(opts: FetchPostsOptions): void {
+    const hasLimit = opts.postedLimit !== undefined;
+    const hasDate = opts.postedLimitDate !== undefined;
+    if (hasLimit === hasDate) {
+      throw new Error(
+        'fetchPosts needs exactly one of postedLimit or postedLimitDate '
+        + `(got ${hasLimit ? 'both' : 'neither'})`,
+      );
+    }
+  }
+
   private async startRun(
     urls: string[], opts: FetchPostsOptions,
   ): Promise<{ runId: string; datasetId: string }> {
     const body = {
       targetUrls: urls,
       maxPosts: opts.maxPosts,
-      postedLimit: opts.postedLimit,
+      // Spread so exactly ONE of the two ever appears in the input at all. Setting the other
+      // to `undefined` would be equivalent today (JSON.stringify drops undefined values) but
+      // relies on that staying true of however this body is serialized later.
+      ...(opts.postedLimitDate !== undefined
+        ? { postedLimitDate: opts.postedLimitDate }
+        : { postedLimit: opts.postedLimit }),
       // Both bill as ADDITIONAL posts. Never enable them.
       scrapeReactions: false,
       scrapeComments: false,
