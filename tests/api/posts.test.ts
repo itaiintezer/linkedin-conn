@@ -20,11 +20,15 @@ const fakePostsClient: ApifyPostsClient = { async fetchPosts() { return []; } };
  */
 let postsClient: ApifyPostsClient = fakePostsClient;
 
+/** How many times a route asked for a client. Pins the paths that must not build one at all. */
+let clientBuilds = 0;
+
 beforeEach(() => {
   repos = new Repos(openDatabase(':memory:'));
   postsClient = fakePostsClient;
+  clientBuilds = 0;
   app = buildServer(repos, new FakeDriver(), undefined, undefined,
-    { apifyPostsClientFactory: () => postsClient });
+    { apifyPostsClientFactory: () => { clientBuilds++; return postsClient; } });
 });
 afterEach(async () => { await app.close(); });
 
@@ -227,4 +231,176 @@ test('the halt latch travels with the feed so the screen needs one request', asy
   expect(halted.halt.halted).toBe(1);
   expect(halted.halt.reason).toBe('auth');
   expect(halted.halt.detail).toBe('Apify rejected the API key');
+});
+
+test('engaging a post creates an engagement and links it', async () => {
+  await seed(1);
+  const id = repos.posts.findByUrn('urn:li:activity:0')!.id;
+  const res = await post(`/api/posts/${id}/engage`,
+    { reaction: 'insightful', comment: 'Useful framing.' });
+  expect(res.statusCode).toBe(201);
+
+  const body = res.json();
+  expect(body.engagement.reaction).toBe('insightful');
+  expect(body.engagement.comment_text).toBe('Useful framing.');
+  expect(repos.posts.findById(id)!.engagement_id).toBe(body.engagement.id);
+  // The post has left the New chip.
+  expect(repos.posts.counts()).toEqual({ new: 0, queued: 1, engaged: 0 });
+});
+
+test('an omitted reaction defaults to like', async () => {
+  await seed(1);
+  const id = repos.posts.findByUrn('urn:li:activity:0')!.id;
+  const res = await post(`/api/posts/${id}/engage`, {});
+  expect(res.json().engagement.reaction).toBe('like');
+});
+
+test('validation is the engagement pipeline validation, not a second copy', async () => {
+  await seed(1);
+  const id = repos.posts.findByUrn('urn:li:activity:0')!.id;
+  expect((await post(`/api/posts/${id}/engage`, { reaction: 'shrug' })).statusCode).toBe(400);
+  expect((await post(`/api/posts/${id}/engage`, { comment: 'x'.repeat(1251) })).statusCode)
+    .toBe(400);
+  // Whitespace-only is NO comment, not an empty one — it must not claim a comment-cap slot.
+  const ok = await post(`/api/posts/${id}/engage`, { comment: '   ' });
+  expect(ok.json().engagement.comment_text).toBeNull();
+});
+
+test('engaging twice is a 409 naming the existing engagement', async () => {
+  await seed(1);
+  const id = repos.posts.findByUrn('urn:li:activity:0')!.id;
+  await post(`/api/posts/${id}/engage`, { reaction: 'like' });
+  const again = await post(`/api/posts/${id}/engage`, { reaction: 'love' });
+  expect(again.statusCode).toBe(409);
+  expect(again.json().error).toMatch(/already queued/);
+});
+
+test('a post whose engagement failed can be engaged again', async () => {
+  await seed(1);
+  const id = repos.posts.findByUrn('urn:li:activity:0')!.id;
+  const first = (await post(`/api/posts/${id}/engage`, { reaction: 'like' })).json();
+  repos.engagements.setStatus(first.engagement.id, 'failed', { last_error: 'nope' });
+  // Back in the New chip, so it is retryable from the feed rather than invisible.
+  expect(repos.posts.counts().new).toBe(1);
+  expect((await post(`/api/posts/${id}/engage`, { reaction: 'like' })).statusCode).toBe(201);
+  // And the retry actually re-queues the work: answering 200 "already linked" would make the
+  // click a silent no-op and leave the post stuck in New forever.
+  expect(repos.engagements.findById(first.engagement.id)!.status).not.toBe('failed');
+  expect(repos.posts.counts()).toEqual({ new: 0, queued: 1, engaged: 0 });
+});
+
+test('an engagement already queued for the same post by URL is adopted, not duplicated', async () => {
+  await seed(1);
+  const urn = 'urn:li:activity:0';
+  // The operator pasted the URL into /api/engagements earlier, before the feed existed.
+  const pasted = repos.engagements.add(
+    `https://www.linkedin.com/feed/update/${urn}/`, urn, 'celebrate', null);
+  const id = repos.posts.findByUrn(urn)!.id;
+
+  const res = await post(`/api/posts/${id}/engage`, { reaction: 'like' });
+  expect(res.statusCode).toBe(200);
+  expect(res.json().adopted).toBe(true);
+  expect(repos.posts.findById(id)!.engagement_id).toBe(pasted.id);
+  // The pre-existing reaction is left alone rather than being silently rewritten.
+  expect(repos.engagements.findById(pasted.id)!.reaction).toBe('celebrate');
+});
+
+test('bulk engage applies one reaction to many posts', async () => {
+  const tp = await seed(3);
+  expect(tp).toBeGreaterThan(0);
+  const ids = ['urn:li:activity:0', 'urn:li:activity:1', 'urn:li:activity:2']
+    .map((u) => repos.posts.findByUrn(u)!.id);
+
+  const res = await post('/api/posts/engage', { post_ids: ids, reaction: 'insightful' });
+  expect(res.statusCode).toBe(201);
+  expect(res.json().added).toBe(3);
+  expect(repos.posts.counts()).toEqual({ new: 0, queued: 3, engaged: 0 });
+});
+
+test('bulk engage IGNORES a comment field — bulk commenting is unreachable', async () => {
+  await seed(2);
+  const ids = ['urn:li:activity:0', 'urn:li:activity:1'].map((u) => repos.posts.findByUrn(u)!.id);
+  await post('/api/posts/engage',
+    { post_ids: ids, reaction: 'like', comment: 'the same sentence on both' });
+  for (const id of ids) {
+    const eid = repos.posts.findById(id)!.engagement_id!;
+    expect(repos.engagements.findById(eid)!.comment_text).toBeNull();
+  }
+});
+
+test('bulk engage reports per-post rejects and still answers 201', async () => {
+  await seed(1);
+  const good = repos.posts.findByUrn('urn:li:activity:0')!.id;
+  const res = await post('/api/posts/engage', { post_ids: [good, 9999], reaction: 'like' });
+  expect(res.statusCode).toBe(201);
+  const body = res.json();
+  expect(body.added).toBe(1);
+  expect(body.rejected).toEqual([expect.objectContaining({ post_id: 9999, reason: 'not_found' })]);
+});
+
+test('bulk engage with an unknown reaction is a 400 before anything is queued', async () => {
+  await seed(2);
+  const ids = ['urn:li:activity:0', 'urn:li:activity:1'].map((u) => repos.posts.findByUrn(u)!.id);
+  const res = await post('/api/posts/engage', { post_ids: ids, reaction: 'shrug' });
+  expect(res.statusCode).toBe(400);
+  // Validated up front: a bad reaction is one mistake for the whole batch, and half-applying
+  // it would leave the operator to undo real queued rows.
+  expect(repos.posts.counts().queued).toBe(0);
+});
+
+test('POST /api/posts/sweep-now runs a sweep regardless of the slot gate', async () => {
+  await post('/api/tracked-profiles', { profile_urls: ['https://www.linkedin.com/in/dana'] });
+  repos.settings.update({ apify_api_key: 'apify_api_test' });
+  const first = await post('/api/posts/sweep-now', {});
+  expect(first.statusCode).toBe(200);
+  // A second call in the same slot still runs — that is what makes it the override.
+  expect((await post('/api/posts/sweep-now', {})).statusCode).toBe(200);
+});
+
+/**
+ * The only spend path in this batch, so the guard is pinned rather than assumed. Without the
+ * 409 the second request reaches runPostsSweep, which throws on re-entry — a 400 the operator
+ * cannot interpret — and any implementation that "joined" the running sweep instead would bill
+ * a second actor run for the same profiles.
+ */
+test('sweep-now refuses an overlapping sweep rather than starting a second billable run', async () => {
+  await post('/api/tracked-profiles', { profile_urls: ['https://www.linkedin.com/in/dana'] });
+  repos.settings.update({ apify_api_key: 'apify_api_test' });
+
+  let runs = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => { release = r; });
+  postsClient = { async fetchPosts() { runs++; await gate; return []; } };
+
+  const inflight = post('/api/posts/sweep-now', {});
+  // Wait until the first sweep is genuinely inside the actor call, bounded so a regression
+  // that never gets there fails the assertion instead of hanging the suite.
+  for (let i = 0; i < 500 && runs === 0; i++) await new Promise((r) => setTimeout(r, 2));
+  expect(runs).toBe(1);
+
+  const second = await post('/api/posts/sweep-now', {});
+  expect(second.statusCode).toBe(409);
+  expect(second.json().error).toMatch(/already running/);
+  expect(runs).toBe(1);            // the refused call billed nothing
+
+  release();
+  expect((await inflight).statusCode).toBe(200);
+});
+
+test('sweep-now without an API key is a 400 the operator can act on', async () => {
+  await post('/api/tracked-profiles', { profile_urls: ['https://www.linkedin.com/in/dana'] });
+  const res = await post('/api/posts/sweep-now', {});
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/Apify/i);
+  // Refused before anything is constructed, so an unconfigured instance has no path to Apify.
+  expect(clientBuilds).toBe(0);
+});
+
+/** No profiles means no run to pay for, so it is refused before a client is ever built. */
+test('sweep-now with nothing tracked is a 400', async () => {
+  repos.settings.update({ apify_api_key: 'apify_api_test' });
+  const res = await post('/api/posts/sweep-now', {});
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/tracked/);
+  expect(clientBuilds).toBe(0);
 });

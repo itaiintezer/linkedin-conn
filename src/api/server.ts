@@ -1107,6 +1107,198 @@ export function buildServer(
     };
   });
 
+  /** Statuses that leave a post retryable — kept beside the repo's own filter definition. */
+  const RETRYABLE = new Set(['failed', 'skipped']);
+
+  /**
+   * Re-queue a failed or skipped engagement. What a second engage click MEANS on a post the
+   * feed still lists as New.
+   *
+   * Needed because an engagement is UNIQUE on post_urn: once a post has one, no amount of
+   * clicking can create a second, so without this the retry the feed's own filter promises
+   * ("not reacted, status failed/skipped -> new, retryable") would be a link that is already
+   * there — a click that answers 200 and changes nothing, leaving the post in New forever.
+   *
+   * Same field set as POST /api/engagements/:id/retry, for the same reasons: commented_at is
+   * cleared so the comment step re-runs, and reacted_at deliberately survives, because
+   * re-driving a reaction that already landed is the one thing a retry must never do.
+   *
+   * The row's own reaction and comment are left as they were, exactly as on the adoption path
+   * below: this re-drives work that already exists rather than replacing it, and rewriting the
+   * text of a queued task from a request that names no new text is how a comment gets published
+   * that nobody typed. Changing them is dismiss-then-requeue, not retry.
+   */
+  const requeueEngagement = (engagementId: number): Engagement => {
+    repos.engagements.setStatus(engagementId, 'queued', {
+      scheduled_for: null, last_error: null, skip_reason: null, commented_at: null,
+    });
+    return repos.engagements.findById(engagementId)!;
+  };
+
+  /**
+   * Queue one post's engagement from the feed.
+   *
+   * Delegates every judgement to createEngagement: URL and URN normalization, the six valid
+   * reactions, the 1250-character comment limit, and whitespace-only comments collapsing to
+   * null. A second copy of those rules here is how they drift apart.
+   */
+  app.post('/api/posts/:id/engage', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const row = repos.posts.findById(id);
+    if (!row) return reply.code(404).send({ error: `no post ${id}` });
+
+    if (row.engagement_id !== null) {
+      const held = repos.engagements.findById(row.engagement_id);
+      if (held && !RETRYABLE.has(held.status)) {
+        return reply.code(409).send({
+          error: `already queued as engagement ${held.id} (${held.status})`,
+        });
+      }
+    }
+
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    // `expanded` is null: a post_url from the sweep is already canonical, and isShortlink
+    // is false for it, so the shortlink branch is never taken.
+    const outcome = createEngagement({ reaction: b.reaction, comment: b.comment },
+      row.post_url, null);
+
+    if ('reason' in outcome) {
+      // A duplicate means an engagement for this URN already exists — either queued by hand
+      // through /api/engagements before the feed existed, or this post's own earlier attempt.
+      if (outcome.reason === 'duplicate') {
+        const held = repos.engagements.findByUrn(row.post_urn);
+        if (held) {
+          // Linked either way. Adopt rather than reporting a conflict the operator cannot
+          // resolve: the work is already scheduled, it just was not linked.
+          repos.posts.setEngagement(id, held.id);
+          // Retryable means the previous attempt is over and did not react, so this click is
+          // "try again" and has to put real work back in the queue — see requeueEngagement.
+          // 201 rather than the adoption 200 because a task genuinely re-enters the pipeline.
+          if (RETRYABLE.has(held.status)) {
+            const requeued = requeueEngagement(held.id);
+            planAndAssignToday(repos, new Date());
+            defaultLog.info('api', 'post engagement re-queued from feed',
+              { post_id: id, engagement: held.id, was: held.status });
+            return reply.code(201).send({ post_id: id, engagement: requeued });
+          }
+          return reply.code(200).send({ post_id: id, engagement: held, adopted: true });
+        }
+      }
+      return reply.code(REJECT_STATUS[outcome.reason]).send({ error: outcome.message });
+    }
+
+    repos.posts.setEngagement(id, outcome.id);
+    // Same reasoning as /api/engagements: give the new task a real slot now rather than
+    // leaving it until the hourly tick. planAndAssignToday declines on its own while paused,
+    // halted, off-hours or on a non-sending day.
+    planAndAssignToday(repos, new Date());
+    defaultLog.info('api', 'post engaged from feed', { post_id: id, engagement: outcome.id });
+    return reply.code(201).send({
+      post_id: id,
+      engagement: repos.engagements.findById(outcome.id) ?? outcome,
+    });
+  });
+
+  /**
+   * Bulk: one reaction across several selected posts.
+   *
+   * There is NO comment parameter, deliberately. Identical comment text on several posts is a
+   * recognizable spam pattern published under the operator's own name, and
+   * engage_comment_daily_cap defaults to 10/day — so one click would spend the whole day's
+   * allowance looking automated. Comments are per-post only.
+   */
+  app.post('/api/posts/engage', async (req, reply) => {
+    const b = (req.body ?? {}) as { post_ids?: unknown; reaction?: unknown };
+    const ids = Array.isArray(b.post_ids)
+      ? b.post_ids.map((v) => Number(v)).filter((n) => Number.isInteger(n))
+      : [];
+    if (ids.length === 0) return reply.code(400).send({ error: 'no post ids supplied' });
+
+    // Validated ONCE up front: a bad reaction is one mistake for the whole batch, and
+    // half-applying it would leave the operator undoing real queued rows.
+    const parsed = parseReaction(b.reaction);
+    if (!parsed.ok) return reply.code(400).send({ error: parsed.error });
+    const reaction = parsed.reaction ?? DEFAULT_REACTION;
+
+    const created: number[] = [];
+    const rejected: { post_id: number; reason: string; message: string }[] = [];
+    for (const id of ids) {
+      const row = repos.posts.findById(id);
+      if (!row) {
+        rejected.push({ post_id: id, reason: 'not_found', message: `no post ${id}` });
+        continue;
+      }
+      if (row.engagement_id !== null) {
+        const held = repos.engagements.findById(row.engagement_id);
+        if (held && !RETRYABLE.has(held.status)) {
+          rejected.push({ post_id: id, reason: 'duplicate',
+            message: `already queued as engagement ${held.id} (${held.status})` });
+          continue;
+        }
+      }
+      // No comment is passed, so no bulk path can ever publish one.
+      const outcome = createEngagement({ reaction }, row.post_url, null);
+      if ('reason' in outcome) {
+        if (outcome.reason === 'duplicate') {
+          const held = repos.engagements.findByUrn(row.post_urn);
+          if (held) {
+            repos.posts.setEngagement(id, held.id);
+            // Same rule as the single-post route: a retryable row is re-queued, so a bulk
+            // re-select of failed posts is a real retry rather than a silent relink.
+            if (RETRYABLE.has(held.status)) requeueEngagement(held.id);
+            created.push(id);
+            continue;
+          }
+        }
+        rejected.push({ post_id: id, reason: outcome.reason, message: outcome.message });
+        continue;
+      }
+      repos.posts.setEngagement(id, outcome.id);
+      created.push(id);
+    }
+
+    if (created.length > 0) {
+      planAndAssignToday(repos, new Date());
+      defaultLog.info('api', 'posts bulk-engaged',
+        { added: created.length, rejected: rejected.length, reaction });
+    }
+    // Always 201: the per-item verdicts are the payload. Same contract as /api/engagements.
+    return reply.code(201).send({ added: created.length, post_ids: created, rejected });
+  });
+
+  /**
+   * Sweep now — the override for the once-per-slot gate and for `paused`.
+   *
+   * Mirrors the per-belt "Run now": long on purpose, since it returns only after the actor
+   * run finishes. Do not retry it.
+   */
+  app.post('/api/posts/sweep-now', async (req, reply) => {
+    const s = repos.settings.get();
+    // A sweep already in flight must not be joined by a second one: two concurrent runs
+    // double-bill, and the scheduled tick can be mid-sweep when the operator clicks. The
+    // worker refuses re-entry itself (it throws), but answering 409 here gives the operator
+    // a real explanation instead of a 400 from a thrown error.
+    if (isPostsSweepRunning()) {
+      return reply.code(409).send({ error: 'a posts sweep is already running — wait for it to finish' });
+    }
+    if (repos.trackedProfiles.countActive() === 0) {
+      return reply.code(400).send({ error: 'no profiles are being tracked' });
+    }
+    if (!s.apify_api_key) {
+      return reply.code(400).send({ error: 'No Apify API key is configured — add one in Settings.' });
+    }
+    // A manual sweep is the operator saying "try again", so clear a previous latch first.
+    repos.appState.clearPostsHalt();
+    const result = await runPostsSweep(repos, {
+      client: postsClientFactory(s.apify_api_key),
+      now: new Date(),
+      maxPosts: s.posts_max_per_sweep,
+      batchSize: s.posts_sweep_batch_size,
+      retentionDays: s.posts_retention_days,
+    });
+    return result;
+  });
+
   app.get('/api/metrics', async () => {
     const rows = repos.db.prepare(`
       SELECT p.cohort_id, c.name AS cohort_name, p.kind, p.status, p.sent_at, p.accepted_at, p.replied_at
