@@ -414,8 +414,8 @@ Two deliberate limits:
   conversation's last message isn't yours is marked **replied**. Upgrade-only — a failed or
   empty read changes nothing and doesn't consume the day's slot.
 - Consecutive sends are spaced by `min_delay_ms`/`max_delay_ms` (20–90s by default), in both
-  passes and across the boundary between them. That applies to **Run batch now** as well, so
-  a manual batch takes minutes rather than seconds — deliberately.
+  passes and across the boundary between them. That applies to each conveyor's **Run now**
+  button as well, so a manual batch takes minutes rather than seconds — deliberately.
 
 ### Reply matching, and what it can't do
 

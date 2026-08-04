@@ -209,8 +209,8 @@ from someone you hadn't. Treat **Replied** as a floor, and your LinkedIn inbox a
   stop too until you resume — the account was just told off, so it's not the moment to keep
   going. Click **Resume** once the limit resets (LinkedIn lifts it about a week after it was
   hit).
-- Sends are spaced 20–90 seconds apart, and that includes **Run batch now** — a manual batch
-  takes a few minutes to finish. That's the point; it isn't stuck.
+- Sends are spaced 20–90 seconds apart, and that includes each conveyor's **Run now**
+  button — a manual batch takes a few minutes to finish. That's the point; it isn't stuck.
 
 ## 9. Troubleshooting
 - **Dashboard says "not logged in"** → click **Connect LinkedIn** and log in again.

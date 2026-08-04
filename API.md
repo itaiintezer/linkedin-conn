@@ -812,12 +812,50 @@ every row carries a `source` discriminator as well.
 ## Ops
 
 - `POST /api/pause`, `POST /api/resume` — halt/continue sending. One pause covers both kinds.
-- `POST /api/run-now` — send one batch immediately, even outside working hours. Promotes up
-  to one batch **per kind** (each against its own `batch_size`), then runs the invite pass
-  and the message pass. Response `{ "ok": true, "promoted": N }` counts both.
-  The response is sent after the whole batch completes, and consecutive sends are paced by
-  `min_delay_ms`/`max_delay_ms` here too — so this call can legitimately take several
-  minutes.
+- `POST /api/run-now` — trigger one belt's next batch manually. Body
+  `{ "belt": "invite" | "message" | "engagement" | "event" }`; `belt` is optional, and
+  omitting it (or sending `"all"`) means **every sender belt** — invite, message and
+  engagement together. `event` is never folded into that alias: it has no due-now queue for
+  `all` to reach into. Each of the four dashboard conveyor cards has its own **Run now**
+  button that posts its own belt; there is no longer one button that means "invites and
+  messages together".
+
+  A click is two separable steps, reported honestly rather than collapsed into one
+  `{ok:true}`: **promote** is a durable DB write making that belt's backlog due now, **kick**
+  is a best-effort attempt to grab the shared browser. `promoted` counts rows now due, not
+  rows newly moved — a second click at the same instant re-stamps the same rows and reports
+  the same number. `started` says whether *this* request's kick actually got the browser;
+  losing that race still leaves the promotion standing, so the next 60s sender tick sends it
+  anyway.
+  - `{ "ok": true, "belt": "invite", "promoted": 7, "started": true }`
+  - `{ "ok": true, "belt": "invite", "promoted": 7, "started": false, "deferred": "browser busy" }`
+  - `{ "ok": true, "belt": "invite", "promoted": 0, "started": false, "deferred": "nothing queued" }`
+
+  `belt: "event"` has no due-now queue at all: "promote" instead rewrites the next armed
+  campaign's reserved window to start now, and the existing `runEventTick` fires it within 60
+  seconds. The response deliberately **omits `promoted`** — an event run has no row count to
+  report, and a hardcoded `1` behind the same field name would mislead a client that reads it
+  uniformly:
+  - `{ "ok": true, "belt": "event", "started": false, "event_id": 3, "from": "…", "to": "…" }`
+
+  Refusals are `409`, checked **before** any promotion — a batch promoted while paused would
+  all fire the instant the operator resumes, outside the planned spread. Both `code`
+  (machine-readable) and `error` (the sentence to show) are always present:
+  - `{ "ok": false, "belt": "invite", "code": "paused", "error": "Paused — Manual pause" }`
+
+  `code` is one of `paused`, `guardrail` or `not_logged_in` (apply to every belt, including
+  `all`), `capped` (that belt's weekly cap is exhausted; per-belt, so `all` just promotes
+  nothing from a capped belt rather than refusing outright) or, for `belt: "event"` only,
+  `nothing_armed` (no armed campaign to run), `already_running` (one is running right now) or
+  `daily_cap` (`events_per_day` already reached today). An unrecognised `belt` is `400`
+  (`{ "ok": false, "error": "unknown belt: …" }`) rather than a silent fallback to `all` — a
+  typo'd belt must never quietly promote every pipeline.
+
+  Consecutive sends are still paced by `min_delay_ms`/`max_delay_ms` — a manual batch is not
+  a fast path, so this call (and the kick it triggers) can legitimately take minutes. `force:
+  true` is set on the sender call, so a manual run may fire outside working hours by design.
+  The older per-campaign `POST /api/events/:id/run-now` (Events tab) is a separate,
+  deliberately **uncapped** override and is unaffected by any of this.
 - `POST /api/recheck-acceptance` — reconcile acceptances now (read-only; runs even while
   paused). Returns the acceptance-check result.
 - `POST /api/recheck-replies` — same contract for the messages funnel: one read of the
