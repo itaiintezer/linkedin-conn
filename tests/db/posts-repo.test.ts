@@ -1,10 +1,11 @@
 /**
  * Schema-level coverage for the Posts feed: the new tables and columns exist, the
  * settings defaults match the spec, and the `posted_at` CHECK rejects the shape the
- * retention prune cannot safely compare as TEXT. Tasks 2 and 3 add TrackedProfileRepo
- * and PostRepo and, with them, the behavioural tests this file doesn't yet have: URN
- * dedupe, soft-delete, the retention prune itself, and engagement_id surviving a URN
- * reconcile.
+ * retention prune cannot safely compare as TEXT. Task 2 adds TrackedProfileRepo and,
+ * with it, coverage for its reactivating `add`, soft-delete via `deactivate`, and the
+ * per-profile sweep stamps (`markSwept` / `markSweepError`). Task 3 adds PostRepo and
+ * the behavioural tests this file doesn't yet have: URN dedupe, the retention prune
+ * itself, and engagement_id surviving a URN reconcile.
  */
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
@@ -64,4 +65,47 @@ test('posted_at rejects a non-ISO shape, because the prune compares it as TEXT',
      VALUES ('urn:li:activity:2', 'https://x', 1, '2026-08-04T10:00:00.000Z', '2026-08-04T10:00:00.000Z')`,
   ).run();
   expect(good).not.toThrow();
+});
+
+const URL_A = 'https://www.linkedin.com/in/ada-lovelace';
+const URL_B = 'https://www.linkedin.com/in/grace-hopper';
+
+test('add is idempotent and reactivates a previously untracked profile', () => {
+  const first = repos.trackedProfiles.add(URL_A, null, 'urls');
+  const again = repos.trackedProfiles.add(URL_A, null, 'urls');
+  expect(again.id).toBe(first.id);
+
+  repos.trackedProfiles.deactivate(first.id);
+  expect(repos.trackedProfiles.findByUrl(URL_A)!.active).toBe(0);
+
+  // Re-adding the same URL reactivates rather than duplicating, so re-tracking someone
+  // you removed neither creates a second row nor re-bills their first sweep.
+  const back = repos.trackedProfiles.add(URL_A, null, 'urls');
+  expect(back.id).toBe(first.id);
+  expect(back.active).toBe(1);
+});
+
+test('activeProfiles and countActive exclude soft-deleted rows', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  repos.trackedProfiles.add(URL_B, null, 'search');
+  expect(repos.trackedProfiles.countActive()).toBe(2);
+
+  repos.trackedProfiles.deactivate(a.id);
+  expect(repos.trackedProfiles.countActive()).toBe(1);
+  expect(repos.trackedProfiles.activeProfiles().map((p) => p.profile_url)).toEqual([URL_B]);
+});
+
+test('markSwept clears a previous error; markSweepError leaves last_swept_at alone', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+
+  repos.trackedProfiles.markSweepError(a.id, 'run failed');
+  expect(repos.trackedProfiles.findById(a.id)!.last_sweep_error).toBe('run failed');
+  // A failed sweep must not advance last_swept_at, or the next pass would treat this
+  // profile as fresh and use the narrow 24h window it never actually got.
+  expect(repos.trackedProfiles.findById(a.id)!.last_swept_at).toBeNull();
+
+  repos.trackedProfiles.markSwept(a.id, '2026-08-04T10:00:00.000Z');
+  const row = repos.trackedProfiles.findById(a.id)!;
+  expect(row.last_swept_at).toBe('2026-08-04T10:00:00.000Z');
+  expect(row.last_sweep_error).toBeNull();
 });
