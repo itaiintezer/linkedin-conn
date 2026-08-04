@@ -447,7 +447,7 @@ Expected: FAIL — `repos.trackedProfiles` is undefined.
  * already long, and these two always change together.
  */
 import type { DB } from './database.js';
-import type { Post, TrackedProfile } from '../types.js';
+import type { TrackedProfile } from '../types.js';
 
 export class TrackedProfileRepo {
   constructor(private db: DB) {}
