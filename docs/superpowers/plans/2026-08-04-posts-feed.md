@@ -916,12 +916,25 @@ export interface ApifyPost {
   linkedinUrl?: unknown;
   content?: unknown;
   postedAt?: unknown;
-  author?: { name?: unknown; linkedinUrl?: unknown; position?: unknown; headline?: unknown } | null;
+  /** `info` is the headline. MEASURED against 5,557 real items: `position` and `headline`
+   *  appear ZERO times — those names belong to the *profile* actor, not this one. */
+  author?: {
+    name?: unknown; linkedinUrl?: unknown; info?: unknown;
+    position?: unknown; headline?: unknown;   // forward-compat only; never seen in practice
+  } | null;
+  /** `likes` is the TOTAL reaction count. `reactions` is an ARRAY of {type, count}, never a
+   *  number, so it cannot serve as a numeric fallback. */
   engagement?: { likes?: unknown; reactions?: unknown; comments?: unknown } | null;
   /** Echoes the exact input URL, which is how a batched run's items split per profile. */
   query?: { targetUrl?: unknown } | null;
-  /** Present on a reshare: the post being reshared. */
+  /** Reshare WITH commentary: carries the nested original. */
   repost?: unknown;
+  /** Bare reshare: `author` is the ORIGINAL author and this is the tracked profile.
+   *  `repostedAt.timestamp` equals `postedAt.timestamp` on every observed item, so
+   *  `postedAt` is already the reshare instant — no stale-original-date hazard. */
+  repostedBy?: unknown;
+  repostedAt?: unknown;
+  /** Never observed in real payloads; kept as forward-compat. */
   resharedPost?: unknown;
 }
 ```
@@ -1842,7 +1855,11 @@ export interface PostsSweepResult {
   /** Posts the schema refused — a malformed posted_at from Apify. Billed but unusable, so
    *  this must be visible rather than swallowed by INSERT OR IGNORE. */
   postsRejected: number;
+  /** Matched no tracked profile — an attribution problem worth investigating. */
   unattributed: number;
+  /** Carried no text anywhere, so there is nothing to judge. ~9% of real payloads; a
+   *  content policy rather than a fault, which is why it is counted separately. */
+  unusable: number;
   pruned: number;
   /** True when every run succeeded. Only a clean pass stamps posts_swept_at. */
   clean: boolean;
@@ -1880,7 +1897,7 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
   const nowIso = now.toISOString();
   const result: PostsSweepResult = {
     runs: 0, profilesSwept: 0, postsAdded: 0, postsRejected: 0, unattributed: 0,
-    pruned: 0, clean: true,
+    unusable: 0, pruned: 0, clean: true,
   };
 
   running = true;
@@ -1912,10 +1929,19 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
         try {
           const items = await opts.client.fetchPosts(batch.map((m) => m.url),
             { maxPosts: opts.maxPosts, postedLimit });
-          const { rows, unattributed } = attribute(items, byUrl);
+          // Two DIFFERENT causes, reported separately on purpose: `unattributed` means the
+          // item matched no tracked profile (an attribution or normalization problem worth
+          // investigating), while `unusable` means it carried no text anywhere (a content
+          // policy, ~9% of real payloads). Folding them together sends whoever debugs a
+          // lossy sweep hunting through URL normalization that is working fine.
+          const { rows, unattributed, unusable } = attribute(items, byUrl);
           result.unattributed += unattributed;
+          result.unusable += unusable;
           if (unattributed > 0) {
-            log.warn('posts', 'dropped unattributable items', { count: unattributed, postedLimit });
+            log.warn('posts', 'items matched no tracked profile', { count: unattributed, postedLimit });
+          }
+          if (unusable > 0) {
+            log.info('posts', 'items had no text and were skipped', { count: unusable, postedLimit });
           }
           // upsertMany returns { added, rejected }: `rejected` is a post the CHECK constraints
           // refused (a malformed posted_at from Apify), which OR IGNORE would otherwise
