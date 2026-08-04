@@ -9,7 +9,7 @@
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
-import { runPostsSweep, windowFor } from '../../src/worker/posts-sweep.js';
+import { runPostsSweep, windowFor, isPostsSweepRunning } from '../../src/worker/posts-sweep.js';
 import { ApifyRequestError } from '../../src/core/apify-posts-client.js';
 import type { ApifyPostsClient, FetchPostsOptions } from '../../src/core/apify-posts-client.js';
 import type { ApifyPost } from '../../src/types.js';
@@ -402,6 +402,29 @@ test('two rows that normalize to one URL are not both swept off one run', async 
   expect(repos.trackedProfiles.findById(first.id)!.last_swept_at).toBe(NOW.toISOString());
   expect(repos.trackedProfiles.findById(shadow.id)!.last_swept_at).toBeNull();
   expect(repos.trackedProfiles.findById(shadow.id)!.last_sweep_error).toContain('duplicate');
+});
+
+test('an overlapping sweep is refused rather than double-billing the same profiles', async () => {
+  repos.trackedProfiles.add(URL_A, null, 'urls');
+  // Hold the first pass open inside the actor call, where a real sweep spends its minutes.
+  let release = (): void => {};
+  const gate = new Promise<void>((r) => { release = r; });
+  const slow: ApifyPostsClient = { async fetchPosts() { await gate; return []; } };
+
+  const inFlight = runPostsSweep(repos, { client: slow, now: NOW, maxPosts: 3, batchSize: 200 });
+  expect(isPostsSweepRunning()).toBe(true);
+
+  // The manual sweep-now route relies on this to answer 409 instead of starting a second run.
+  const second = fakeClient();
+  await expect(runPostsSweep(repos, { client: second, now: NOW, maxPosts: 3, batchSize: 200 }))
+    .rejects.toThrow(/already running/);
+  expect(second.calls).toHaveLength(0);
+  // And the refused call must not have cleared the flag out from under the pass that owns it.
+  expect(isPostsSweepRunning()).toBe(true);
+
+  release();
+  await inFlight;
+  expect(isPostsSweepRunning()).toBe(false);
 });
 
 test('an untracked profile is never swept', async () => {

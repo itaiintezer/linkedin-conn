@@ -105,6 +105,16 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Promise<PostsSweepResult> {
+  // Refuse re-entry instead of letting two passes overlap. Two concurrent sweeps bill twice for
+  // the same profiles, and it is worse than the double bill: whichever finishes first would
+  // clear `running` in its finally while the other is still going, so isPostsSweepRunning()
+  // starts lying and the API's own 409 guard silently stops working. Thrown rather than returned
+  // as an empty result so a caller can tell "refused" from "swept nothing" — the manual
+  // sweep-now route turns this into a 409, and the scheduled tick's guard means it never
+  // arrives here. Checked BEFORE the flag is taken and outside the try, so the refused call
+  // cannot run the finally that belongs to the pass that owns the flag.
+  if (running) throw new Error('a posts sweep is already running');
+
   const now = opts.now ?? new Date();
   const nowIso = now.toISOString();
   const result: PostsSweepResult = {
@@ -113,13 +123,15 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
   };
 
   // `batchSize` comes from operator-editable settings, and a settings write is not
-  // type-checked — the same hazard PostRepo.prune refuses `days` for. Guarded here because a
-  // non-finite value slipped past chunk()'s `Math.max(1, size)` in the worst possible
-  // direction: `i += NaN` makes the loop exit after producing ONE EMPTY batch, so the pass
-  // fetched nothing, marked nobody swept, and still stamped itself CLEAN — a sweep that
-  // silently stops working, with only "profiles: 0" in the log to say so. Falling back to a
-  // single batch is safe on cost: batching decides how many runs a window takes, never the
-  // bill, which is per post returned.
+  // type-checked — the same hazard PostRepo.prune refuses `days` for. Validated HERE, once, so
+  // chunk() can take a positive integer as a precondition: a non-finite step makes `i += size`
+  // exit that loop after producing ONE EMPTY batch, and the pass then fetches nothing, marks
+  // nobody swept, and still stamps itself CLEAN — a sweep that silently stops working, with
+  // only "profiles: 0" in the log to say so. Falling back to a single batch is safe on cost:
+  // batching decides how many runs a window takes, never the bill, which is per post returned.
+  // (Unlike `maxPosts`, where 0 means "all posts" and the client rightly throws, a 0 here has
+  // no cost consequence at all, so it is reported and corrected rather than refused — this
+  // runs inside a scheduler tick, where a throw is the more disruptive answer.)
   let batchSize = Math.floor(opts.batchSize);
   if (!Number.isFinite(batchSize) || batchSize < 1) {
     log.warn('posts', 'ignoring an out-of-range sweep batch size; using one batch per window', {
