@@ -2,10 +2,12 @@
  * Schema-level coverage for the Posts feed: the new tables and columns exist, the
  * settings defaults match the spec, and the `posted_at` CHECK rejects the shape the
  * retention prune cannot safely compare as TEXT. Task 2 adds TrackedProfileRepo and,
- * with it, coverage for its reactivating `add`, soft-delete via `deactivate`, and the
- * per-profile sweep stamps (`markSwept` / `markSweepError`). Task 3 adds PostRepo and
- * the behavioural tests this file doesn't yet have: URN dedupe, the retention prune
- * itself, and engagement_id surviving a URN reconcile.
+ * with it, coverage for its reactivating `add` (including the connection_id backfill
+ * rule — fills a NULL, never overwrites a set one), soft-delete via `deactivate`,
+ * the per-profile sweep stamps (`markSwept` / `markSweepError`), and `withCounts`'s
+ * LEFT JOIN + COUNT. Task 3 adds PostRepo and the behavioural tests this file doesn't
+ * yet have: URN dedupe, the retention prune itself, and engagement_id surviving a URN
+ * reconcile.
  */
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
@@ -108,4 +110,65 @@ test('markSwept clears a previous error; markSweepError leaves last_swept_at alo
   const row = repos.trackedProfiles.findById(a.id)!;
   expect(row.last_swept_at).toBe('2026-08-04T10:00:00.000Z');
   expect(row.last_sweep_error).toBeNull();
+});
+
+test('add fills a NULL connection_id but never overwrites one already set', () => {
+  // connection_id is a real FK (connections(id)), and foreign_keys is ON — direct-SQL
+  // inserts here, same style as the posted_at CHECK test above, since a bare made-up
+  // integer would be rejected before the backfill logic is ever exercised.
+  repos.db.prepare(`
+    INSERT INTO connections (profile_url, full_name, source, first_seen_at, last_seen_at)
+    VALUES (?, 'Ada Lovelace', 'urls', '2026-08-04T10:00:00.000Z', '2026-08-04T10:00:00.000Z')
+  `).run(URL_A);
+  const connA = repos.connections.findByUrl(URL_A)!.id;
+
+  repos.db.prepare(`
+    INSERT INTO connections (profile_url, full_name, source, first_seen_at, last_seen_at)
+    VALUES (?, 'Grace Hopper', 'urls', '2026-08-04T10:00:00.000Z', '2026-08-04T10:00:00.000Z')
+  `).run(URL_B);
+  const connB = repos.connections.findByUrl(URL_B)!.id;
+  expect(connA).not.toBe(connB);
+
+  // Fresh add with no connection known yet: stored as NULL.
+  const fresh = repos.trackedProfiles.add(URL_A, null, 'urls');
+  expect(fresh.connection_id).toBeNull();
+
+  // A later add that knows the connection backfills the NULL.
+  const backfilled = repos.trackedProfiles.add(URL_A, connA, 'urls');
+  expect(backfilled.connection_id).toBe(connA);
+
+  // A further add carrying a DIFFERENT real connection id must not clobber the one
+  // already stored — inverting this check would silently re-link the profile to the
+  // wrong person and corrupt the feed's author display.
+  const notOverwritten = repos.trackedProfiles.add(URL_A, connB, 'urls');
+  expect(notOverwritten.connection_id).toBe(connA);
+
+  // And the FK itself is genuinely enforced here (not silently ignored on :memory:):
+  // a connection_id that doesn't exist in connections must be rejected outright.
+  expect(() => repos.trackedProfiles.add(URL_B, connB + 999, 'urls'))
+    .toThrow(/FOREIGN KEY constraint failed/);
+});
+
+test('withCounts: zero posts reports 0, N posts reports N, soft-deleted rows are excluded', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');       // no posts yet
+  const b = repos.trackedProfiles.add(URL_B, null, 'search');     // two posts
+  const c = repos.trackedProfiles.add('https://www.linkedin.com/in/margaret-hamilton', null, 'urls');
+
+  const insertPost = repos.db.prepare(`
+    INSERT INTO posts (post_urn, post_url, tracked_profile_id, posted_at, first_seen_at)
+    VALUES (?, ?, ?, '2026-08-04T10:00:00.000Z', '2026-08-04T10:00:00.000Z')
+  `);
+  insertPost.run('urn:li:activity:10', 'https://x/10', b.id);
+  insertPost.run('urn:li:activity:11', 'https://x/11', b.id);
+
+  repos.trackedProfiles.deactivate(c.id);
+
+  const rows = repos.trackedProfiles.withCounts();
+  const byUrl = new Map(rows.map((r) => [r.profile_url, r.post_count]));
+
+  // Proves COUNT(p.id) against the LEFT JOIN — COUNT(*) would wrongly report 1 for a
+  // profile whose join produced one unmatched (NULL) row instead of zero real posts.
+  expect(byUrl.get(a.profile_url)).toBe(0);
+  expect(byUrl.get(b.profile_url)).toBe(2);
+  expect(byUrl.has(c.profile_url)).toBe(false);
 });

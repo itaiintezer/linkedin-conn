@@ -78,7 +78,12 @@ export class TrackedProfileRepo {
       .run(error, id);
   }
 
-  /** Display rows for the tracking manager: the profile plus how many posts it has yielded. */
+  /**
+   * Display rows for the tracking manager: the profile plus how many posts it has
+   * yielded. `post_count` is unconditional — it deliberately includes posts already
+   * engaged with, not just fresh/unactioned ones, because this is a yield figure for
+   * the operator, not a work-queue depth.
+   */
   withCounts(): (TrackedProfile & { post_count: number })[] {
     return this.db.prepare(`
       SELECT tp.*, COUNT(p.id) AS post_count
