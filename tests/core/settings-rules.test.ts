@@ -6,9 +6,10 @@
  * nothing else in the suite would notice.
  */
 import { test, expect } from 'vitest';
-import { SETTING_RULES } from '../../src/core/settings-rules.js';
+import { SETTING_RULES, validateSettingsPatch } from '../../src/core/settings-rules.js';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
+import type { Settings } from '../../src/types.js';
 
 /** Every key the Settings form posts. Kept literal so a dropped rule fails loudly here. */
 const FORM_KEYS = [
@@ -82,4 +83,78 @@ test('every INTEGER column on settings is ruled or explicitly excluded', () => {
         `here with a one-line reason.`,
     ).toBe(true);
   }
+});
+
+/** The stored row a patch is validated against. Defaults, so cross-field rules start valid. */
+function stored(over: Partial<Settings> = {}): Settings {
+  const repos = new Repos(openDatabase(':memory:'));
+  return { ...repos.settings.get(), ...over };
+}
+
+test('a valid patch produces no failures', () => {
+  expect(validateSettingsPatch({ weekly_cap: 120, batch_size: 5 }, stored())).toEqual([]);
+});
+
+test('an out-of-range value fails with the operator-facing label', () => {
+  const [f] = validateSettingsPatch({ weekly_cap: 5000 }, stored());
+  expect(f.key).toBe('weekly_cap');
+  expect(f.message).toBe('Weekly cap (invites) must be between 0 and 150.');
+});
+
+test('a non-integer fails even when it is inside the range', () => {
+  const [f] = validateSettingsPatch({ batches_per_day: 3.5 }, stored());
+  expect(f.message).toBe('Batches / day (invites) must be a whole number.');
+});
+
+test('a non-number fails rather than coercing', () => {
+  expect(validateSettingsPatch({ weekly_cap: '10' }, stored())).toHaveLength(1);
+});
+
+test('unruled keys are ignored, not rejected', () => {
+  expect(validateSettingsPatch({ paused: 1, pause_reason: 'x', apify_api_key: 'k' }, stored())).toEqual([]);
+});
+
+test('every failing key is reported, not just the first', () => {
+  const out = validateSettingsPatch({ weekly_cap: 5000, batch_size: 0 }, stored());
+  expect(out.map((f) => f.key)).toEqual(['weekly_cap', 'batch_size']);
+});
+
+test('failures come back in table order regardless of patch key order', () => {
+  const out = validateSettingsPatch({ batch_size: 0, weekly_cap: 5000 }, stored());
+  expect(out.map((f) => f.key)).toEqual(['weekly_cap', 'batch_size']);
+});
+
+test('an inverted workday window is rejected', () => {
+  const [f] = validateSettingsPatch({ workday_start_hour: 18, workday_end_hour: 9 }, stored());
+  expect(f.key).toBe('workday_end_hour');
+  expect(f.message).toBe('Workday end hour must be after the start hour (currently 18).');
+});
+
+test('an equal workday window is rejected — it sends nothing', () => {
+  expect(validateSettingsPatch({ workday_start_hour: 9, workday_end_hour: 9 }, stored())).toHaveLength(1);
+});
+
+// The half-patch case: the form posts both hours, but an agent following API.md may send one.
+test('a one-sided workday patch is checked against the stored other side', () => {
+  expect(validateSettingsPatch({ workday_end_hour: 6 }, stored({ workday_start_hour: 8 }))).toHaveLength(1);
+  expect(validateSettingsPatch({ workday_start_hour: 22 }, stored({ workday_end_hour: 20 }))).toHaveLength(1);
+});
+
+/* An install can already hold an inverted window — nothing stopped it before this feature.
+   Rejecting an unrelated patch because of it would strand that operator: they could not
+   even pause the engine through settings. */
+test('an already-inverted stored window does not fail an unrelated patch', () => {
+  const bad = stored({ workday_start_hour: 18, workday_end_hour: 9 });
+  expect(validateSettingsPatch({ weekly_cap: 50 }, bad)).toEqual([]);
+});
+
+test('a range failure on an hour suppresses the cross-field message', () => {
+  const out = validateSettingsPatch({ workday_end_hour: 99 }, stored());
+  expect(out).toHaveLength(1);                       // not also "must be after the start hour"
+  expect(out[0].message).toBe('Workday end hour must be between 0 and 23.');
+});
+
+test('max_delay_ms below min_delay_ms is rejected, equal is allowed', () => {
+  expect(validateSettingsPatch({ min_delay_ms: 90000, max_delay_ms: 20000 }, stored())).toHaveLength(1);
+  expect(validateSettingsPatch({ min_delay_ms: 30000, max_delay_ms: 30000 }, stored())).toEqual([]);
 });

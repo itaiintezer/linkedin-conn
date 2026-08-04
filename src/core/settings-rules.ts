@@ -74,3 +74,71 @@ export const SETTING_RULES: Record<string, SettingRule> = {
   // Above the picker's 1000-row cap the threshold could never trigger.
   event_shard_threshold: { label: 'Event shard threshold', min: 1, max: 1000 },
 };
+
+export interface SettingFailure { key: string; message: string; }
+
+/**
+ * The value a patch will leave in place for `key`: the patched one when present, otherwise
+ * what is stored. Cross-field rules read this so a patch touching only one side of a pair is
+ * still checked against the other.
+ */
+function effective(patch: Record<string, unknown>, current: Settings, key: keyof Settings): number {
+  return key in patch ? (patch[key] as number) : (current[key] as number);
+}
+
+/**
+ * Every rule violation in a patch, in table order. Empty means the patch is safe to apply.
+ *
+ * Two deliberate restraints:
+ *  - A cross-field rule runs ONLY when the patch touches one of its keys. An install can
+ *    already hold an inverted workday window — nothing rejected one before this existed — and
+ *    failing every unrelated patch on account of it would leave that operator unable to change
+ *    anything at all, including pausing.
+ *  - A cross-field rule is skipped when either of its keys already failed its own range.
+ *    "must be after the start hour" stacked on "must be between 0 and 23" is noise.
+ */
+export function validateSettingsPatch(
+  patch: Record<string, unknown>,
+  current: Settings,
+): SettingFailure[] {
+  const failures: SettingFailure[] = [];
+
+  for (const [key, rule] of Object.entries(SETTING_RULES)) {
+    if (!(key in patch)) continue;
+    const value = patch[key];
+    if (typeof value !== 'number' || !Number.isInteger(value)) {
+      failures.push({ key, message: `${rule.label} must be a whole number.` });
+    } else if (value < rule.min || value > rule.max) {
+      failures.push({ key, message: `${rule.label} must be between ${rule.min} and ${rule.max}.` });
+    }
+  }
+
+  const failed = new Set(failures.map((f) => f.key));
+  const checkable = (a: string, b: string) => (a in patch || b in patch) && !failed.has(a) && !failed.has(b);
+
+  if (checkable('workday_start_hour', 'workday_end_hour')) {
+    const start = effective(patch, current, 'workday_start_hour');
+    const end = effective(patch, current, 'workday_end_hour');
+    // Equal is rejected alongside inverted: a zero-length window schedules nothing, silently.
+    if (end <= start) {
+      failures.push({
+        key: 'workday_end_hour',
+        message: `Workday end hour must be after the start hour (currently ${start}).`,
+      });
+    }
+  }
+
+  if (checkable('min_delay_ms', 'max_delay_ms')) {
+    const lo = effective(patch, current, 'min_delay_ms');
+    const hi = effective(patch, current, 'max_delay_ms');
+    // Equal is fine here — a fixed delay is deterministic, not broken. Only inverted fails.
+    if (hi < lo) {
+      failures.push({
+        key: 'max_delay_ms',
+        message: `Maximum send delay must be at least the minimum (${lo} ms).`,
+      });
+    }
+  }
+
+  return failures;
+}
