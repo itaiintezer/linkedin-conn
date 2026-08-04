@@ -9,7 +9,7 @@ import {
   EventCampaignRepo, EventBucketRepo, EventInviteeRepo, EventRunRepo,
 } from './event-repos.js';
 import { EngagementRepo } from './engagement-repo.js';
-import { TrackedProfileRepo } from './posts-repos.js';
+import { PostRepo, TrackedProfileRepo } from './posts-repos.js';
 
 const PROFILE_COLUMNS = new Set([
   'first_name', 'full_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
@@ -659,6 +659,8 @@ export class Repos {
   engagements: EngagementRepo;
   /** Posts feed — the tracked set. */
   trackedProfiles: TrackedProfileRepo;
+  /** Posts feed — the swept posts. */
+  posts: PostRepo;
   constructor(public db: DB) {
     this.cohorts = new CohortRepo(db);
     this.profiles = new ProfileRepo(db);
@@ -673,5 +675,6 @@ export class Repos {
     this.eventRuns = new EventRunRepo(db);
     this.engagements = new EngagementRepo(db);
     this.trackedProfiles = new TrackedProfileRepo(db);
+    this.posts = new PostRepo(db);
   }
 }

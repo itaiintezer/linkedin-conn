@@ -5,9 +5,10 @@
  * with it, coverage for its reactivating `add` (including the connection_id backfill
  * rule — fills a NULL, never overwrites a set one), soft-delete via `deactivate`,
  * the per-profile sweep stamps (`markSwept` / `markSweepError`), and `withCounts`'s
- * LEFT JOIN + COUNT. Task 3 adds PostRepo and the behavioural tests this file doesn't
- * yet have: URN dedupe, the retention prune itself, and engagement_id surviving a URN
- * reconcile.
+ * LEFT JOIN + COUNT. Task 3 adds PostRepo: URN dedupe via `upsertMany`, the feed
+ * hiding an untracked profile's posts without deleting them, the retention prune
+ * (un-engaged old posts drop, engaged ones survive, `first_seen_at` stands in for a
+ * NULL `posted_at`), and `engagement_id` surviving a URN reconcile.
  */
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
@@ -171,4 +172,87 @@ test('withCounts: zero posts reports 0, N posts reports N, soft-deleted rows are
   expect(byUrl.get(a.profile_url)).toBe(0);
   expect(byUrl.get(b.profile_url)).toBe(2);
   expect(byUrl.has(c.profile_url)).toBe(false);
+});
+
+const postInput = (urn: string, profileId: number, postedAt: string | null) => ({
+  post_urn: urn,
+  post_url: `https://www.linkedin.com/feed/update/${urn}/`,
+  tracked_profile_id: profileId,
+  author_name: 'Ada Lovelace',
+  author_headline: 'Analytical Engine',
+  content: 'A note on the engine.',
+  posted_at: postedAt,
+  is_repost: 0,
+  reaction_count: 12,
+  comment_count: 3,
+  raw_json: '{}',
+});
+
+test('upsert dedupes on post_urn and reports how many were new', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  const now = '2026-08-04T10:00:00.000Z';
+
+  const first = repos.posts.upsertMany([
+    postInput('urn:li:activity:1', a.id, '2026-08-03T09:00:00.000Z'),
+    postInput('urn:li:activity:2', a.id, '2026-08-02T09:00:00.000Z'),
+  ], now);
+  expect(first).toBe(2);
+
+  // Re-sweeping the same posts is a no-op. This is what removes the need for a cursor.
+  const second = repos.posts.upsertMany([
+    postInput('urn:li:activity:1', a.id, '2026-08-03T09:00:00.000Z'),
+    postInput('urn:li:activity:3', a.id, '2026-08-01T09:00:00.000Z'),
+  ], now);
+  expect(second).toBe(1);
+  expect(repos.posts.countAll()).toBe(3);
+});
+
+test('the feed hides posts of an untracked profile without deleting them', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  repos.posts.upsertMany([postInput('urn:li:activity:9', a.id, '2026-08-03T09:00:00.000Z')],
+    '2026-08-04T10:00:00.000Z');
+  expect(repos.posts.feed('new', 20, null)).toHaveLength(1);
+
+  repos.trackedProfiles.deactivate(a.id);
+  expect(repos.posts.feed('new', 20, null)).toHaveLength(0);
+  expect(repos.posts.countAll()).toBe(1);   // still on disk
+});
+
+test('the prune drops un-engaged old posts, keeps engaged ones, and uses first_seen_at when posted_at is NULL', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  const now = new Date('2026-08-04T10:00:00.000Z');
+  repos.posts.upsertMany([
+    postInput('urn:li:activity:old', a.id, '2026-06-01T09:00:00.000Z'),      // old, un-engaged
+    postInput('urn:li:activity:keep', a.id, '2026-06-01T09:00:00.000Z'),     // old, engaged
+    postInput('urn:li:activity:fresh', a.id, '2026-08-03T09:00:00.000Z'),    // recent
+    postInput('urn:li:activity:nodate', a.id, null),                          // no posted_at
+  ], '2026-06-01T09:00:00.000Z');   // first_seen_at is old for all four
+
+  const eng = repos.engagements.add(
+    'https://www.linkedin.com/feed/update/urn:li:activity:keep/',
+    'urn:li:activity:keep', 'like', null,
+  );
+  repos.posts.setEngagement(repos.posts.findByUrn('urn:li:activity:keep')!.id, eng.id);
+
+  const pruned = repos.posts.prune(30, now);
+  expect(pruned).toBe(2);   // 'old' and 'nodate' — the latter via first_seen_at
+  const left = repos.db.prepare('SELECT post_urn FROM posts ORDER BY post_urn')
+    .all() as { post_urn: string }[];
+  expect(left.map((r) => r.post_urn)).toEqual(['urn:li:activity:fresh', 'urn:li:activity:keep']);
+});
+
+test('engagement_id survives the engagement URN being reconciled', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  const urn = 'urn:li:activity:7489401095899770880';
+  repos.posts.upsertMany([postInput(urn, a.id, '2026-08-03T09:00:00.000Z')],
+    '2026-08-04T10:00:00.000Z');
+  const post = repos.posts.findByUrn(urn)!;
+  const eng = repos.engagements.add(`https://www.linkedin.com/feed/update/${urn}/`, urn, 'like', null);
+  repos.posts.setEngagement(post.id, eng.id);
+
+  // The driver rewrites the engagement's URN to the canonical one it read off the live post.
+  // A join on post_urn would lose the link here; a direct id does not.
+  expect(repos.engagements.reconcileUrn(eng.id, 'urn:li:activity:7489401096851906561'))
+    .toBe('reconciled');
+  expect(repos.posts.feed('queued', 20, null).map((p) => p.id)).toEqual([post.id]);
 });
