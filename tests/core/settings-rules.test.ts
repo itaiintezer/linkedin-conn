@@ -169,3 +169,11 @@ test('max_delay_ms below min_delay_ms is rejected, equal is allowed', () => {
   expect(validateSettingsPatch({ min_delay_ms: 90000, max_delay_ms: 20000 }, stored())).toHaveLength(1);
   expect(validateSettingsPatch({ min_delay_ms: 30000, max_delay_ms: 30000 }, stored())).toEqual([]);
 });
+
+// Mirrors the workday one-sided tests: both values are individually in range (5000..600000),
+// so this is the cross-field rule catching the stored fallback, not a range check — hence
+// asserting on the message, not just the count.
+test('a one-sided delay patch is checked against the stored other side', () => {
+  const [f] = validateSettingsPatch({ max_delay_ms: 10000 }, stored({ min_delay_ms: 90000 }));
+  expect(f.message).toBe('Maximum send delay must be at least the minimum (90000 ms).');
+});

@@ -87,7 +87,13 @@ function effective(patch: Record<string, unknown>, current: Settings, key: keyof
 }
 
 /**
- * Every rule violation in a patch, in table order. Empty means the patch is safe to apply.
+ * Every rule violation in a patch. Empty means the patch is safe to apply.
+ *
+ * Ordering: per-field failures come first, in table order — they all come from one loop over
+ * `Object.entries(SETTING_RULES)`. Cross-field failures are appended afterward, in the fixed
+ * sequence they're written below, NOT interleaved at their table position. That ordering must
+ * stay deterministic: a caller reports `failures[0].message` as the headline error (see Task 3),
+ * so the same patch has to keep producing the same first sentence.
  *
  * Two deliberate restraints:
  *  - A cross-field rule runs ONLY when the patch touches one of its keys. An install can
@@ -114,7 +120,8 @@ export function validateSettingsPatch(
   }
 
   const failed = new Set(failures.map((f) => f.key));
-  const checkable = (a: string, b: string) => (a in patch || b in patch) && !failed.has(a) && !failed.has(b);
+  const checkable = (a: keyof Settings, b: keyof Settings) =>
+    (a in patch || b in patch) && !failed.has(a) && !failed.has(b);
 
   if (checkable('workday_start_hour', 'workday_end_hour')) {
     const start = effective(patch, current, 'workday_start_hour');
