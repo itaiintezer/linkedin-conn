@@ -947,7 +947,7 @@ const base: ApifyPost = {
   id: URN,
   linkedinUrl: `https://www.linkedin.com/feed/update/${URN}/`,
   content: 'Alert triage is an ownership problem.',
-  postedAt: { date: '2026-08-03 14:23:00', timestamp: 1785853380000, relative: '1d' },
+  postedAt: { date: '2026-08-03 14:23:00', timestamp: 1785766980000, relative: '1d' },
   author: { name: 'Dana Reingold', linkedinUrl: 'https://www.linkedin.com/in/dana', position: 'VP Security' },
   engagement: { likes: 42, comments: 7 },
   query: { targetUrl: 'https://www.linkedin.com/in/dana' },
@@ -955,14 +955,14 @@ const base: ApifyPost = {
 
 test('parsePostedAt accepts a dict, an ISO string, a unix-ms number, and rejects junk', () => {
   // The timestamp is preferred when present: numeric and unambiguous.
-  expect(parsePostedAt({ date: '2026-08-03 14:23:00', timestamp: 1785853380000 }))
+  expect(parsePostedAt({ date: '2026-08-03 14:23:00', timestamp: 1785766980000 }))
     .toBe('2026-08-03T14:23:00.000Z');
   expect(parsePostedAt('2026-08-03T14:23:00Z')).toBe('2026-08-03T14:23:00.000Z');
   expect(parsePostedAt('2026-08-03 14:23:00')).toBe('2026-08-03T14:23:00.000Z');
   expect(parsePostedAt('2026-08-03')).toBe('2026-08-03T00:00:00.000Z');
-  expect(parsePostedAt(1785853380000)).toBe('2026-08-03T14:23:00.000Z');
+  expect(parsePostedAt(1785766980000)).toBe('2026-08-03T14:23:00.000Z');
   // Seconds rather than ms, scaled up the way the reference implementation does.
-  expect(parsePostedAt(1785853380)).toBe('2026-08-03T14:23:00.000Z');
+  expect(parsePostedAt(1785766980)).toBe('2026-08-03T14:23:00.000Z');
   expect(parsePostedAt('2 days ago')).toBeNull();
   expect(parsePostedAt(null)).toBeNull();
   expect(parsePostedAt({ relative: '1d' })).toBeNull();
