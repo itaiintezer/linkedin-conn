@@ -710,6 +710,11 @@
       </div>
       <button class="select-all-matching" id="selectAllMatching" type="button" hidden></button>
 
+      <!-- What a selection action did. Its own node rather than #searchMeta, which holds the
+           match count: toast() rewrites className, so borrowing that line would leave the
+           "N matches" readout permanently wearing a toast's box. -->
+      <div class="toast slim" id="selectionResult" hidden></div>
+
       <div class="table-wrap" id="searchResultsWrap" hidden>
         <table class="data-table search-table">
           <thead>

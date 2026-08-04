@@ -583,7 +583,7 @@ test('Track posts sends the selected connection URLs to the tracking endpoint', 
     expect(call).toBeTruthy();
     expect(call!.method).toBe('POST');
     expect(call!.body).toEqual({ profile_urls: urls });
-    expect(document.getElementById('searchMeta')!.textContent).toContain('2 people');
+    expect(document.getElementById('selectionResult')!.textContent).toContain('2 people');
   });
 });
 
@@ -616,7 +616,7 @@ test('a rejected profile is named rather than silently dropped', async () => {
   internals.searchSelection().add('https://www.linkedin.com/in/dana');
   (document.getElementById('selectionTrack') as HTMLButtonElement).click();
   await vi.waitFor(() => {
-    expect(document.getElementById('searchMeta')!.textContent).toContain('tracking cap of 200');
+    expect(document.getElementById('selectionResult')!.textContent).toContain('tracking cap of 200');
   });
 });
 
@@ -631,7 +631,7 @@ test('a failed Track posts leaves the button usable and says why', async () => {
   const btn = document.getElementById('selectionTrack') as HTMLButtonElement;
   btn.click();
   await vi.waitFor(() => {
-    expect(document.getElementById('searchMeta')!.textContent).toContain('no profile urls supplied');
+    expect(document.getElementById('selectionResult')!.textContent).toContain('no profile urls supplied');
   });
   expect(btn.disabled).toBe(false);
 });

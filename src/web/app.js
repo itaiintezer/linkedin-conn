@@ -2271,7 +2271,7 @@ function initSearch() {
     const urls = [...selected];
     if (urls.length === 0) return;
     const btn = ev.currentTarget;
-    const result = $('#searchMeta');
+    const result = $('#selectionResult');
     btn.disabled = true;
     try {
       // Tracking is not a send: it queues nothing in front of anyone, it only decides whose
