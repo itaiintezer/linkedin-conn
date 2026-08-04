@@ -238,6 +238,17 @@ existing client already documents.
    Batching survives: `markSwept` stamps every profile in a pass with the *same* `nowIso`, so
    profiles swept together share an identical `last_swept_at` and naturally form one group.
    Group by that value, plus a null group for the never-swept.
+
+   Two consequences worth recording, because both look like they need handling and don't:
+
+   - **DST is a non-issue, and this is why.** `daySlot` works in local time, so a 23- or 25-hour
+     day shifts the cadence. Under the old elapsed-time threshold that would have flipped the
+     window; now the window derives from a stored instant and never from elapsed time, so a
+     short or long day changes nothing at all.
+   - **A months-old stamp is not an unbounded catch-up bill.** `maxItems = profiles × maxPosts`
+     is Apify's server-enforced charge ceiling regardless of how wide the window is. The window
+     decides *which* posts are candidates; `maxPosts` decides how many are returned and billed.
+     So no staleness ceiling on `postedLimitDate` is required.
 4. **Attribute** each returned item to its profile by `query.targetUrl`, falling back to
    `author.linkedinUrl`. An item matching neither is logged and dropped, never guessed at.
 5. **`INSERT OR IGNORE`** each post on `post_urn`. Stamp `last_swept_at` per profile. On a

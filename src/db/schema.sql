@@ -432,7 +432,16 @@ CREATE TABLE IF NOT EXISTS tracked_profiles (
   -- from app_state.posts_swept_at, which gates the pass as a whole. Advanced ONLY by a run
   -- that actually returned for this profile: advancing it otherwise bounds the next window on
   -- a sweep that never happened, losing the posts in between for good.
-  last_swept_at TEXT,
+  --
+  -- The CHECK pins the exact shape toISOString() produces, for a STRONGER reason than the
+  -- posted_at/first_seen_at CHECKs below (which only protect a TEXT sort key): this value is
+  -- forwarded verbatim to a paid actor as its run bound. A zone-less shape — precisely what
+  -- SQLite's own datetime('now') produces, as `created_at` two lines down does — would be read
+  -- as local by us and as its own zone by the actor, silently shifting the window by hours.
+  last_swept_at TEXT CHECK (
+    last_swept_at IS NULL
+    OR last_swept_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  ),
   last_sweep_error TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

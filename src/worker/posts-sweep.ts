@@ -13,6 +13,11 @@ import { attribute } from '../core/apify-posts-extract.js';
 import { normalizeProfileUrl } from '../core/url.js';
 import { log } from '../core/log.js';
 
+/** The exact shape `toISOString()` produces, and the one `schema.sql` GLOBs on `last_swept_at`.
+ *  Stated here too because this module forwards that column to a paid actor as its run bound —
+ *  see windowFor. Same shape apify-posts-extract.ts pins for `posted_at`. */
+const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
 /** One run at a time per process. A sweep can outlast the 30-minute tick interval. */
 let running = false;
 export function isPostsSweepRunning(): boolean { return running; }
@@ -80,8 +85,18 @@ export interface PostsSweepResult {
  */
 export function windowFor(lastSweptAt: string | null, now: Date): PostedWindow {
   if (lastSweptAt === null) return { postedLimit: 'week' };
+  // Shape-gated, not merely Date-parseable, because this string is forwarded VERBATIM to a paid
+  // actor as its run bound. `new Date` accepts plenty of shapes that would bound the run on
+  // something other than what we mean: '2026-08-04 09:00:00' and '2026-08-04T09:00:00' carry no
+  // zone, so we read them as LOCAL for the age check below while the actor reads them in ITS
+  // zone — a silent multi-hour gap for any operator who isn't on UTC — and '2026-08-04' silently
+  // means midnight. markSwept only ever writes toISOString(), and schema.sql now GLOBs this same
+  // shape, so a value failing here is already a corrupted row; the bounded look is the safe
+  // answer for it rather than a window derived from a string we cannot interpret.
+  if (!ISO_MS.test(lastSweptAt)) return { postedLimit: 'week' };
   const age = now.getTime() - new Date(lastSweptAt).getTime();
-  // Unparseable, or stamped in the future — neither can bound a run, so take the bounded look.
+  // The shape check does NOT subsume this: ISO_MS admits impossible dates ('2026-13-45T...'),
+  // which parse to NaN. `age < 0` catches a stamp in the future, which cannot bound a run either.
   if (!Number.isFinite(age) || age < 0) return { postedLimit: 'week' };
   return { postedLimitDate: lastSweptAt };
 }
@@ -189,7 +204,14 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
       groups.set(k, group);
     }
 
+    // Set when an auth failure latches: every remaining run would fail the same way, so stop
+    // issuing them — but fall through to the prune and the stamp below rather than returning,
+    // because ageing posts out is the only way a post leaves the New chip and an unusable key
+    // is no reason to freeze the feed. See the run_failed guard for the trap this avoids.
+    let bailed = false;
+
     for (const { window, members } of groups.values()) {
+      if (bailed) break;
       const label = windowLabel(window);
       for (const batch of chunk(members, batchSize)) {
         const byUrl = new Map(batch.map((m) => [m.url, m.id]));
@@ -256,7 +278,8 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
             // either a bad key or a spent monthly budget, and telling an operator their key
             // is wrong when it isn't sends them down the wrong path.
             repos.appState.haltPosts('auth', `Apify refused the request — ${error}`, nowIso);
-            return result;   // every remaining batch would fail the same way
+            bailed = true;
+            break;   // every remaining batch would fail the same way
           }
         }
       }
@@ -271,7 +294,14 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
     // Deliberately requires TWO passes: one failed pass is ordinary (an Apify blip, a timeout)
     // and must self-heal without an operator. `runs > 0` keeps a no-op pass — no profiles, or
     // all of them un-normalizable — from latching something no run was ever attempted for.
-    if (result.runs > 0 && result.profilesSwept === 0 && allPreviouslyErrored) {
+    //
+    // `!bailed` is load-bearing, not tidiness. An auth failure very easily satisfies all three
+    // conditions below (nothing swept, everyone already carrying last pass's error), and
+    // haltPosts would then overwrite reason 'auth' with 'run_failed' — throwing away the
+    // passed-through Apify message, which is the whole point of the 401/403 work: it is what
+    // distinguishes "monthly usage hard limit exceeded" from "your key is wrong". The more
+    // specific latch that already fired must win.
+    if (!bailed && result.runs > 0 && result.profilesSwept === 0 && allPreviouslyErrored) {
       repos.appState.haltPosts(
         'run_failed',
         `Every Apify run failed twice in a row (${result.runs} this pass). Sweeping is stopped so it `
@@ -281,8 +311,10 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
       log.error('posts', 'halted after consecutive fully-failed passes', { runs: result.runs });
     }
 
-    // Prune regardless of whether the runs succeeded: ageing out is the only way a post
-    // leaves the New chip, and a failed Apify call is no reason to let the feed grow forever.
+    // Prune regardless of how the runs went — including the auth bail-out above, which is why
+    // that path breaks rather than returning. Ageing out is the only way a post leaves the New
+    // chip, and a latched halt stops the tick from calling this worker at all, so returning
+    // early there would freeze the feed until an operator fixed the key.
     //
     // Wrapped because a throw here would reject the whole call, losing a result the caller
     // needs — profiles already have their last_swept_at advanced by this point, so the work is

@@ -81,6 +81,27 @@ test('windowFor bounds a swept profile on its own last_swept_at, exactly', () =>
   expect(windowFor('2026-08-05T10:00:00.000Z', NOW)).toEqual({ postedLimit: 'week' });
 });
 
+test('windowFor refuses a parseable-but-wrong stamp, not just an unparseable one', () => {
+  // THE DANGEROUS CASE, and the reason the gate is a shape test rather than `new Date` being
+  // finite: every string here parses. The zone-less ones would be read as LOCAL by the age
+  // check and in the ACTOR's zone as the run bound, so a UTC+3 operator would get a silent
+  // multi-hour gap — a window that looks completely fine from here. The value is forwarded
+  // verbatim to a paid actor, so anything but the exact toISOString() shape takes the
+  // bounded look instead.
+  for (const parseable of [
+    '2026-08-04 09:00:00',        // zone-less, space-separated (SQLite datetime('now')'s shape)
+    '2026-08-04T09:00:00',        // zone-less, T-separated — local per ECMA-262, not UTC
+    '2026-08-04',                 // date only: silently means midnight
+    'August 4, 2026 09:00',       // implementation-defined, and not UTC
+    '2026-08-04T09:00:00Z',       // right idea, no milliseconds — still not the pinned shape
+  ]) {
+    expect(windowFor(parseable, NOW)).toEqual({ postedLimit: 'week' });
+  }
+  // Correctly SHAPED but an impossible date, so the shape gate alone is not enough: this
+  // parses to NaN and must not be forwarded either.
+  expect(windowFor('2026-13-45T00:00:00.000Z', NOW)).toEqual({ postedLimit: 'week' });
+});
+
 test('a sweep issues one run per window and pairs each profile with its OWN window', async () => {
   const a = repos.trackedProfiles.add(URL_A, null, 'urls');
   const b = repos.trackedProfiles.add(URL_B, null, 'search');
@@ -235,6 +256,38 @@ test('an auth failure latches the halt and attempts no further run', async () =>
   expect(client.calls).toHaveLength(1);
   expect(res.runs).toBe(1);
   expect(b.id).toBeGreaterThan(a.id);
+});
+
+test('an auth halt still prunes, and keeps its own reason', async () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  repos.posts.upsertMany([{
+    post_urn: 'urn:li:activity:ancient',
+    post_url: 'https://www.linkedin.com/feed/update/urn:li:activity:ancient/',
+    tracked_profile_id: a.id, author_name: null, author_headline: null,
+    content: 'old', posted_at: '2026-01-01T00:00:00.000Z', is_repost: 0,
+    reaction_count: null, comment_count: null, raw_json: null,
+  }], '2026-01-01T00:00:00.000Z');
+  // Pre-set the error so the run_failed latch's own conditions ALL hold on this pass — that is
+  // the trap: falling through to reach the prune must not let run_failed overwrite 'auth'.
+  repos.trackedProfiles.markSweepError(a.id, 'earlier failure');
+
+  const res = await runPostsSweep(repos, {
+    client: fakeClient(() => [], () => new ApifyRequestError('Apify run start failed (HTTP 403)', 403, false)),
+    now: NOW, maxPosts: 3, batchSize: 200, retentionDays: 30,
+  });
+
+  // Ageing out is the only way a post leaves the New chip, and a latched halt stops the tick
+  // from calling this worker at all — so an early return here would freeze the feed until an
+  // operator fixed the key.
+  expect(res.pruned).toBe(1);
+  expect(repos.posts.countAll()).toBe(0);
+  // The specific latch wins. Overwriting it with run_failed would throw away the Apify message
+  // that distinguishes a spent budget from a bad key.
+  expect(repos.appState.get().posts_halt_reason).toBe('auth');
+  expect(repos.appState.get().posts_halt_detail).toContain('HTTP 403');
+  // Still not a clean pass, so the slot is not stamped.
+  expect(res.clean).toBe(false);
+  expect(repos.appState.get().posts_swept_at).toBeNull();
 });
 
 test('an ordinary failure does not latch', async () => {

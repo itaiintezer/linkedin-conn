@@ -111,14 +111,31 @@ test('markSwept clears a previous error; markSweepError leaves last_swept_at alo
 
   repos.trackedProfiles.markSweepError(a.id, 'run failed');
   expect(repos.trackedProfiles.findById(a.id)!.last_sweep_error).toBe('run failed');
-  // A failed sweep must not advance last_swept_at, or the next pass would treat this
-  // profile as fresh and use the narrow 24h window it never actually got.
+  // A failed sweep must not advance last_swept_at, or the next pass would bound this profile's
+  // window on a sweep it never actually received and lose the posts in between.
   expect(repos.trackedProfiles.findById(a.id)!.last_swept_at).toBeNull();
 
   repos.trackedProfiles.markSwept(a.id, '2026-08-04T10:00:00.000Z');
   const row = repos.trackedProfiles.findById(a.id)!;
   expect(row.last_swept_at).toBe('2026-08-04T10:00:00.000Z');
   expect(row.last_sweep_error).toBeNull();
+});
+
+test('last_swept_at only accepts the exact toISOString() shape', () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+  const set = (v: string): void => {
+    repos.db.prepare('UPDATE tracked_profiles SET last_swept_at = ? WHERE id = ?').run(v, a.id);
+  };
+
+  // Stricter than the posted_at CHECK is for its sort key, and for a stronger reason: this
+  // value is forwarded verbatim to a paid actor as its run bound (postedLimitDate). A zone-less
+  // shape — exactly what SQLite's own datetime('now') yields — would be read as local here and
+  // in the actor's own zone there, silently shifting the window by hours.
+  for (const bad of ['2026-08-04 10:00:00', '2026-08-04T10:00:00', '2026-08-04', 'soon']) {
+    expect(() => set(bad)).toThrow();
+  }
+  expect(() => set('2026-08-04T10:00:00.000Z')).not.toThrow();
+  expect(repos.trackedProfiles.findById(a.id)!.last_swept_at).toBe('2026-08-04T10:00:00.000Z');
 });
 
 test('add fills a NULL connection_id but never overwrites one already set', () => {
