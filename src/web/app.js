@@ -83,8 +83,22 @@ function toast(node, msg, isError = false) {
   node.textContent = msg;
 }
 
-/* ---------- tab navigation ---------- */
+/* ---------- tab navigation ----------
+ * The dashboard has no tab of its own — the brand lockup is its entry point — so every
+ * button in the tab bar is a departure from it, and showing the dashboard means leaving
+ * all of them unlit rather than lighting one.
+ */
+function showPanel(name) {
+  $$('main > .panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
+}
+
+function showDashboard() {
+  $$('.tab').forEach((t) => t.classList.remove('is-active'));
+  showPanel('dashboard');
+}
+
 function switchTab(name) {
+  if (name === 'dashboard') { showDashboard(); return; }
   const tab = $$('.tab').find((t) => t.dataset.tab === name);
   if (tab) tab.click();
 }
@@ -94,14 +108,15 @@ function initTabs() {
     tab.addEventListener('click', () => {
       $$('.tab').forEach((t) => t.classList.toggle('is-active', t === tab));
       const name = tab.dataset.tab;
-      $$('main > .panel').forEach((p) => { p.hidden = p.id !== `tab-${name}`; });
+      showPanel(name);
       if (name === 'add') loadCohortOptions();
       if (name === 'cohorts') loadCohortsScreen();
       if (name === 'events') loadEventsScreen();
-      if (name === 'docs') loadDocs();
       if (name === 'settings') { loadSettings(); scrollLogToEnd(); }
     });
   });
+  const home = $('#brandHome');
+  if (home) home.addEventListener('click', showDashboard);
 }
 
 /* ---------- login status ---------- */
@@ -2716,10 +2731,15 @@ function initLogViewer() {
   if (filter) filter.addEventListener('input', renderLogView);
 }
 
-/* ---------- docs ---------- */
+/* ---------- docs (Settings → Docs) ---------- */
 let docsLoaded = false;
 async function loadDocs() {
+  // Built once per page load. Rebuilding the nav would snap the highlight back to the first
+  // document while the pane still shows whichever one the operator has open. A failed fetch
+  // leaves the flag down, so reopening the section retries.
+  if (docsLoaded) return;
   const nav = $('#docsNav');
+  if (!nav) return;
   try {
     const docs = await api('/api/docs');
     nav.replaceChildren(...docs.map((d, idx) =>
@@ -2728,8 +2748,18 @@ async function loadDocs() {
         type: 'button', 'data-slug': d.slug,
         onclick: (e) => selectDoc(d.slug, e.currentTarget),
       }, d.title)));
-    if (!docsLoaded && docs.length) { await selectDoc(docs[0].slug, nav.firstChild); docsLoaded = true; }
+    if (!docs.length) return;
+    docsLoaded = true;
+    await selectDoc(docs[0].slug, nav.firstChild);
   } catch (_) { $('#docsContent').textContent = 'Failed to load docs.'; }
+}
+
+// Deferred until the section is opened: the API reference is the biggest payload the
+// dashboard fetches, and Settings is normally opened to change a number.
+function initDocs() {
+  const block = $('#docsBlock');
+  if (!block) return;
+  block.addEventListener('toggle', () => { if (block.open) void loadDocs(); });
 }
 async function selectDoc(slug, btn) {
   $$('.docs-nav-item').forEach((b) => b.classList.toggle('is-active', b === btn));
@@ -3166,6 +3196,7 @@ function init() {
   initAddList();
   initCohorts();
   initSettings();
+  initDocs();
   initConnections();
   initEnrichment();
   initSearch();

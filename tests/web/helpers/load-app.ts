@@ -45,6 +45,10 @@ export interface AppInternals {
   searchSelection: () => Set<string>;
   initEvents: () => void;
   initDashboard: () => void;
+  /** Tab bar + the brand lockup, which is the only route back to the dashboard. */
+  initTabs: () => void;
+  /** Wires the Settings → Docs section's lazy load. */
+  initDocs: () => void;
   refreshQueue: () => Promise<void>;
   evRenderDetail: (detail: Record<string, unknown>) => void;
   evLoadList: () => Promise<void>;
@@ -93,7 +97,7 @@ export function loadApp(): AppInternals {
   const postsSrc = readFileSync(join(WEB_DIR, 'posts.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, loadSettings, initSettings, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
+    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, loadSettings, initSettings, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }

@@ -52,23 +52,28 @@
   </div>
 
   <header class="topbar">
+    <!-- The lockup is the way back to the dashboard — there is no Dashboard tab. The button
+         lives inside the h1 rather than around it: a button may only contain phrasing
+         content, so wrapping the heading would be invalid and cost the page its h1. -->
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8">
-          <path d="M3 12h4l2 6 4-14 2 8h6" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </span>
-      <div class="brand-text"><h1>The Machine</h1></div>
+      <h1 class="brand-text">
+        <button class="brand-home" id="brandHome" type="button" title="Show the dashboard">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M3 12h4l2 6 4-14 2 8h6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          The Machine
+        </button>
+      </h1>
     </div>
 
     <nav class="tabs" id="tabs">
-      <button class="tab is-active" data-tab="dashboard">Dashboard</button>
       <button class="tab" data-tab="add">Add List</button>
       <button class="tab" data-tab="cohorts">Cohorts</button>
       <button class="tab" data-tab="connections">Connections</button>
       <button class="tab" data-tab="posts">Posts</button>
       <button class="tab" data-tab="events">Events</button>
-      <button class="tab" data-tab="docs">Docs</button>
       <button class="tab" data-tab="settings">Settings</button>
     </nav>
 
@@ -636,18 +641,7 @@
       <div class="ev-detail" id="evDetail" hidden></div>
     </section>
 
-    <!-- DOCS -->
-    <section class="panel" id="tab-docs" hidden>
-      <div class="panel-head">
-        <div class="panel-title"><h2>Docs</h2><p class="panel-sub">Reference for operators and AI agents</p></div>
-      </div>
-      <div class="docs-layout">
-        <nav class="docs-nav" id="docsNav"></nav>
-        <article class="docs-content markdown" id="docsContent">Select a document.</article>
-      </div>
-    </section>
-
-    <!-- SETTINGS -->
+    <!-- CONNECTIONS -->
     <section class="panel" id="tab-connections" hidden>
       <div class="panel-head">
         <div class="panel-title">
@@ -1006,6 +1000,20 @@
         </div>
       </div>
       <pre class="log-view" id="logView" aria-label="Run log">loading…</pre>
+
+      <!-- Docs live here rather than in a tab of their own. Collapsed by default and loaded
+           only when opened: the API reference is longer than the rest of this screen put
+           together, and nobody arrives at Settings to read it. -->
+      <details class="docs-block" id="docsBlock">
+        <summary>
+          <span>Docs</span>
+          <span class="docs-summary-sub">Reference for operators and AI agents</span>
+        </summary>
+        <div class="docs-layout">
+          <nav class="docs-nav" id="docsNav"></nav>
+          <article class="docs-content markdown" id="docsContent">Select a document.</article>
+        </div>
+      </details>
     </section>
   </main>
 
