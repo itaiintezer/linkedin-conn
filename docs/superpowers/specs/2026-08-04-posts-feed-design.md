@@ -341,6 +341,28 @@ No test touches `data/app.db` — it is production data.
   pipeline's own schedule rather than immediately.
 - `README.md` — the five new settings.
 
+## Known residual risks, accepted (added 2026-08-04 during implementation)
+
+**A sustained Apify outage discards a run we already paid for.** The client retries the two
+idempotent GETs (poll, dataset page) three times with backoff, which survives failures spread
+across a run. It does not survive an outage longer than roughly six seconds *within a single
+poll*: that throws, the sweep marks the batch's profiles with `last_sweep_error`, and because
+`last_swept_at` is deliberately left untouched the next pass uses the wider `'week'` window —
+so we pay for the discarded run and then pay again, wider.
+
+The real fix is to persist the run id and dataset id when a run starts, so a later tick can read
+a dataset already paid for instead of starting a new run. That needs a column and a resume path
+and was judged out of proportion mid-implementation. Two things bound the damage in the
+meantime: `maxItems` on the run start caps what Apify will charge regardless, and the sweep is
+daily rather than hourly, so the worst case is one duplicated day.
+
+**`timeout` on the run start is unverified against rendered docs.** `maxItems` was confirmed
+(Apify documents it as the charged-items cap for pay-per-result actors). `timeout` was confirmed
+only from search-result text — `docs.apify.com` refused to render for both the reviewer and the
+implementer. A wrong parameter name would be ignored rather than harmful, but it means the run
+would not self-terminate when our poll budget expires. **Confirm on the first live sweep** by
+checking the run's configured timeout in the Apify console.
+
 ## Out of scope
 
 - AI-drafted or templated comments. Comments are literal text the operator types.
