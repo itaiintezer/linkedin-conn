@@ -45,7 +45,7 @@ test('an inverted workday window is rejected', async () => {
 });
 
 test('every failure comes back in fields[], with the first also as error', async () => {
-  const body = (await post({ weekly_cap: 5000, batch_size: 0 })).json();
+  const body = (await post({ batch_size: 0, weekly_cap: 5000 })).json();
   expect(body.fields.map((f: { key: string }) => f.key)).toEqual(['weekly_cap', 'batch_size']);
   expect(body.error).toBe(body.fields[0].message);
 });

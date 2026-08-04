@@ -1002,8 +1002,9 @@ export function buildServer(
     return { upcoming: ordered.slice(0, limit), total_remaining: ordered.length };
   });
 
-  // `rules` rides along so the form can stamp min/max/step onto its inputs — index.html
-  // hardcodes no limits, which is what keeps the two from drifting.
+  // `rules` rides along so the form configures its inputs from this table rather than from
+  // limits hardcoded in index.html. A limit written in two places drifts, and the HTML copy
+  // is the one nobody remembers to update.
   app.get('/api/settings', async () => ({ ...publicSettings(repos.settings.get()), rules: SETTING_RULES }));
   app.post('/api/settings', async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
