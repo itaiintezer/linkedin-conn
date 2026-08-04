@@ -5,7 +5,7 @@
  * already long, and these two always change together.
  */
 import type { DB } from './database.js';
-import type { FeedPost, Post, PostFilter, TrackedProfile } from '../types.js';
+import type { FeedPost, Post, PostFilter, PostInput, TrackedProfile } from '../types.js';
 import { log } from '../core/log.js';
 
 export class TrackedProfileRepo {
@@ -95,21 +95,6 @@ export class TrackedProfileRepo {
       ORDER BY tp.id
     `).all() as unknown as (TrackedProfile & { post_count: number })[];
   }
-}
-
-/** What upsertMany accepts. Everything the extractor produces, minus the row's own id. */
-export interface PostInput {
-  post_urn: string;
-  post_url: string;
-  tracked_profile_id: number;
-  author_name: string | null;
-  author_headline: string | null;
-  content: string | null;
-  posted_at: string | null;
-  is_repost: number;
-  reaction_count: number | null;
-  comment_count: number | null;
-  raw_json: string | null;
 }
 
 /**

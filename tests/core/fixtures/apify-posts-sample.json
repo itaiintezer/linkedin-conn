@@ -1,0 +1,132 @@
+[
+  {
+    "_label": "normal_post",
+    "type": "post",
+    "id": "7500000000000000001",
+    "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7500000000000000001/",
+    "content": "Alert triage is an ownership problem.",
+    "author": {
+      "name": "Priya Chandran",
+      "linkedinUrl": "https://www.linkedin.com/in/priya-chandran-example",
+      "info": "Director of Detection Engineering"
+    },
+    "postedAt": {
+      "timestamp": 1785766980000,
+      "date": "2026-08-03T14:23:00.000Z",
+      "postedAgoShort": "1d",
+      "postedAgoText": "1 day ago"
+    },
+    "engagement": {
+      "likes": 51,
+      "comments": 4,
+      "reactions": [
+        { "type": "LIKE", "count": 41 },
+        { "type": "PRAISE", "count": 5 },
+        { "type": "EMPATHY", "count": 5 }
+      ]
+    },
+    "query": { "targetUrl": "https://www.linkedin.com/in/priya-chandran-example" }
+  },
+  {
+    "_label": "bare_reshare_with_content",
+    "type": "post",
+    "id": "7500000000000000002",
+    "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7500000000000000002/",
+    "content": "Our team is proud to be recognized for its incident-response speed this year.",
+    "author": {
+      "name": "Northwind Security",
+      "linkedinUrl": "https://www.linkedin.com/company/northwind-security-example",
+      "info": "12,000 followers"
+    },
+    "repostedBy": {
+      "name": "Jordan Blake",
+      "publicIdentifier": "jordan-blake-example",
+      "linkedinUrl": "https://www.linkedin.com/in/jordan-blake-example"
+    },
+    "repostedAt": { "timestamp": 1785766980000, "date": "2026-08-03T14:23:00.000Z" },
+    "postedAt": { "timestamp": 1785680580000, "date": "2026-08-02T14:23:00.000Z" },
+    "engagement": {
+      "likes": 12,
+      "comments": 0,
+      "reactions": [{ "type": "LIKE", "count": 12 }]
+    },
+    "query": { "targetUrl": "https://www.linkedin.com/in/jordan-blake-example" }
+  },
+  {
+    "_label": "reshare_with_commentary",
+    "type": "post",
+    "id": "7500000000000000003",
+    "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7500000000000000003/",
+    "content": "This mirrors exactly what we're seeing in our own SOC.",
+    "author": {
+      "name": "Jordan Blake",
+      "linkedinUrl": "https://www.linkedin.com/in/jordan-blake-example",
+      "info": "VP Security Operations"
+    },
+    "repost": {
+      "id": "7500000000000000000",
+      "content": "Alert fatigue is the number one reason tier-1 analysts burn out within a year.",
+      "author": {
+        "name": "Priya Chandran",
+        "linkedinUrl": "https://www.linkedin.com/in/priya-chandran-example",
+        "info": "Director of Detection Engineering"
+      }
+    },
+    "postedAt": { "timestamp": 1785766980000, "date": "2026-08-03T14:23:00.000Z" },
+    "engagement": {
+      "likes": 6,
+      "comments": 1,
+      "reactions": [{ "type": "LIKE", "count": 6 }]
+    },
+    "query": { "targetUrl": "https://www.linkedin.com/in/jordan-blake-example" }
+  },
+  {
+    "_label": "reshare_with_commentary_no_own_words",
+    "type": "post",
+    "id": "7500000000000000004",
+    "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7500000000000000004/",
+    "content": null,
+    "author": {
+      "name": "Jordan Blake",
+      "linkedinUrl": "https://www.linkedin.com/in/jordan-blake-example",
+      "info": "VP Security Operations"
+    },
+    "repost": {
+      "id": "7500000000000000000",
+      "content": "Alert fatigue is the number one reason tier-1 analysts burn out within a year.",
+      "author": {
+        "name": "Priya Chandran",
+        "linkedinUrl": "https://www.linkedin.com/in/priya-chandran-example",
+        "info": "Director of Detection Engineering"
+      }
+    },
+    "postedAt": { "timestamp": 1785766980000, "date": "2026-08-03T14:23:00.000Z" },
+    "engagement": { "likes": 0, "comments": 0, "reactions": [] },
+    "query": { "targetUrl": "https://www.linkedin.com/in/jordan-blake-example" }
+  },
+  {
+    "_label": "bare_reshare_no_recoverable_content",
+    "type": "post",
+    "id": "7500000000000000005",
+    "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7500000000000000005/",
+    "content": null,
+    "author": {
+      "name": "Northwind Security",
+      "linkedinUrl": "https://www.linkedin.com/company/northwind-security-example",
+      "info": "12,000 followers"
+    },
+    "repostedBy": {
+      "name": "Jordan Blake",
+      "publicIdentifier": "jordan-blake-example",
+      "linkedinUrl": "https://www.linkedin.com/in/jordan-blake-example"
+    },
+    "repostedAt": { "timestamp": 1785766980000, "date": "2026-08-03T14:23:00.000Z" },
+    "postedAt": { "timestamp": 1785680580000, "date": "2026-08-02T14:23:00.000Z" },
+    "engagement": {
+      "likes": 3,
+      "comments": 0,
+      "reactions": [{ "type": "LIKE", "count": 3 }]
+    },
+    "query": { "targetUrl": "https://www.linkedin.com/in/jordan-blake-example" }
+  }
+]

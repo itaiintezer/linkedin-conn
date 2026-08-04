@@ -2,9 +2,12 @@
  * Raw posts-actor item -> a `posts` row. Pure, and the ONLY place actor field names are
  * read — the same containment `apify-extract.ts` provides for the profile actor, so a
  * harvestapi rename is one file and one test rather than a hunt.
+ *
+ * Field-shape claims below are measured against a 26,256-item corpus of real actor output
+ * at `C:\Projects\prospecting\icp_cache_posts` (2026-08-04), not guessed from the profile
+ * actor's shape — see the ApifyPost JSDoc in types.ts for what that overrode.
  */
-import type { ApifyPost } from '../types.js';
-import type { PostInput } from '../db/posts-repos.js';
+import type { ApifyPost, PostInput } from '../types.js';
 import { normalizePostUrl, normalizeProfileUrl } from './url.js';
 
 /** Trim to a non-empty string, or null. Everything downstream expects null, not ''. */
@@ -13,17 +16,52 @@ const str = (v: unknown): string | null => {
   return s === '' ? null : s;
 };
 
+/** A non-negative integer, or null. `posts.reaction_count`/`comment_count` are counts —
+ *  never negative, never fractional — so anything else is untrusted input, not a value. */
 const num = (v: unknown): number | null =>
-  typeof v === 'number' && Number.isFinite(v) ? v : null;
+  typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null;
+
+/** The fixed-width shape the `posted_at` CHECK demands: always a 4-digit year, always
+ *  `.sss` milliseconds. `toISOString()` on a Date outside year 0000-9999 uses the
+ *  expanded-year form ("+033658-09-27T…"), which this rejects rather than lets through. */
+const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/**
+ * True when a Y-M-D triple names a real calendar day. `Date` silently ROLLS an invalid one
+ * instead of rejecting it — `Date.UTC(2026, 1, 30)` (Feb 30) becomes March 2 — and that
+ * rolled instant still serializes to a value `ISO_MS` accepts, so the shape check alone
+ * cannot catch it. Round-tripping the components is what does.
+ */
+function isValidYmd(y: number, mo: number, d: number): boolean {
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
+/** The single exit for every `parsePostedAt` branch: a Date that doesn't round-trip to the
+ *  exact `ISO_MS` shape is a null, same as one that never parsed at all — never a value the
+ *  posts.posted_at CHECK would go on to silently reject downstream (upsertMany does count
+ *  and log a CHECK rejection, but a lost post is a lost post either way). */
+function iso(d: Date): string | null {
+  if (Number.isNaN(d.getTime())) return null;
+  const s = d.toISOString();
+  return ISO_MS.test(s) ? s : null;
+}
 
 /**
  * Best-effort parse of an actor post date into the fixed-width ISO shape the `posted_at`
  * CHECK demands.
  *
- * Ported from `apify_linkedin.py::_parse_post_date`, which exists because `postedAt` arrives
- * as `{date, timestamp, relative}`, a bare ISO string, `YYYY-MM-DD HH:MM:SS`, a bare date,
- * or a unix number depending on the payload. Returns null rather than guessing — a NULL
- * posted_at is handled everywhere via COALESCE(posted_at, first_seen_at).
+ * Ported from `apify_linkedin.py::_parse_post_date`, which exists because `postedAt` can
+ * arrive as a dict, a bare string, or a unix number depending on the payload. Returns null
+ * rather than guessing — a NULL posted_at is handled everywhere via
+ * COALESCE(posted_at, first_seen_at).
+ *
+ * The real actor shape, per the corpus, is `{timestamp, date, postedAgoShort,
+ * postedAgoText}`, where `date` already arrives as a full `...Z`-suffixed ISO string and
+ * `timestamp` the same instant in epoch ms — the two never disagree in 26,256 samples. The
+ * bare-string, space-separated, and bare-date branches below are NOT reachable from that
+ * shape; they are defensive-only, kept for an older cache format or a differently-shaped
+ * upstream and covered because the reference Python handles them.
  */
 export function parsePostedAt(value: unknown): string | null {
   if (value === null || value === undefined) return null;
@@ -33,8 +71,7 @@ export function parsePostedAt(value: unknown): string | null {
     // Apify returns ms. A value small enough to be seconds is scaled up, matching the
     // reference implementation — 10^12 ms is the year 2001, so the threshold is unambiguous.
     const ms = value > 1e12 ? value : value * 1000;
-    const d = new Date(ms);
-    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    return iso(new Date(ms));
   }
 
   if (typeof value === 'object') {
@@ -53,23 +90,39 @@ export function parsePostedAt(value: unknown): string | null {
   const s = value.trim();
   if (s === '') return null;
 
-  // ISO 8601, including a trailing Z or an offset.
+  // Zone-less "YYYY-MM-DD[ T]HH:MM[:SS][.sss]" — read as UTC, and tried BEFORE the
+  // zone-aware branch below on purpose. `new Date('2026-08-03T14:23:00')` (a `T` separator
+  // but no `Z` and no offset) is LOCAL time per the ECMA-262 Date Time String Format, so on
+  // any machine that isn't already UTC this silently shifts the instant by the local
+  // offset. That is a real, previously-shipped bug here: the old regex used `[ ]` only, so
+  // a `T`-separated zone-less string fell through to the zone-aware branch and got the
+  // wrong instant on anything but a UTC box. `vitest.config.ts` pinning TZ=UTC for the
+  // suite is what let it ship unnoticed — under that pin, local time IS UTC, so the bug
+  // produced the right answer in every test and only the wrong one in production. Fixed by
+  // testing this shape first and explicitly appending `Z`; the reference
+  // `apify_linkedin.py::_parse_post_date` does the same with its own `[ T]` separator.
+  const zoneless = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/);
+  if (zoneless) {
+    const [, y, mo, d, h, mi, se, frac] = zoneless;
+    if (!isValidYmd(+y, +mo, +d)) return null;
+    const millis = (frac ?? '000').padEnd(3, '0').slice(0, 3);
+    return iso(new Date(`${y}-${mo}-${d}T${h}:${mi}:${se ?? '00'}.${millis}Z`));
+  }
+
+  // ISO 8601 carrying its own zone (a trailing Z or a numeric offset) — unambiguous for
+  // `new Date` to parse directly.
   if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
-    const d = new Date(s);
-    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    return iso(new Date(s));
   }
-  // "YYYY-MM-DD HH:MM[:SS]" with no zone. Read as UTC — the suite pins TZ=UTC, and
-  // guessing a local zone for an upstream timestamp would shift every date.
-  const m = s.match(/^(\d{4}-\d{2}-\d{2})[ ](\d{2}:\d{2}(?::\d{2})?)$/);
-  if (m) {
-    const d = new Date(`${m[1]}T${m[2].length === 5 ? `${m[2]}:00` : m[2]}Z`);
-    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+
+  // A bare date, defensive-only for the same reason noted above.
+  const bareDate = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (bareDate) {
+    const [, y, mo, d] = bareDate;
+    if (!isValidYmd(+y, +mo, +d)) return null;
+    return iso(new Date(`${y}-${mo}-${d}T00:00:00Z`));
   }
-  // A bare date.
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-    const d = new Date(`${s}T00:00:00Z`);
-    return Number.isNaN(d.getTime()) ? null : d.toISOString();
-  }
+
   // "2 days ago" and friends: relative text carries no absolute instant. Refused.
   return null;
 }
@@ -93,7 +146,12 @@ function identify(raw: ApifyPost): { url: string; urn: string } | null {
 }
 
 /**
- * Is this a reshare? The discriminator is the `type` field or a nested original-post object.
+ * Is this a reshare? `type` is `'post'` on every one of 26,256 real items, including actual
+ * reshares — it is NOT a usable discriminator despite being one in other Apify actors'
+ * output, and is kept below only as a harmless forward-compat check. The real signal is a
+ * nested/attribution object: `repost` (reshare with the resharer's own added commentary) or
+ * `repostedBy`/`repostedAt` (a bare reshare, no commentary added). `resharedPost` never
+ * occurs in the corpus; kept because the original spec named it.
  *
  * Defaults to 0 when indeterminate, so an unrecognized payload shape UNDER-labels rather
  * than mislabels. Reposts are engageable (one container, all selectors resolve), but comment
@@ -102,32 +160,65 @@ function identify(raw: ApifyPost): { url: string; urn: string } | null {
 function isRepost(raw: ApifyPost): number {
   const type = (str(raw.type) ?? '').toLowerCase();
   if (type === 'repost' || type === 'reshare') return 1;
-  if (raw.resharedPost != null || raw.repost != null) return 1;
+  if (raw.repost != null || raw.repostedBy != null || raw.resharedPost != null) return 1;
   return 0;
+}
+
+/** The nested original post's text on a reshare-with-commentary (`repost.content`). A bare
+ *  reshare (`repostedBy` only, no `repost`) has no separate nested original to fall back to
+ *  — LinkedIn already puts the original's own text at the top-level `content` in that case,
+ *  which is why the fallback below only ever looks at `repost`. */
+function repostContent(raw: ApifyPost): string | null {
+  const r = raw.repost;
+  if (!r || typeof r !== 'object') return null;
+  return str((r as { content?: unknown }).content);
+}
+
+/** `JSON.stringify` throws on a circular reference or a BigInt. Neither is expected from
+ *  actor JSON, but the sibling `apify-extract.ts` module's contract is that a malformed
+ *  payload yields nulls, never a throw — and inside a batch (`attribute` below), an
+ *  uncaught throw here would take down every other item in the run, not just this one. */
+function safeStringify(raw: unknown): string | null {
+  try { return JSON.stringify(raw); } catch { return null; }
 }
 
 /** One item -> one row, or null when it is unusable. */
 export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput | null {
   if (!raw || typeof raw !== 'object') return null;
-  const content = str(raw.content);
+  // A bare reshare's own text IS the top-level `content` (measured: 7,876 real bare
+  // reshares — `repostedBy` present, no `repost` — with content present on all but 118 of
+  // them, and those 118 have no recoverable text anywhere in the payload: the original
+  // itself was image/document/article-only).
+  // A reshare-WITH-commentary can have an empty top-level `content` (the resharer added no
+  // words of their own) while the original post it wraps still has text worth showing and
+  // engaging with — that text lives at `repost.content`, so it is the one fallback tried.
+  const content = str(raw.content) ?? repostContent(raw);
   if (content === null) return null;       // nothing to judge, nothing to engage with
   const ref = identify(raw);
   if (ref === null) return null;
 
   const author = raw.author ?? null;
   const eng = raw.engagement ?? null;
+  const rawJson = safeStringify(raw);
+  if (rawJson === null) return null;
   return {
     post_urn: ref.urn,
     post_url: ref.url,
     tracked_profile_id: trackedProfileId,
     author_name: author ? str(author.name) : null,
-    author_headline: author ? str(author.position) ?? str(author.headline) : null,
+    // `info` is the real headline field (100% of 26,256 real items; `position`/`headline`
+    // never occur) — see the ApifyPost JSDoc in types.ts. Kept as fallbacks only.
+    author_headline: author ? str(author.info) ?? str(author.position) ?? str(author.headline) : null,
     content,
     posted_at: parsePostedAt(raw.postedAt),
     is_repost: isRepost(raw),
+    // `reactions` is an array of `{type, count}` on every real item (verified: `likes` is
+    // its sum, e.g. 51 = 41+5+5 in a sampled item) — `num()` on an array is always null, so
+    // the `reactions` fallback below is unreachable against real payloads and exists only
+    // for a hypothetical shape where `likes` is dropped but a bare numeric total survives.
     reaction_count: eng ? num(eng.likes) ?? num(eng.reactions) : null,
     comment_count: eng ? num(eng.comments) : null,
-    raw_json: JSON.stringify(raw),
+    raw_json: rawJson,
   };
 }
 
@@ -136,15 +227,26 @@ export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput
  *
  * `query.targetUrl` echoes the exact input URL and is the primary key; `author.linkedinUrl`
  * is the fallback. Both are normalized before lookup, so a trailing slash or different case
- * still matches. An item matching NEITHER is counted and dropped — never assigned to
- * whichever profile happens to be nearby, which would attribute a post to the wrong person.
+ * still matches. An item matching NEITHER is counted as `unattributed` and dropped — never
+ * assigned to whichever profile happens to be nearby, which would attribute a post to the
+ * wrong person.
+ *
+ * `unusable` is counted SEPARATELY from `unattributed`: measured across the corpus, ~9% of
+ * items have no resolvable text anywhere (`extractPost` returns null) — some are plain
+ * image/video/document posts with no caption, some are reshares whose original itself had
+ * no text — and that is a content-policy fact about the item, nothing to do with
+ * attribution. Folding the two together would make a caller's single
+ * "dropped unattributable items" log line blame URL normalization for a content policy on
+ * every sweep, forever — exactly the kind of misleading telemetry the wrong count would
+ * cause someone to chase in the wrong file.
  */
 export function attribute(
   items: ApifyPost[],
   profileIdByUrl: Map<string, number>,
-): { rows: PostInput[]; unattributed: number } {
+): { rows: PostInput[]; unattributed: number; unusable: number } {
   const rows: PostInput[] = [];
   let unattributed = 0;
+  let unusable = 0;
   for (const raw of items) {
     const candidates = [
       raw?.query?.targetUrl,
@@ -157,8 +259,8 @@ export function attribute(
     }
     if (id === undefined) { unattributed++; continue; }
     const row = extractPost(raw, id);
-    if (row === null) { unattributed++; continue; }
+    if (row === null) { unusable++; continue; }
     rows.push(row);
   }
-  return { rows, unattributed };
+  return { rows, unattributed, unusable };
 }

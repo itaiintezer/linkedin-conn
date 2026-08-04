@@ -560,6 +560,24 @@ export interface Post {
   created_at: string;
 }
 
+/** What `PostRepo.upsertMany` accepts. Everything the extractor produces, minus the row's
+ *  own id. Lives here rather than in db/posts-repos.ts for the same reason ConnectionInput
+ *  sits next to Connection: it is a plain data shape, and core/apify-posts-extract.ts
+ *  (which produces it) has no business importing from db/. */
+export interface PostInput {
+  post_urn: string;
+  post_url: string;
+  tracked_profile_id: number;
+  author_name: string | null;
+  author_headline: string | null;
+  content: string | null;
+  posted_at: string | null;
+  is_repost: number;
+  reaction_count: number | null;
+  comment_count: number | null;
+  raw_json: string | null;
+}
+
 /** A feed row: a post plus the engagement columns the UI renders a badge from. */
 export interface FeedPost extends Post {
   engagement_status: EngagementStatus | null;
@@ -585,6 +603,15 @@ export interface TrackReject {
 /**
  * One item from harvestapi~linkedin-profile-posts. Every field optional: this is untrusted
  * upstream JSON, and the extractor's job is to survive any of it being absent or reshaped.
+ *
+ * Field names verified against a 26,256-item corpus of real actor output at
+ * `C:\Projects\prospecting\icp_cache_posts` (2026-08-04). Two findings that overrode the
+ * original spec (ported from the *profile* actor, where these names are correct but this
+ * one never sends them): `author.position`/`author.headline` occur 0 times — the real
+ * headline field is `author.info` (100% of items). And `resharedPost` occurs 0 times — the
+ * real reshare shape is `repost` (reshare-with-added-commentary) or `repostedBy`/
+ * `repostedAt` (bare reshare, no commentary); `type` is `'post'` on every single item, so it
+ * is not a usable repost discriminator despite the original spec's comment.
  */
 export interface ApifyPost {
   id?: unknown;
@@ -592,11 +619,26 @@ export interface ApifyPost {
   linkedinUrl?: unknown;
   content?: unknown;
   postedAt?: unknown;
-  author?: { name?: unknown; linkedinUrl?: unknown; position?: unknown; headline?: unknown } | null;
+  author?: {
+    name?: unknown; linkedinUrl?: unknown;
+    /** The real headline field — see the corpus note above. */
+    info?: unknown;
+    /** Never observed in the corpus; kept as a forward-compat fallback only. */
+    position?: unknown; headline?: unknown;
+  } | null;
+  /** `reactions` is an array of `{type, count}` on every real item, never a bare number —
+   *  `likes` (the total) is the field to read; see apify-posts-extract.ts's `num()` use. */
   engagement?: { likes?: unknown; reactions?: unknown; comments?: unknown } | null;
   /** Echoes the exact input URL, which is how a batched run's items split per profile. */
   query?: { targetUrl?: unknown } | null;
-  /** Present on a reshare: the post being reshared. */
+  /** Present on a reshare-with-commentary: the nested original post, including its own
+   *  `content` — the field a caller falls back to when the outer `content` is empty. */
   repost?: unknown;
+  /** Present on a BARE reshare (no added commentary). `author` is still the ORIGINAL
+   *  post's author in this case, and LinkedIn already puts the original's own text at the
+   *  top-level `content` — there is no separate nested object to read it from. */
+  repostedBy?: unknown;
+  repostedAt?: unknown;
+  /** Never observed in the corpus; kept only because the original spec named it. */
   resharedPost?: unknown;
 }
