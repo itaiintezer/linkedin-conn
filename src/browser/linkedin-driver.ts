@@ -8,7 +8,8 @@ import { attendEvent, openEvent, runBucket } from './event-invite-driver.js';
 import { CloakSession } from './cloak-session.js';
 import { SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl } from './linkedin-selectors.js';
 import {
-  PSEL, reactionEntry, existingReactionFrom, commentNeedle, urnNumericId,
+  PSEL, reactionEntry, existingReactionFrom, commentNeedle, confirmPostedComment,
+  type ThreadRow, type CommentConfirmation,
   POST_LOAD_TIMEOUT_MS, FLYOUT_TIMEOUT_MS, REACTED_TIMEOUT_MS, SUBMIT_ARM_TIMEOUT_MS,
   COMMENT_CONFIRM_TIMEOUT_MS,
 } from './post-selectors.js';
@@ -1021,26 +1022,34 @@ export class LinkedInDriver implements BrowserDriver {
         };
       }
 
+      // THE OWNERSHIP BASELINE, captured while the click has not happened yet: every comment
+      // id the thread is showing right now. A row that is not in this set afterwards is one we
+      // did not see before, which is the only thing that can prove a comment is ours — the
+      // data-id's own post URN provably cannot (see confirmPostedComment).
+      const knownIds = (await this.readThread(page)).rows.map((r) => r.dataId);
+
       submitted = true; // IRREVERSIBLE from here
       await submit.click();
       await sleep(rand(3000, 5000));
 
       // Confirmation, from two independent signals (plus a third that is logged):
-      //   1. a comment row whose body carries our text, attributed to this post through the
-      //      post urn embedded in its own data-id whenever that attribution is possible;
+      //   1. a comment row carrying our text that was NOT in the thread before we submitted;
       //   2. the composer having cleared (verified reliable: the editor read "" immediately);
       //   3. the row's `• You` badge — corroborating only, because it is English text.
       const needle = commentNeedle(text);
-      const postId = urnNumericId(observedUrn);
+      const confirm = async (): Promise<CommentConfirmation> => {
+        const t = await this.readThread(page);
+        return confirmPostedComment(t.rows, t.editors, needle, knownIds);
+      };
       const deadline = Date.now() + COMMENT_CONFIRM_TIMEOUT_MS;
-      let seen = await this.readCommentConfirmation(page, needle, postId);
+      let seen = await confirm();
       while (!(seen.cleared && seen.matched) && Date.now() < deadline) {
         await sleep(1000);
-        seen = await this.readCommentConfirmation(page, needle, postId);
+        seen = await confirm();
       }
       if (seen.cleared && seen.matched) {
         log.info('engage', 'comment posted', {
-          postUrl, commentId: seen.commentId, ownBadge: seen.ownBadge, attributedToPost: seen.attributed,
+          postUrl, commentId: seen.commentId, ownBadge: seen.ownBadge, knownBefore: knownIds.length,
         });
         return { result: 'done', ...urn() };
       }
@@ -1052,7 +1061,7 @@ export class LinkedInDriver implements BrowserDriver {
       const scan = await this.scanCheckpoint(page);
       const why = scan.hit
         ? `comment not confirmed and a checkpoint appeared at ${scan.url}`
-        : `comment not confirmed (cleared=${seen.cleared}, inThread=${seen.matched})`;
+        : `comment not confirmed (cleared=${seen.cleared}, newRowInThread=${seen.matched})`;
       const ev = await captureEvidence(page, 'engage-comment-unverified', { error: why, postUrl });
       log.warn('engage', 'comment could not be verified — parking it', { postUrl, why });
       return {
@@ -1077,49 +1086,34 @@ export class LinkedInDriver implements BrowserDriver {
   }
 
   /**
-   * One read of the thread + composer. Kept in a single evaluate so both signals describe the
-   * same instant.
+   * One read of the thread + composer. READS ONLY — it reports what the page says and decides
+   * nothing; `confirmPostedComment` renders the verdict.
    *
-   * Attribution is demanded when it is available and skipped when it provably is not: if any
-   * comment row in this thread embeds our post id, a matching row MUST be one of them;
-   * if none do (the container reported a non-`activity` URN while comment ids use `activity`),
-   * the text match plus a cleared composer stands alone and `attributed` says so. Without that
-   * fallback a URN-type mismatch would park every single comment.
+   * That split is not tidiness. The verdict used to be computed in here, inside the page, where
+   * no test could reach it — which is how a post-URN attribution marker that matches zero rows
+   * on every ugcPost-backed post survived a live run reporting success. Everything judgemental
+   * now sits in a pure function with tests over the real captured DOM shapes.
+   *
+   * Still one evaluate, so the thread and the composer describe the SAME instant — a two-call
+   * version could see the composer clear between reads and confirm against a stale thread.
    *
    * Same two constraints as the message-send confirmation: normalize BOTH sides (the rendered
    * thread collapses whitespace), and declare no named inner function — under tsx/esbuild,
    * keep-names rewrites a named inner binding to `__name(fn, "fn")`, which does not exist
    * inside the page.
    */
-  private async readCommentConfirmation(
-    page: Page, needle: string, postId: string | null,
-  ): Promise<{ matched: boolean; cleared: boolean; commentId: string | null; ownBadge: boolean; attributed: boolean }> {
-    return page.evaluate(({ rowSel, bodySel, metaSel, editorSel, needle: want, postId: want2 }) => {
-      const marker = want2 === null ? null : `(activity:${want2},`;
-      const rows = Array.from(document.querySelectorAll(rowSel)).map((el) => ({
+  private async readThread(page: Page): Promise<{ rows: ThreadRow[]; editors: string[] }> {
+    return page.evaluate(({ rowSel, bodySel, metaSel, editorSel }) => ({
+      rows: Array.from(document.querySelectorAll(rowSel)).map((el) => ({
         dataId: el.getAttribute('data-id') || '',
         body: (el.querySelector(bodySel)?.textContent || '').replace(/\s+/g, ' ').trim(),
         meta: (el.querySelector(metaSel)?.textContent || '').replace(/\s+/g, ' ').trim(),
-      }));
-      const textHits = want.length > 0 ? rows.filter((r) => r.body.includes(want)) : [];
-      const attributable = marker !== null && rows.some((r) => r.dataId.includes(marker));
-      const hit = attributable
-        ? textHits.find((r) => r.dataId.includes(marker as string))
-        : textHits[0];
-      const editors = Array.from(document.querySelectorAll(editorSel))
-        .map((e) => (e.textContent || '').replace(/\s+/g, ' ').trim());
-      return {
-        matched: !!hit,
-        commentId: hit ? hit.dataId : null,
-        // English text, so corroborating only — never load-bearing for the verdict.
-        ownBadge: !!hit && /•\s*You\b/.test(hit.meta),
-        attributed: !!hit && attributable,
-        // Cleared when no composer still holds the text we typed.
-        cleared: want.length > 0 && !editors.some((t) => t.includes(want)),
-      };
-    }, {
+      })),
+      editors: Array.from(document.querySelectorAll(editorSel))
+        .map((e) => (e.textContent || '').replace(/\s+/g, ' ').trim()),
+    }), {
       rowSel: PSEL.commentEntity, bodySel: PSEL.commentBody, metaSel: PSEL.commentMeta,
-      editorSel: PSEL.commentEditor, needle, postId,
+      editorSel: PSEL.commentEditor,
     });
   }
 
