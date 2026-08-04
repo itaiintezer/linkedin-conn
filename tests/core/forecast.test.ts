@@ -14,7 +14,9 @@ function settings(over: Partial<Settings> = {}): Settings {
     events_per_day: 1, event_invite_cap: 500, event_bucket_ceiling: 10,
     event_run_budget_minutes: 20, event_shard_threshold: 900,
     engage_weekly_cap: 500, engage_batch_size: 15, engage_batches_per_day: 6,
-    engage_comment_daily_cap: 10, ...over,
+    engage_comment_daily_cap: 10,
+    posts_sweep_per_day: 1, posts_max_per_sweep: 3, posts_sweep_batch_size: 200,
+    posts_retention_days: 30, tracked_profile_cap: 200, ...over,
   };
 }
 
