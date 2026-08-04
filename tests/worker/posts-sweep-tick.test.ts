@@ -9,6 +9,7 @@ import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { Orchestrator } from '../../src/worker/orchestrator.js';
+import { isPostsSweepRunning } from '../../src/worker/posts-sweep.js';
 import type { ApifyPostsClient } from '../../src/core/apify-posts-client.js';
 
 let repos: Repos;
@@ -101,4 +102,57 @@ test('a throwing sweep never escapes the tick', async () => {
   // A tick fires as `void this.runPostsSweepTick()`, so an uncaught rejection would crash
   // the whole process.
   await expect(orc.runPostsSweepTick(NOW)).resolves.toBeUndefined();
+});
+
+test('an overlapping tick is refused before ever building a second client', async () => {
+  // Hold the first pass open inside the actor call, exactly where a real sweep spends its
+  // minutes — same shape as posts-sweep.test.ts's own re-entry test, one layer up.
+  //
+  // NOTE on what this actually proves: runPostsSweep's OWN reentry guard (the `if (running)
+  // throw` at its top, checked synchronously before any await) already makes a second
+  // fetchPosts call impossible on its own — that guard reads the very same module-level flag
+  // this tick's isPostsSweepRunning() peeks at, so a second overlapping call can never reach
+  // the actor regardless of whether this gate exists. Asserting on fetchPosts call count would
+  // therefore pass even with this gate deleted, and prove nothing about it. What this gate
+  // buys is keeping that throw a BACKSTOP rather than the normal path: without it, every
+  // overlapping tick during a long sweep builds a real client, immediately throws inside
+  // runPostsSweep, and gets routed through handleTickError as a logged failure — wasted work
+  // and log noise on every tick for the whole sweep's duration. So the property to pin is
+  // "no second client is ever constructed", not "no second fetchPosts call".
+  let release = (): void => {};
+  const gate = new Promise<void>((r) => { release = r; });
+  const built: string[] = [];
+  const orc = orchestrator((t) => {
+    built.push(t);
+    return { async fetchPosts() { await gate; return []; } };
+  });
+
+  const first = orc.runPostsSweepTick(NOW);
+  // The first tick has run synchronously up to the held actor call, so the flag is already
+  // set — same assertion point posts-sweep.test.ts uses for the worker's own guard.
+  expect(isPostsSweepRunning()).toBe(true);
+
+  const second = orc.runPostsSweepTick(NOW);
+
+  // Release only after both ticks have been issued, so the second one's gate check is
+  // evaluated while the first is still genuinely in flight.
+  release();
+  await first;
+  await second;
+
+  expect(built).toHaveLength(1);
+  expect(isPostsSweepRunning()).toBe(false);
+});
+
+test('a factory that throws never escapes the tick, and the failed pass is not stamped', async () => {
+  // The factory call sits INSIDE the tick's own try — unlike a throwing fetchPosts, which
+  // posts-sweep.ts already swallows internally and never lets reach this layer. This is the
+  // case that actually exercises the tick's own catch.
+  const orc = orchestrator(() => { throw new Error('client construction failed'); });
+  // The tick fires as `void this.runPostsSweepTick()`, so an uncaught rejection here would
+  // take down a process that holds a browser profile and a live send queue.
+  await expect(orc.runPostsSweepTick(NOW)).resolves.toBeUndefined();
+  // A pass that never ran must not be recorded as done — the next tick has to retry it
+  // inside the same slot rather than silently skipping a whole day.
+  expect(repos.appState.get().posts_swept_at).toBeNull();
 });
