@@ -30,6 +30,7 @@ import {
   type ApifyPostsClient, HttpApifyPostsClient, COST_PER_POST_USD,
 } from '../core/apify-posts-client.js';
 import { runPostsSweep, isPostsSweepRunning } from '../worker/posts-sweep.js';
+import { isRetryableEngagement } from '../db/posts-repos.js';
 import { runEnrichment, enrichmentProgress, isEnrichmentRunning, pauseEnrichment } from '../worker/enrichment.js';
 import { extractProfile, isEmptyProfile } from '../core/apify-extract.js';
 import { searchConnections } from '../core/connection-search.js';
@@ -1107,8 +1108,17 @@ export function buildServer(
     };
   });
 
-  /** Statuses that leave a post retryable — kept beside the repo's own filter definition. */
-  const RETRYABLE = new Set(['failed', 'skipped']);
+  /**
+   * The sentence both engage routes use for an engagement no click may re-drive.
+   *
+   * A reacted row gets its own wording: "already queued (failed)" reads like a stuck task the
+   * operator should re-push, when in fact the reaction is live on LinkedIn and only the comment
+   * step is outstanding — which /api/engagements/:id/retry is the tool for.
+   */
+  const heldEngagementMessage = (held: Engagement): string =>
+    held.reacted_at !== null
+      ? `already reacted as engagement ${held.id} (${held.status}) — use retry to re-run the comment`
+      : `already queued as engagement ${held.id} (${held.status})`;
 
   /**
    * Re-queue a failed or skipped engagement. What a second engage click MEANS on a post the
@@ -1149,10 +1159,8 @@ export function buildServer(
 
     if (row.engagement_id !== null) {
       const held = repos.engagements.findById(row.engagement_id);
-      if (held && !RETRYABLE.has(held.status)) {
-        return reply.code(409).send({
-          error: `already queued as engagement ${held.id} (${held.status})`,
-        });
+      if (held && !isRetryableEngagement(held)) {
+        return reply.code(409).send({ error: heldEngagementMessage(held) });
       }
     }
 
@@ -1174,12 +1182,15 @@ export function buildServer(
           // Retryable means the previous attempt is over and did not react, so this click is
           // "try again" and has to put real work back in the queue — see requeueEngagement.
           // 201 rather than the adoption 200 because a task genuinely re-enters the pipeline.
-          if (RETRYABLE.has(held.status)) {
+          if (isRetryableEngagement(held)) {
             const requeued = requeueEngagement(held.id);
             planAndAssignToday(repos, new Date());
             defaultLog.info('api', 'post engagement re-queued from feed',
               { post_id: id, engagement: held.id, was: held.status });
-            return reply.code(201).send({ post_id: id, engagement: requeued });
+            // Flagged, like `adopted` below: nothing was created and the row keeps the reaction
+            // and comment it already had, so a caller that assumed "201 means my reaction" would
+            // render the wrong badge. See requeueEngagement for why the text is left alone.
+            return reply.code(201).send({ post_id: id, engagement: requeued, requeued: true });
           }
           return reply.code(200).send({ post_id: id, engagement: held, adopted: true });
         }
@@ -1209,8 +1220,11 @@ export function buildServer(
    */
   app.post('/api/posts/engage', async (req, reply) => {
     const b = (req.body ?? {}) as { post_ids?: unknown; reaction?: unknown };
+    // `n > 0` is not decoration: Number(null), Number(false) and Number('') are all 0, and
+    // Number.isInteger(0) is true — so without it every junk entry survived as "post 0" and came
+    // back as a `no post 0` reject, burying the real verdicts in noise no id ever produced.
     const ids = Array.isArray(b.post_ids)
-      ? b.post_ids.map((v) => Number(v)).filter((n) => Number.isInteger(n))
+      ? b.post_ids.map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0)
       : [];
     if (ids.length === 0) return reply.code(400).send({ error: 'no post ids supplied' });
 
@@ -1220,7 +1234,13 @@ export function buildServer(
     if (!parsed.ok) return reply.code(400).send({ error: parsed.error });
     const reaction = parsed.reaction ?? DEFAULT_REACTION;
 
+    // Three outcomes, reported under three keys rather than one. Folded together they are
+    // indistinguishable — a re-selected `celebrate` row that came back re-queued under the
+    // operator's newly chosen `insightful` looked exactly like a fresh create, and only a feed
+    // refetch would have shown otherwise. `added` stays the one number to read out loud.
     const created: number[] = [];
+    const adopted: number[] = [];
+    const requeued: number[] = [];
     const rejected: { post_id: number; reason: string; message: string }[] = [];
     for (const id of ids) {
       const row = repos.posts.findById(id);
@@ -1230,9 +1250,8 @@ export function buildServer(
       }
       if (row.engagement_id !== null) {
         const held = repos.engagements.findById(row.engagement_id);
-        if (held && !RETRYABLE.has(held.status)) {
-          rejected.push({ post_id: id, reason: 'duplicate',
-            message: `already queued as engagement ${held.id} (${held.status})` });
+        if (held && !isRetryableEngagement(held)) {
+          rejected.push({ post_id: id, reason: 'duplicate', message: heldEngagementMessage(held) });
           continue;
         }
       }
@@ -1245,8 +1264,8 @@ export function buildServer(
             repos.posts.setEngagement(id, held.id);
             // Same rule as the single-post route: a retryable row is re-queued, so a bulk
             // re-select of failed posts is a real retry rather than a silent relink.
-            if (RETRYABLE.has(held.status)) requeueEngagement(held.id);
-            created.push(id);
+            if (isRetryableEngagement(held)) { requeueEngagement(held.id); requeued.push(id); }
+            else adopted.push(id);
             continue;
           }
         }
@@ -1257,13 +1276,18 @@ export function buildServer(
       created.push(id);
     }
 
-    if (created.length > 0) {
+    const added = created.length + adopted.length + requeued.length;
+    if (added > 0) {
       planAndAssignToday(repos, new Date());
-      defaultLog.info('api', 'posts bulk-engaged',
-        { added: created.length, rejected: rejected.length, reaction });
+      defaultLog.info('api', 'posts bulk-engaged', {
+        added, adopted: adopted.length, requeued: requeued.length,
+        rejected: rejected.length, reaction,
+      });
     }
     // Always 201: the per-item verdicts are the payload. Same contract as /api/engagements.
-    return reply.code(201).send({ added: created.length, post_ids: created, rejected });
+    // `post_ids` is the freshly created set ONLY — an adopted or re-queued post keeps whatever
+    // reaction and comment its existing engagement already had, which is not `reaction`.
+    return reply.code(201).send({ added, post_ids: created, adopted, requeued, rejected });
   });
 
   /**

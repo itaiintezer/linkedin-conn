@@ -116,9 +116,27 @@ export class TrackedProfileRepo {
  * no engagement row, and `NULL NOT IN (...)` evaluating to NULL rather than true — that
  * is what keeps an engagement-less post out of `queued` rather than defaulting into it.
  */
+const RETRYABLE_STATUSES = ['failed', 'skipped'] as const;
+
+/** `('failed','skipped')`, built from the list above so the SQL cannot drift from the JS. */
+const RETRYABLE_SQL = `(${RETRYABLE_STATUSES.map((s) => `'${s}'`).join(',')})`;
+
+/**
+ * May a feed click re-drive this engagement? The JS half of `new`'s second clause below, and
+ * it must stay exactly that — the API used to keep its own `status`-only copy, which is how a
+ * post sitting in the `engaged` chip was still re-queueable from `/api/posts/:id/engage`.
+ *
+ * `reacted_at` is the load-bearing half, not decoration: an engagement can be `failed` because
+ * the COMMENT step fell over after the reaction already landed, and that reaction is live on
+ * LinkedIn. Re-queueing such a row hands the sender a second reaction to drive.
+ */
+export function isRetryableEngagement(e: { status: string; reacted_at: string | null }): boolean {
+  return e.reacted_at === null && (RETRYABLE_STATUSES as readonly string[]).includes(e.status);
+}
+
 const FILTER_SQL: Record<PostFilter, string> = {
-  new: "(p.engagement_id IS NULL OR (e.reacted_at IS NULL AND e.status IN ('failed','skipped')))",
-  queued: "(e.reacted_at IS NULL AND e.status NOT IN ('failed','skipped'))",
+  new: `(p.engagement_id IS NULL OR (e.reacted_at IS NULL AND e.status IN ${RETRYABLE_SQL}))`,
+  queued: `(e.reacted_at IS NULL AND e.status NOT IN ${RETRYABLE_SQL})`,
   engaged: 'e.reacted_at IS NOT NULL',
 };
 

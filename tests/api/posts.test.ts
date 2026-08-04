@@ -157,7 +157,10 @@ async function seed(n: number): Promise<number> {
       posted_at: new Date(Date.UTC(2026, 6, 1 + i)).toISOString(),
       is_repost: 0, reaction_count: null, comment_count: null, raw_json: null,
     })),
-    '2026-08-04T10:00:00.000Z',
+    // Relative to now, NOT a fixed date: the cost readout counts posts stored in the trailing
+    // 30 days against a real clock, so a hard-coded first_seen_at makes that test start failing
+    // a month after it was written — and the likely "fix" is deleting the assertion.
+    new Date(Date.now() - 1000).toISOString(),
   );
   return tp.id;
 }
@@ -199,6 +202,19 @@ test('next_cursor is null on the last page', async () => {
 test('an unknown filter is a 400 rather than silently becoming new', async () => {
   const res = await app.inject({ method: 'GET', url: '/api/posts?filter=nonsense' });
   expect(res.statusCode).toBe(400);
+});
+
+test('the page size is clamped rather than trusted', async () => {
+  await seed(101);
+  const rows = async (qs: string): Promise<number> =>
+    (await app.inject({ method: 'GET', url: `/api/posts?${qs}` })).json().posts.length;
+  expect(await rows('limit=1e9')).toBe(100);   // the ceiling, and Infinity cannot bind in SQLite
+  expect(await rows('limit=101')).toBe(100);
+  expect(await rows('limit=2.7')).toBe(2);     // floored, never rounded up past the ceiling
+  expect(await rows('limit=0')).toBe(25);      // the default: zero rows is nobody's intent
+  expect(await rows('limit=-5')).toBe(25);
+  expect(await rows('limit=abc')).toBe(25);
+  expect(await rows('')).toBe(25);
 });
 
 /**
@@ -279,14 +295,64 @@ test('a post whose engagement failed can be engaged again', async () => {
   await seed(1);
   const id = repos.posts.findByUrn('urn:li:activity:0')!.id;
   const first = (await post(`/api/posts/${id}/engage`, { reaction: 'like' })).json();
-  repos.engagements.setStatus(first.engagement.id, 'failed', { last_error: 'nope' });
+  const eid = first.engagement.id;
+  repos.engagements.setStatus(eid, 'failed',
+    {
+      last_error: 'nope', skip_reason: 'comments_disabled',
+      commented_at: '2026-08-04T11:00:00.000Z', attempts: 2,
+    });
   // Back in the New chip, so it is retryable from the feed rather than invisible.
   expect(repos.posts.counts().new).toBe(1);
-  expect((await post(`/api/posts/${id}/engage`, { reaction: 'like' })).statusCode).toBe(201);
+
+  const again = await post(`/api/posts/${id}/engage`, { reaction: 'like' });
+  expect(again.statusCode).toBe(201);
+  // Marked, because nothing was created and the row keeps its original reaction and comment.
+  expect(again.json().requeued).toBe(true);
   // And the retry actually re-queues the work: answering 200 "already linked" would make the
   // click a silent no-op and leave the post stuck in New forever.
-  expect(repos.engagements.findById(first.engagement.id)!.status).not.toBe('failed');
   expect(repos.posts.counts()).toEqual({ new: 0, queued: 1, engaged: 0 });
+
+  // The exact field set, pinned. `reacted_at` staying NULL is the safety-critical half —
+  // sender.ts drives the reaction only while it is null — and `attempts` must survive so a
+  // re-queue cannot reset the failure budget and loop forever.
+  const row = repos.engagements.findById(eid)!;
+  expect(row.status).not.toBe('failed');
+  expect(row.last_error).toBeNull();
+  expect(row.skip_reason).toBeNull();
+  expect(row.commented_at).toBeNull();
+  expect(row.reacted_at).toBeNull();
+  expect(row.attempts).toBe(2);
+});
+
+/**
+ * The one case where `status` alone gives the wrong answer, and the reason the retryable test
+ * lives in posts-repos.ts beside FILTER_SQL rather than as a second copy in the route.
+ */
+test('a failed engagement whose reaction already landed is not re-driven', async () => {
+  await seed(1);
+  const id = repos.posts.findByUrn('urn:li:activity:0')!.id;
+  const eid = (await post(`/api/posts/${id}/engage`, { reaction: 'celebrate' })).json().engagement.id;
+  // The reaction landed; the comment step then fell over. `failed` looks retryable, but the
+  // reaction is live on LinkedIn — so the post belongs to the Engaged chip, not New.
+  repos.engagements.setStatus(eid, 'failed',
+    { reacted_at: '2026-08-04T11:00:00.000Z', last_error: 'comment box vanished' });
+  expect(repos.posts.counts()).toEqual({ new: 0, queued: 0, engaged: 1 });
+
+  const again = await post(`/api/posts/${id}/engage`, { reaction: 'insightful' });
+  expect(again.statusCode).toBe(409);
+  // Named for what it is, so the operator is pointed at retry rather than told it is queued.
+  expect(again.json().error).toMatch(/already reacted/);
+
+  // Bulk must refuse it for the same reason, through the same predicate.
+  const bulk = await post('/api/posts/engage', { post_ids: [id], reaction: 'like' });
+  expect(bulk.json().added).toBe(0);
+  expect(bulk.json().rejected)
+    .toEqual([expect.objectContaining({ post_id: id, reason: 'duplicate' })]);
+
+  // Untouched by either attempt: re-queueing would hand the sender a second reaction to drive.
+  const row = repos.engagements.findById(eid)!;
+  expect(row.status).toBe('failed');
+  expect(row.reacted_at).toBe('2026-08-04T11:00:00.000Z');
 });
 
 test('an engagement already queued for the same post by URL is adopted, not duplicated', async () => {
@@ -326,6 +392,43 @@ test('bulk engage IGNORES a comment field — bulk commenting is unreachable', a
     const eid = repos.posts.findById(id)!.engagement_id!;
     expect(repos.engagements.findById(eid)!.comment_text).toBeNull();
   }
+});
+
+test('bulk engage separates created, adopted and re-queued rather than folding them together', async () => {
+  await seed(3);
+  const [fresh, pasted, failed] = ['urn:li:activity:0', 'urn:li:activity:1', 'urn:li:activity:2']
+    .map((u) => repos.posts.findByUrn(u)!.id);
+
+  // Queued by hand before the feed existed: adopted, keeping its own reaction.
+  repos.engagements.add(`https://www.linkedin.com/feed/update/urn:li:activity:1/`,
+    'urn:li:activity:1', 'celebrate', null);
+  // An earlier attempt that failed without reacting: re-queued, also keeping its reaction.
+  const failedEid = (await post(`/api/posts/${failed}/engage`, { reaction: 'support' }))
+    .json().engagement.id;
+  repos.engagements.setStatus(failedEid, 'failed', { last_error: 'nope' });
+
+  const res = await post('/api/posts/engage',
+    { post_ids: [fresh, pasted, failed], reaction: 'insightful' });
+  const body = res.json();
+  expect(body.added).toBe(3);
+  // Only `fresh` actually got the reaction that was asked for; the other two are reported
+  // apart so the UI can say so instead of implying three insightfuls.
+  expect(body.post_ids).toEqual([fresh]);
+  expect(body.adopted).toEqual([pasted]);
+  expect(body.requeued).toEqual([failed]);
+  expect(body.rejected).toEqual([]);
+  expect(repos.engagements.findByUrn('urn:li:activity:1')!.reaction).toBe('celebrate');
+  expect(repos.engagements.findById(failedEid)!.reaction).toBe('support');
+  expect(repos.engagements.findById(failedEid)!.status).not.toBe('failed');
+  expect(repos.posts.counts()).toEqual({ new: 0, queued: 3, engaged: 0 });
+});
+
+test('bulk engage discards junk ids instead of reading them as post 0', async () => {
+  // Number(null), Number(false) and Number('') are all 0, which is an integer — so an
+  // unfiltered coercion answers `no post 0` three times for input that named no post at all.
+  const res = await post('/api/posts/engage', { post_ids: [null, false, '', 0, -1], reaction: 'like' });
+  expect(res.statusCode).toBe(400);
+  expect(res.json().error).toMatch(/no post ids/);
 });
 
 test('bulk engage reports per-post rejects and still answers 201', async () => {
