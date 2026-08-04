@@ -1765,27 +1765,64 @@ function initCohorts() {
 }
 
 /* ---------- settings ---------- */
+/**
+ * The Settings form's numeric fields, in one place.
+ *
+ * Load, validation and submit all walk this list. The id<->key mapping used to be spelled
+ * out separately in loadSettings() and in the submit handler, which meant a new setting had
+ * to be added in two places and a typo in either was silent.
+ */
+const SETTINGS_FIELDS = [
+  { key: 'weekly_cap', id: 'setWeeklyCap' },
+  { key: 'batch_size', id: 'setBatchSize' },
+  { key: 'batches_per_day', id: 'setBatchesPerDay' },
+  { key: 'msg_weekly_cap', id: 'setMsgWeeklyCap' },
+  { key: 'msg_batch_size', id: 'setMsgBatchSize' },
+  { key: 'msg_batches_per_day', id: 'setMsgBatchesPerDay' },
+  { key: 'reply_checks_per_day', id: 'setReplyChecks' },
+  { key: 'workday_start_hour', id: 'setStart' },
+  { key: 'workday_end_hour', id: 'setEnd' },
+  { key: 'roster_sync_per_day', id: 'setRosterSync' },
+  { key: 'events_per_day', id: 'setEventsPerDay' },
+  { key: 'event_invite_cap', id: 'setEventInviteCap' },
+  { key: 'event_bucket_ceiling', id: 'setEventBucketCeiling' },
+  { key: 'event_run_budget_minutes', id: 'setEventBudget' },
+  { key: 'engage_weekly_cap', id: 'setEngageWeeklyCap' },
+  { key: 'engage_batch_size', id: 'setEngageBatchSize' },
+  { key: 'engage_batches_per_day', id: 'setEngageBatchesPerDay' },
+  { key: 'engage_comment_daily_cap', id: 'setEngageCommentCap' },
+];
+
+/** Ranges from the last GET /api/settings, keyed by setting name. Empty until one lands. */
+let settingRules = {};
+
+/**
+ * Stamp the server's ranges onto the inputs, so index.html holds no limits of its own.
+ *
+ * Tolerates a response carrying no `rules` — an older server, or a test stubbing the
+ * endpoint. The inputs keep type=number, the local check finds no rule and skips, and POST
+ * still rejects anything out of range. Degraded, never broken.
+ */
+function applySettingRules(rules) {
+  settingRules = rules || {};
+  SETTINGS_FIELDS.forEach(({ key, id }) => {
+    const rule = settingRules[key];
+    const input = $(`#${id}`);
+    if (!rule || !input) return;
+    input.min = String(rule.min);
+    input.max = String(rule.max);
+    input.step = '1';
+  });
+}
+
 async function loadSettings() {
   try {
     const s = await api('/api/settings');
-    $('#setWeeklyCap').value = s.weekly_cap ?? '';
-    $('#setBatchSize').value = s.batch_size ?? '';
-    $('#setBatchesPerDay').value = s.batches_per_day ?? '';
-    $('#setMsgWeeklyCap').value = s.msg_weekly_cap ?? '';
-    $('#setMsgBatchSize').value = s.msg_batch_size ?? '';
-    $('#setMsgBatchesPerDay').value = s.msg_batches_per_day ?? '';
-    $('#setReplyChecks').value = s.reply_checks_per_day ?? '';
-    $('#setStart').value = s.workday_start_hour ?? '';
-    $('#setEnd').value = s.workday_end_hour ?? '';
-    $('#setRosterSync').value = s.roster_sync_per_day ?? '';
-    $('#setEventsPerDay').value = s.events_per_day ?? '';
-    $('#setEventInviteCap').value = s.event_invite_cap ?? '';
-    $('#setEventBucketCeiling').value = s.event_bucket_ceiling ?? '';
-    $('#setEventBudget').value = s.event_run_budget_minutes ?? '';
-    $('#setEngageWeeklyCap').value = s.engage_weekly_cap ?? '';
-    $('#setEngageBatchSize').value = s.engage_batch_size ?? '';
-    $('#setEngageBatchesPerDay').value = s.engage_batches_per_day ?? '';
-    $('#setEngageCommentCap').value = s.engage_comment_daily_cap ?? '';
+    applySettingRules(s.rules);
+    SETTINGS_FIELDS.forEach(({ key, id }) => {
+      const input = $(`#${id}`);
+      if (input) input.value = s[key] ?? '';
+    });
     renderApifyKey(s);
     refreshConnections();
     loadLogs();
@@ -2540,28 +2577,11 @@ function initSettings() {
   $('#settingsForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const result = $('#settingsResult');
-    const num = (sel) => { const v = $(sel).value; return v === '' ? undefined : Number(v); };
-    const patch = {
-      weekly_cap: num('#setWeeklyCap'),
-      batch_size: num('#setBatchSize'),
-      batches_per_day: num('#setBatchesPerDay'),
-      msg_weekly_cap: num('#setMsgWeeklyCap'),
-      msg_batch_size: num('#setMsgBatchSize'),
-      msg_batches_per_day: num('#setMsgBatchesPerDay'),
-      reply_checks_per_day: num('#setReplyChecks'),
-      workday_start_hour: num('#setStart'),
-      workday_end_hour: num('#setEnd'),
-      roster_sync_per_day: num('#setRosterSync'),
-      events_per_day: num('#setEventsPerDay'),
-      event_invite_cap: num('#setEventInviteCap'),
-      event_bucket_ceiling: num('#setEventBucketCeiling'),
-      event_run_budget_minutes: num('#setEventBudget'),
-      engage_weekly_cap: num('#setEngageWeeklyCap'),
-      engage_batch_size: num('#setEngageBatchSize'),
-      engage_batches_per_day: num('#setEngageBatchesPerDay'),
-      engage_comment_daily_cap: num('#setEngageCommentCap'),
-    };
-    Object.keys(patch).forEach((k) => patch[k] === undefined && delete patch[k]);
+    const patch = {};
+    SETTINGS_FIELDS.forEach(({ key, id }) => {
+      const v = $(`#${id}`).value;
+      if (v !== '') patch[key] = Number(v);
+    });
     try {
       await api('/api/settings', { method: 'POST', body: patch });
       toast(result, 'Settings saved.');

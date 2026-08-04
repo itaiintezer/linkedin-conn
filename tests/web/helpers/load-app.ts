@@ -34,6 +34,8 @@ export interface AppInternals {
   refreshEnrichment: () => Promise<void>;
   initEnrichment: () => void;
   renderApifyKey: (settings: Record<string, unknown>) => void;
+  loadSettings: () => Promise<void>;
+  initSettings: () => void;
   applyEnrichHaltUi: (status: Record<string, unknown>) => void;
   initSearch: () => void;
   initEvents: () => void;
@@ -73,7 +75,7 @@ export function loadApp(): AppInternals {
   const src = readFileSync(join(WEB_DIR, 'app.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, applyEnrichHaltUi, initSearch, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, init };`,
+    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, loadSettings, initSettings, applyEnrichHaltUi, initSearch, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }
