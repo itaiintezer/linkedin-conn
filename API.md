@@ -851,6 +851,11 @@ every row carries a `source` discriminator as well.
   (`{ "ok": false, "error": "unknown belt: …" }`) rather than a silent fallback to `all` — a
   typo'd belt must never quietly promote every pipeline.
 
+  Not a normal outcome, but listed so a client is not surprised by it: `belt: "event"` can
+  answer `500` with `code: "internal_error"` if the window move fails after pre-flight already
+  passed. That is unreachable by design — pre-flight and the move are synchronous with nothing
+  awaited between them — so treat it as a bug to report, not a condition to handle.
+
   Consecutive sends are still paced by `min_delay_ms`/`max_delay_ms` — a manual batch is not
   a fast path, so this call (and the kick it triggers) can legitimately take minutes. `force:
   true` is set on the sender call, so a manual run may fire outside working hours by design.

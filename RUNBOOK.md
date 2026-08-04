@@ -197,13 +197,15 @@ from someone you hadn't. Treat **Replied** as a floor, and your LinkedIn inbox a
   that moment (also saved under `data/incidents/`). Solve the challenge in the LinkedIn browser
   window, then click **"I've fixed it — re-check & resume."** If the screenshot shows a normal
   page (no challenge), it was a false alarm — just re-check to resume.
-- **One pause, one halt, both conveyors.** Invites and messages are paced separately but they
-  go through the same LinkedIn account, so a captcha or a lost login stops *everything* —
-  including a captcha hit while reading the messaging inbox. Pause and Resume work on both
-  together too; there is no way to pause only one.
+- **One pause, one halt, every conveyor.** Invites, messages, post engagements and event
+  invites are paced separately but they all go through the same LinkedIn account, so a captcha
+  or a lost login stops *everything* — including a captcha hit while reading the messaging
+  inbox. Pause and Resume work on all of them together; there is no way to pause just one.
 - You can **Pause** / **Resume** anytime from the dashboard.
-- The Machine caps sends per week (default 100 invites, 250 messages) and per day to stay well
-  within safe limits.
+- The Machine caps sends per week (default 100 invites, 250 messages, 500 reactions) and per
+  day to stay well within safe limits. Each pipeline is metered against its own cap — a
+  reaction is a far cheaper act than a connection request, which is why the numbers differ so
+  widely.
 - If LinkedIn itself says the **weekly invitation limit** is reached, The Machine pauses with
   that reason (amber banner, not red) and requeues the profile it was about to send. Messages
   stop too until you resume — the account was just told off, so it's not the moment to keep

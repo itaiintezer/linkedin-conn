@@ -413,9 +413,11 @@ Two deliberate limits:
   free of the weekly cap): one read of the messaging inbox, and a messaged contact whose
   conversation's last message isn't yours is marked **replied**. Upgrade-only — a failed or
   empty read changes nothing and doesn't consume the day's slot.
-- Consecutive sends are spaced by `min_delay_ms`/`max_delay_ms` (20–90s by default), in both
-  passes and across the boundary between them. That applies to each conveyor's **Run now**
-  button as well, so a manual batch takes minutes rather than seconds — deliberately.
+- Consecutive sends are spaced by `min_delay_ms`/`max_delay_ms` (20–90s by default), within
+  every sender pass and across the boundaries between them — the gap is about consecutive
+  contacts with LinkedIn, not about which pipeline they came from, so adding a pipeline never
+  opens a hole in it. That applies to each conveyor's **Run now** button as well, so a manual
+  batch takes minutes rather than seconds — deliberately.
 
 ### Reply matching, and what it can't do
 
