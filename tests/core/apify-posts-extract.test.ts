@@ -2,17 +2,21 @@
  * Payload-shape tolerance for the posts actor.
  *
  * `fixtures/apify-posts-sample.json` is SYNTHETIC — it mirrors the field names and nesting
- * observed in a 26,256-item corpus of real actor output at
+ * observed in a 13,128-item corpus of real actor output at
  * `C:\Projects\prospecting\icp_cache_posts` (2026-08-04), but every name, url and id in it is
  * made up, so nothing here depends on a path that only exists on one machine or distributes
  * a real person's data. It covers: a normal post with `author.info`, using the
  * `/posts/<slug>-activity-<id>-<hash>` URL form that 99.6% of real items actually send; a
- * bare reshare via `repostedBy` (no added commentary, content already at the top level,
- * `repostedAt` equal to `postedAt` as real data always has it); a reshare WITH added
- * commentary via `repost` (both with and without the resharer's own words — the latter is
- * OUT OF SCOPE and dropped, see extractPost's doc comment for why); a percent-encoded,
- * non-ASCII profile identity; and array-valued `engagement.reactions` throughout, since
- * that is the real shape and never a bare number.
+ * bare reshare via `repostedBy` — carrying top-level content, because that is what real ones
+ * do, with `repostedAt` equal to `postedAt` as real data always has it — which is OUT OF
+ * SCOPE and dropped; a reshare WITH added commentary via `repost` (kept when the resharer
+ * added words of their own, dropped when they didn't); a percent-encoded, non-ASCII profile
+ * identity; and array-valued `engagement.reactions` throughout, since that is the real shape
+ * and never a bare number.
+ *
+ * The corpus count above is DEDUPED by post id. An earlier reading of the same directory
+ * reported 26,256 — exactly double — because `posts_*.json` and `raw_run_*.json` overlap.
+ * Every ratio quoted in these tests is recomputed against the deduped set.
  *
  * The `postedAt` shape used below (`{timestamp, date, postedAgoShort, postedAgoText}`, with
  * `date` already a full `Z`-suffixed ISO string) is what the corpus actually sends. The
@@ -174,6 +178,28 @@ test('an item with no top-level text is dropped — there is nothing to judge or
     .toBeNull();
 });
 
+test('a BARE reshare is dropped even when it carries top-level content — that content is the original author\'s', () => {
+  // The regression this pins (found in production 2026-08-04). The drop rule used to test
+  // `content`, on the stated premise that a bare reshare carries none. Measured over the
+  // 13,128 unique real items in the corpus, 4,120 of 4,182 bare reshares (98.5%) DO carry
+  // top-level content: the ORIGINAL author's words, with `author` set to that stranger and
+  // only `repostedBy` naming the tracked profile. So the content rule dropped 62 of them and
+  // let 4,120 through — 31% of the feed — where `author_display` prefers the tracked
+  // connection's name and renders a stranger's post under their byline.
+  //
+  // `repostedBy` is the discriminator. Content is not, and never was.
+  const bare: ApifyPost = {
+    ...base,
+    content: 'Roughly 80% of companies that spend a fortune on AI have nothing to show for it.',
+    author: { name: 'Wren Alcott', linkedinUrl: 'https://www.linkedin.com/in/wren-alcott-example' },
+    repostedBy: { name: 'Dana Reingold', linkedinUrl: 'https://www.linkedin.com/in/dana' },
+  };
+  expect(extractPost(bare, 1)).toBeNull();
+  // 244 real items carry BOTH signals — a bare reshare OF someone else's commentary reshare.
+  // Still no words of the tracked profile's own, so still dropped.
+  expect(extractPost({ ...bare, repost: { content: 'Their commentary.' } }, 1)).toBeNull();
+});
+
 test('a reshare-with-commentary that added no words of its own is dropped, not filled in from the nested original', () => {
   // Requiring TOP-LEVEL content is a deliberate scope decision (2026-08-04), not an
   // oversight: a fallback to `repost.content` was measured directly and found to mislabel
@@ -199,9 +225,12 @@ test('is_repost is set from the real repost/repostedBy signals, and defaults to 
   // discriminator despite being one elsewhere, but is still honoured as a harmless
   // forward-compat check.
   expect(extractPost({ ...base, type: 'repost' }, 1)!.is_repost).toBe(1);
-  // The two real shapes: a reshare with added commentary, and a bare reshare.
+  // The one reshare shape that survives extraction: commentary added by the tracked profile.
   expect(extractPost({ ...base, repost: { content: 'x' } }, 1)!.is_repost).toBe(1);
-  expect(extractPost({ ...base, repostedBy: { name: 'x' } }, 1)!.is_repost).toBe(1);
+  // The bare shape never reaches is_repost — it is dropped outright (see the bare-reshare
+  // test above), so `repostedBy` labels nothing in practice and is kept in isRepost only so
+  // the label stays correct if the drop is ever narrowed.
+  expect(extractPost({ ...base, repostedBy: { name: 'x' } }, 1)).toBeNull();
   // Under-label rather than mislabel: an unrecognized shape is not called a repost.
   expect(extractPost({ ...base, type: 'something-new' }, 1)!.is_repost).toBe(0);
 });
@@ -267,6 +296,44 @@ test('attribute counts a content-unusable item separately from an unattributed o
   expect(unusable).toBe(1);
 });
 
+test('attribute counts bare reshares separately from unusable and unattributed items', () => {
+  // Three distinct causes, three counters. `reshares` is a scope decision, `unusable` a
+  // content-policy drop, `unattributed` an actual attribution fault — and only the last one
+  // is worth waking anybody up for.
+  const byUrl = new Map([['https://www.linkedin.com/in/dana', 11]]);
+  const items: ApifyPost[] = [
+    base,
+    { ...base, id: 'urn:li:activity:9',
+      author: { name: 'Wren Alcott', linkedinUrl: 'https://www.linkedin.com/in/wren-alcott-example' },
+      repostedBy: { name: 'Dana Reingold', linkedinUrl: 'https://www.linkedin.com/in/dana' } },
+    { ...base, id: 'urn:li:activity:8', content: undefined },
+  ];
+  const { rows, unattributed, unusable, reshares } = attribute(items, byUrl);
+  expect(rows).toHaveLength(1);
+  expect(reshares).toBe(1);
+  expect(unusable).toBe(1);
+  expect(unattributed).toBe(0);
+});
+
+test('a bare reshare is dropped BEFORE attribution, so a tracked original author never receives it', () => {
+  // `author.linkedinUrl` on a bare reshare is the ORIGINAL author, and it is the fallback
+  // attribution key. If that person is also tracked, resolving attribution first would file
+  // the post under THEM — a post they wrote, yes, but arriving as a row that exists only
+  // because somebody else reshared it, dated to the reshare, and counted against their
+  // profile twice. Dropping on `repostedBy` first removes the hazard outright instead of
+  // relying on `query.targetUrl` always being present to win the race.
+  const byUrl = new Map([['https://www.linkedin.com/in/wren-alcott-example', 33]]);
+  const { rows, reshares, unattributed } = attribute([{
+    ...base,
+    query: null,
+    author: { name: 'Wren Alcott', linkedinUrl: 'https://www.linkedin.com/in/wren-alcott-example' },
+    repostedBy: { name: 'Dana Reingold', linkedinUrl: 'https://www.linkedin.com/in/dana' },
+  }], byUrl);
+  expect(rows).toEqual([]);
+  expect(reshares).toBe(1);
+  expect(unattributed).toBe(0);
+});
+
 test('attribute matches a targetUrl that differs only by trailing slash or case', () => {
   const byUrl = new Map([['https://www.linkedin.com/in/dana', 11]]);
   const { rows } = attribute(
@@ -284,10 +351,13 @@ test('a normal post fixture extracts author_headline from `info` and reaction_co
   expect(out.is_repost).toBe(0);
 });
 
-test('a bare reshare fixture (repostedBy, no repost) keeps its top-level content and is flagged as a repost', () => {
-  const out = extractPost(byLabel('bare_reshare_with_content'), 1)!;
-  expect(out.content).toContain('proud to be recognized');
-  expect(out.is_repost).toBe(1);
+test('a bare reshare fixture (repostedBy, no repost) is dropped however much top-level content it carries', () => {
+  // The fixture is shaped exactly like real data: `author` is the company that actually wrote
+  // the post, `repostedBy` is the tracked profile, and the top-level content is the company's
+  // words — "proud to be recognized" is Northwind Security talking about itself, not Jordan
+  // Blake. This test asserted the item was KEPT until 2026-08-04, which is precisely how a
+  // stranger's post reached the feed under a tracked profile's byline.
+  expect(extractPost(byLabel('bare_reshare_with_content'), 1)).toBeNull();
 });
 
 test("a reshare-with-commentary fixture keeps the resharer's own words when present", () => {
@@ -324,7 +394,7 @@ test('a percent-encoded, non-ASCII profile identity round-trips through attribut
 });
 
 test("a fixture item's linkedinUrl uses the /posts/<slug>-activity-<id>-<hash> form real data actually sends", () => {
-  // 26,162 of 26,256 real items (99.64%) use this form; /feed/update/ is the rare 94. It
+  // 13,081 of 13,128 real items (99.64%) use this form; /feed/update/ is the rare 47. It
   // exercises normalizePostUrl's POSTS_SLUG_RE path (src/core/url.ts) rather than the
   // simpler direct-URN path every OTHER fixture item happens to take.
   const out = extractPost(byLabel('normal_post'), 1)!;
@@ -339,10 +409,12 @@ test('every row extractPost produces actually inserts against the real posts CHE
   const rows = fx
     .map((f) => extractPost(f, profile.id))
     .filter((r): r is NonNullable<typeof r> => r !== null);
-  // Sanity: 2 of the 6 fixture items are genuinely unusable (no top-level content, nothing
-  // recoverable in scope) — the rest insert cleanly.
-  expect(rows.length).toBe(4);
+  // Sanity: 3 of the 6 fixture items are dropped before insert — two carry no top-level
+  // content and nothing recoverable in scope, and one is a bare reshare (out of scope even
+  // though it DOES carry content, since the content is the original author's). The rest
+  // insert cleanly.
+  expect(rows.length).toBe(3);
   const { added, rejected } = repos.posts.upsertMany(rows, new Date().toISOString());
   expect(rejected).toBe(0);
-  expect(added).toBe(4);
+  expect(added).toBe(3);
 });

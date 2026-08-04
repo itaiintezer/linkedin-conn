@@ -48,6 +48,12 @@ export interface PostsSweepResult {
   /** Carried no text anywhere, so there is nothing to judge. ~9% of real payloads; a
    *  content policy rather than a fault, which is why it is counted separately. */
   unusable: number;
+  /** Bare reshares — the profile passed on someone else's post without adding words of their
+   *  own. Out of scope by decision, and ~31% of real payloads, so this is normally the
+   *  largest number in the result. Counted apart from `unusable` because it is a scope
+   *  decision, not a property of the text: these items DO carry content, it just belongs to
+   *  the original author. See `isBareReshare`. */
+  reshares: number;
   pruned: number;
   /** True when every run succeeded. Only a clean pass stamps posts_swept_at. */
   clean: boolean;
@@ -134,7 +140,7 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
   const nowIso = now.toISOString();
   const result: PostsSweepResult = {
     runs: 0, profilesSwept: 0, postsAdded: 0, postsRejected: 0, unattributed: 0,
-    unusable: 0, pruned: 0, clean: true,
+    unusable: 0, reshares: 0, pruned: 0, clean: true,
   };
 
   // `batchSize` comes from operator-editable settings, and a settings write is not
@@ -219,21 +225,28 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
         try {
           const items = await opts.client.fetchPosts(batch.map((m) => m.url),
             { maxPosts: opts.maxPosts, ...window });
-          // Two DIFFERENT causes, reported separately on purpose: `unattributed` means the
+          // THREE different causes, reported separately on purpose. `unattributed` means the
           // item matched no tracked profile (an attribution or normalization problem worth
-          // investigating), while `unusable` means it carried no text anywhere (a content
-          // policy, ~9% of real payloads). Folding them together sends whoever debugs a
-          // lossy sweep hunting through URL normalization that is working fine.
-          const { rows, unattributed, unusable } = attribute(items, byUrl);
+          // investigating); `unusable` means it carried no text anywhere (~9% of real
+          // payloads); `reshares` means it was a bare reshare, out of scope by decision (~31%).
+          // Folding them together sends whoever debugs a lossy sweep hunting through URL
+          // normalization that is working fine — and folding the last two together is what
+          // hid a real bug, because a single line reading "carried no text (bare reshares)"
+          // read as proof reshares were being skipped while 98.5% of them reached the feed.
+          const { rows, unattributed, unusable, reshares } = attribute(items, byUrl);
           result.unattributed += unattributed;
           result.unusable += unusable;
+          result.reshares += reshares;
           if (unattributed > 0) {
             log.warn('posts', 'items matched no tracked profile', { count: unattributed, window: label });
           }
+          if (reshares > 0) {
+            // Expected and routine, hence info not warn. Normally the largest of the three.
+            log.info('posts', 'bare reshares skipped — no words of the profile\'s own',
+              { count: reshares, window: label });
+          }
           if (unusable > 0) {
-            // Expected and routine, hence info not warn: this is mostly bare reshares, which
-            // are deliberately out of scope. A large number here is normal, not a fault.
-            log.info('posts', 'items carried no text of the profile\'s own (bare reshares) — skipped',
+            log.info('posts', 'items carried no text at all — skipped',
               { count: unusable, window: label });
           }
           // A batch where EVERY returned item was unattributable is not a quiet week — it is
@@ -338,7 +351,8 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
     log.info('posts', 'sweep finished', {
       runs: result.runs, profiles: result.profilesSwept, added: result.postsAdded,
       rejected: result.postsRejected, unattributed: result.unattributed,
-      unusable: result.unusable, pruned: result.pruned, clean: result.clean,
+      unusable: result.unusable, reshares: result.reshares, pruned: result.pruned,
+      clean: result.clean,
     });
     return result;
   } finally {
