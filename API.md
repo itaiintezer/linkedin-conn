@@ -751,7 +751,7 @@ and **nothing in the patch is applied — not even the keys that were fine.** Th
 write to reason about: either every key in the request took effect, or none did. Retry with a
 corrected patch rather than assuming the good half already landed.
 
-All 23 keys below take whole numbers only; a non-integer or out-of-range value fails the same
+All 28 keys below take whole numbers only; a non-integer or out-of-range value fails the same
 way. `min` and `max` are both inclusive.
 
 | Key | Range | Key | Range |
@@ -763,11 +763,20 @@ way. `min` and `max` are both inclusive.
 | `event_invite_cap` | 1–1000 | `event_bucket_ceiling` | 1–50 |
 | `event_run_budget_minutes` | 1–120 | `engage_weekly_cap` | 0–1000 |
 | `engage_batch_size` | 1–50 | `engage_batches_per_day` | 0–12 |
-| `engage_comment_daily_cap` | 0–50 | `workday_start_hour` | 0–23 |
+| `engage_comment_daily_cap` | 0–50 | `posts_sweep_per_day` | 0–4 |
+| `posts_max_per_sweep` | 1–25 | `posts_retention_days` | 1–365 |
+| `tracked_profile_cap` | 1–1000 | `workday_start_hour` | 0–23 |
 | `workday_end_hour` | 0–23 | `roster_sync_per_day` | 1–24 |
 | `min_delay_ms` | 5000–600000 | `max_delay_ms` | 5000–600000 |
 | `enrich_ttl_days` | 1–3650 | `enrich_concurrency` | 1–32 |
-| `event_shard_threshold` | 1–1000 | | |
+| `event_shard_threshold` | 1–1000 | `posts_sweep_batch_size` | 1–1000 |
+
+The five `posts_*` / `tracked_*` keys are the only ones whose ceiling bounds **money** rather
+than LinkedIn risk: they multiply into a pay-per-result Apify bill (profiles × posts-per-profile
+× sweeps-per-day) that nothing downstream re-checks, because the sweep runs unattended. In
+particular `posts_max_per_sweep` **cannot be 0** — it reaches the actor as `maxPosts`, where 0
+means *all posts, ever*, which is also what an operator types to mean "off". `posts_sweep_per_day`
+is the one that may be 0; it only gates the tick, so 0 means "never sweep automatically".
 
 Two rules also compare a key against another one, not just against its own range:
 
@@ -812,6 +821,262 @@ Not every allow-listed key is range-checked — these seven pass through unvalid
 `{ "<key>": { "label", "min", "max" } }`. The dashboard's Settings form reads it to configure
 each input's bounds rather than hardcoding them twice. `label` is the operator-facing name for
 the key and is what appears verbatim inside `message` above.
+
+## Posts
+
+The fifth pipeline, and the only one that discovers its own work rather than waiting to be
+told: track a set of profiles, and their recent posts are pulled in automatically by a sweep
+so you can react to (and optionally comment on) the ones worth engaging. Sweeping and acting
+are two different steps — this section covers both, in the order the feed uses them.
+
+**`tracked_profiles`** is the watch list. Untracking (`DELETE /api/tracked-profiles/:id`) is
+soft — `active` goes to 0 — rather than a real delete, because deleting the row would orphan
+every post already stored against it. It is capped at `tracked_profile_cap` (default 200);
+see the reject table below for what happens at the boundary.
+
+**`posts`** is one row per post ever swept, keyed on the post's URN exactly like
+`engagements.post_urn` — `INSERT OR IGNORE` on that key is what makes re-sweeping a profile
+idempotent with no cursor to maintain: a post already stored is silently skipped rather than
+duplicated. A post is **not** itself a queued action; `engagement_id` links it to a row in
+`engagements` (the pipeline documented above) once you ask to engage with it, and everything
+about pacing, reactions, comments and retries from that section applies unchanged.
+
+### POST /api/tracked-profiles
+Start tracking one or more profiles. Two input shapes:
+
+```json
+{ "profile_urls": ["https://www.linkedin.com/in/jane-doe/", "https://www.linkedin.com/in/john-smith/"] }
+```
+```json
+{ "text": "Worth watching: https://www.linkedin.com/in/jane-doe/ and linkedin.com/in/john-smith" }
+```
+
+- `profile_urls` — an array (the Connections table's "Track posts" button sends this shape);
+  stored with `source: "search"`.
+- `text` — a pasted blob; profile URLs are extracted out of it, same extractor as the invite
+  paste box. Stored with `source: "urls"`.
+
+Re-adding a URL that was previously untracked **reactivates** it rather than erroring — the
+old row, and its post history, comes back instead of a second row being created — and that
+reactivation consumes a cap slot exactly like a fresh add.
+
+Always `201`, even when every URL was rejected — like the bulk engagement endpoints, the
+per-item verdicts are the payload, not the status code:
+
+```json
+{ "added": 2, "ids": [14, 15],
+  "rejected": [ { "profile_url": "not a url", "reason": "invalid_url",
+                  "message": "not a LinkedIn profile URL: not a url" } ] }
+```
+
+| `reason` | Meaning |
+|---|---|
+| `invalid_url` | not a recognizable LinkedIn profile URL (or empty) |
+| `already_tracked` | already active on the watch list; the message names its id |
+| `cap_reached` | `tracked_profile_cap` is already met |
+
+**The cap fills partially — it does not reject the whole batch.** Each successful add
+consumes a slot before the next item is checked, so a batch straddling the cap stops exactly
+there: 180 already tracked plus 50 submitted **adds 20 and rejects the remaining 30** as
+`cap_reached`, rather than accepting none or all fifty.
+
+```
+curl -s http://localhost:4400/api/tracked-profiles \
+  -H 'content-type: application/json' \
+  -d '{"profile_urls":["https://www.linkedin.com/in/jane-doe/"]}'
+```
+
+### GET /api/tracked-profiles
+The watch list, plus how many posts each profile has yielded:
+
+```json
+{ "tracked": [ { "id": 14, "profile_url": "https://www.linkedin.com/in/jane-doe",
+                  "connection_id": 208, "full_name": null, "headline": null,
+                  "source": "search", "active": 1, "last_swept_at": "2026-08-04T06:00:11.000Z",
+                  "last_sweep_error": null, "created_at": "…", "post_count": 6 } ],
+  "cap": 200, "swept_at": "2026-08-04T06:00:11.000Z" }
+```
+
+`post_count` is unconditional — it includes posts already engaged with, not just fresh ones,
+because it is a yield figure for the operator, not a work-queue depth. `swept_at` is the
+app-wide gate stamp (`app_state.posts_swept_at`), set only on a clean pass; it can trail an
+individual profile's own `last_swept_at` if that profile's sweep succeeded while another one
+in the same pass failed.
+
+```
+curl -s http://localhost:4400/api/tracked-profiles
+```
+
+### DELETE /api/tracked-profiles/:id
+Untrack. Soft — `active` goes to 0; the row and its posts stay. `404` if unknown.
+
+```
+curl -s -X DELETE http://localhost:4400/api/tracked-profiles/14
+```
+
+### GET /api/posts?filter=new|queued|engaged&limit=N&before=cursor
+One page of the feed, newest post first, plus everything the screen's header needs in one
+round trip.
+
+`filter` (default `new`) is a **partition**: every post on an active tracked profile lands in
+**exactly one** of the three chips, never none and never two.
+
+- **`engaged`** — the linked engagement has a `reacted_at`. This outranks `status`, because a
+  reaction on LinkedIn is a fact and a status is only bookkeeping about the task that produced
+  it — the two can disagree, which is exactly the case below.
+- **`new`** — no engagement at all, **or** one whose status ended `failed` or `skipped`
+  **without** having reacted. That second clause is what makes such a post *retryable from the
+  feed* — see `POST /api/posts/:id/engage` below.
+- **`queued`** — an engagement that has not reacted and is **not** `failed`/`skipped`. That
+  includes `needs_attention`: a human still has to act on it, so it counts as in-flight, not
+  as work that has stalled out.
+
+**A post whose reaction landed but whose comment then failed shows as `engaged`, not `new`.**
+The reaction is already live on LinkedIn — the feed must not offer to queue it again (doing so
+would just `409` on the duplicate URN). Fixing the comment is
+`POST /api/engagements/:id/retry` (see Post engagements above), reachable from the Attention
+list.
+
+An unrecognized `filter` is `400` rather than silently falling back to `new` — an empty
+result from a misspelled filter should look like a mistake, not a real answer.
+
+`limit` defaults to 25, clamps to 100. `before` is the opaque `next_cursor` from the previous
+page — keyset pagination, not offset, because the sweep inserts rows between requests and an
+offset would skip or repeat posts as the set shifts underneath the reader. **A malformed
+`before` is a `400`.**
+
+```json
+{ "posts": [ { "id": 37, "post_urn": "urn:li:activity:…", "post_url": "…",
+               "tracked_profile_id": 14, "author_name": null, "author_headline": null,
+               "content": "…", "posted_at": "2026-08-04T05:40:00.000Z", "is_repost": 0,
+               "reaction_count": 12, "comment_count": 3, "engagement_id": null,
+               "first_seen_at": "2026-08-04T06:00:11.000Z", "raw_json": "…", "created_at": "…",
+               "engagement_status": null, "engagement_reaction": null,
+               "engagement_reacted_at": null, "author_display": "Jane Doe",
+               "headline_display": "VP Security @ Acme" } ],
+  "filter": "new",
+  "counts": { "new": 4, "queued": 1, "engaged": 9 },
+  "next_cursor": "2026-08-04T05:40:00.000Z|37",
+  "tracked": 12,
+  "swept_at": "2026-08-04T06:00:11.000Z",
+  "halt": { "halted": 0, "reason": null, "detail": null, "at": null },
+  "cost_30d": { "posts": 214, "usd": 0.428 } }
+```
+
+`counts` is the same total partition as `filter`, computed once and returned alongside the
+page so the chip labels don't need a second request. `halt` rides along for the same reason —
+the screen renders its red banner without a second round trip. `cost_30d` is **informational
+only, with no enforcement** (a spend ceiling was explicitly declined): it is
+`{ posts stored in the trailing 30 days } × $0.002`, the conservative end of Apify's
+pay-per-result pricing for this actor.
+
+```
+curl -s 'http://localhost:4400/api/posts?filter=new&limit=25'
+```
+
+### POST /api/posts/:id/engage
+Queue one post's reaction (and optional comment) from the feed. `404` if the post is unknown.
+
+```json
+{ "reaction": "insightful", "comment": "Useful framing — thanks for writing it up." }
+```
+
+Both fields are optional and behave exactly as on `POST /api/engagements`: `reaction`
+defaults to `like`; `comment` is literal text, capped at 1250 characters, and an all-
+whitespace comment is stored as no comment at all. Every validation judgement — the six
+reactions, the comment length — is delegated to the same `createEngagement` the main
+engagements endpoint uses, so the two rule sets never drift apart.
+
+Three outcomes:
+
+- **Fresh queue (`201`)** — no engagement existed for this post yet:
+  `{ "post_id": 37, "engagement": { "id": 41, "…": "…" } }`.
+- **Re-queue (`201`, `requeued: true`)** — the post already had a **retryable** engagement
+  (not reacted, and `failed`/`skipped`) — the same condition that put it in the feed's `new`
+  chip in the first place. **The original reaction and comment are kept**: a queued task is
+  immutable after creation, so this re-drives the existing task rather than overwriting its
+  text with whatever (or nothing) this request happened to carry.
+  `{ "post_id": 37, "engagement": { … }, "requeued": true }`.
+- **Conflict (`409`)** — the post already has a **non-retryable** engagement (reacted, or
+  still in flight): `{ "error": "already reacted as engagement 41 (failed) — use retry to
+  re-run the comment" }` or `{ "error": "already queued as engagement 41 (scheduled)" }`.
+
+```
+curl -s http://localhost:4400/api/posts/37/engage \
+  -H 'content-type: application/json' \
+  -d '{"reaction":"insightful","comment":"Useful framing."}'
+```
+
+### POST /api/posts/engage
+Bulk: one reaction across several selected posts.
+
+```json
+{ "post_ids": [37, 38, 41], "reaction": "celebrate" }
+```
+
+**There is no `comment` field, and it is not an oversight.** Identical comment text stamped
+across several posts under your own name is a recognizable spam pattern, and
+`engage_comment_daily_cap` defaults to 10/day — one careless bulk click would spend the day's
+entire comment budget looking automated. Comments stay per-post, through
+`POST /api/posts/:id/engage` above.
+
+`reaction` is validated **once**, up front, for the whole batch — a bad reaction is one
+mistake, and half-applying it would leave real queued rows for the operator to undo by hand.
+Absent defaults to `like`.
+
+Per post, the same three outcomes as the single-post route apply — a re-selected retryable
+post is **re-queued and keeps its own existing reaction**, not switched to whatever this
+request asked for:
+
+```json
+{ "added": 2, "post_ids": [38], "adopted": [], "requeued": [37], "rejected": [
+    { "post_id": 41, "reason": "duplicate", "message": "already reacted as engagement 9 (failed) — use retry to re-run the comment" } ] }
+```
+
+`post_ids` is the **freshly created** set only. `adopted` and `requeued` are reported under
+separate keys precisely so a caller can tell "created" from "an existing task was linked or
+re-driven" — folded together, a re-selected `celebrate` post that comes back re-queued under
+a newly-chosen `insightful` would look exactly like a fresh create, and only a feed refetch
+would show otherwise. `added` is the one number to read out loud:
+`post_ids.length + adopted.length + requeued.length`.
+
+Always `201`; the per-item verdicts are the payload, same contract as `POST /api/engagements`.
+No valid post ids in the body is `400`.
+
+```
+curl -s http://localhost:4400/api/posts/engage \
+  -H 'content-type: application/json' \
+  -d '{"post_ids":[37,38,41],"reaction":"celebrate"}'
+```
+
+### POST /api/posts/sweep-now
+Sweep every tracked profile immediately, ignoring the once-per-day slot and — unlike the
+scheduled pass — **ignoring `paused`** too.
+
+**Long on purpose: it answers only after the whole Apify run finishes. Do not retry it.**
+Same shape as the per-belt "Run now".
+
+`409` if a sweep is already running (the worker refuses re-entry itself; this is the readable
+version of that refusal, so an impatient double-click gets an explanation instead of a raw
+500). `400` if nothing is tracked, or if no Apify API key is configured.
+
+**This is also the operator's way out of a latched halt.** A manual sweep is read as "try
+again", so it clears `posts_halted` (and its reason/detail) *before* running — a fresh attempt
+gets a clean slate rather than immediately re-latching on the strength of the previous
+failure.
+
+```json
+{ "runs": 1, "profilesSwept": 12, "postsAdded": 6, "postsRejected": 0, "unattributed": 0,
+  "unusable": 2, "pruned": 3, "clean": true }
+```
+
+`unusable` posts (bare reshares carrying no text of the profile's own) and `unattributed`
+items (matched no tracked profile) are both routine and non-fatal; `clean: false` is what
+actually means "something needs attention" — check the log.
+
+```
+curl -s -X POST http://localhost:4400/api/posts/sweep-now
+```
 
 ## Queue
 

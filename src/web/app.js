@@ -1799,6 +1799,10 @@ const SETTINGS_FIELDS = [
   { key: 'engage_batch_size', id: 'setEngageBatchSize' },
   { key: 'engage_batches_per_day', id: 'setEngageBatchesPerDay' },
   { key: 'engage_comment_daily_cap', id: 'setEngageCommentCap' },
+  { key: 'posts_sweep_per_day', id: 'setPostsSweepPerDay' },
+  { key: 'posts_max_per_sweep', id: 'setPostsMaxPerSweep' },
+  { key: 'posts_retention_days', id: 'setPostsRetentionDays' },
+  { key: 'tracked_profile_cap', id: 'setTrackedProfileCap' },
   { key: 'workday_start_hour', id: 'setStart' },
   { key: 'workday_end_hour', id: 'setEnd' },
   { key: 'roster_sync_per_day', id: 'setRosterSync' },
@@ -1843,8 +1847,8 @@ function applySettingRules(rules) {
 /**
  * Show or clear one field's error message.
  *
- * The <p> is created on demand rather than shipped empty in index.html — eighteen unused
- * error slots would be eighteen more things to keep in step with SETTINGS_FIELDS.
+ * The <p> is created on demand rather than shipped empty in index.html — one unused error slot
+ * per field would be that many more things to keep in step with SETTINGS_FIELDS.
  */
 function setFieldError(input, message) {
   const field = input.closest('.field');
@@ -1951,8 +1955,8 @@ async function loadSettings() {
     loadLogs();
   } catch (_) {
     // Not ignorable any more. The inputs carry no min/max of their own and an empty box is
-    // now a validation failure, so a failed GET leaves 18 blanks that Save would report as
-    // 18 mistakes the operator never made. Name the real cause instead.
+    // now a validation failure, so a failed GET leaves every box blank and Save reports them
+    // all as mistakes the operator never made. Name the real cause instead.
     toast($('#settingsResult'),
       'Could not load your settings. The boxes below are empty because nothing loaded, '
       + 'not because your settings are gone — reload the page before saving anything.', true);
@@ -2040,6 +2044,12 @@ function buildSearchQuery() {
    result set) but is wiped by a new search — a selection made under a filter you've since
    changed is exactly how the wrong people get queued. */
 const selected = new Set();
+
+/* Exposed for the jsdom harness, which seeds a selection directly rather than clicking its way
+   through a rendered results table. It hands back the REAL Set on purpose: there is exactly one
+   selection store behind all three buttons in that bar, and a test that could not reach it
+   would have to invent a second one. */
+function searchSelection() { return selected; }
 
 function connRow(r) {
   const slug = slugFromUrl(r.profile_url);
@@ -2421,6 +2431,32 @@ function initSearch() {
   $('#selectionClear')?.addEventListener('click', clearSelection);
   $('#selectionAdd')?.addEventListener('click', () => { void openCampaignDialog(); });
   $('#selectionEvent')?.addEventListener('click', () => { void openEventDialog(); });
+
+  $('#selectionTrack')?.addEventListener('click', async (ev) => {
+    // `selected` is the module-level Set the other two buttons already read (app.js:1879,
+    // spread the same way in submitEventInvite). No second selection store.
+    const urls = [...selected];
+    if (urls.length === 0) return;
+    const btn = ev.currentTarget;
+    const result = $('#selectionResult');
+    btn.disabled = true;
+    try {
+      // Tracking is not a send: it queues nothing in front of anyone, it only decides whose
+      // posts get scraped. So no confirmation dialog, unlike "Add to message campaign".
+      const res = await api('/api/tracked-profiles', { method: 'POST', body: { profile_urls: urls } });
+      const rejects = Array.isArray(res?.rejected) ? res.rejected : [];
+      // Named, not counted: "1 skipped" leaves the operator guessing who and why — the usual
+      // reason is the tracking cap, which they have to act on.
+      toast(result, rejects.length === 0
+        ? `Now tracking posts for ${plural(res.added, 'person', 'people')}.`
+        : `Tracking ${fmtInt(res.added)} · ${fmtInt(rejects.length)} skipped: ${rejects[0].message}`,
+      res.added === 0);
+    } catch (err) {
+      toast(result, `Could not track: ${err.message}`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
   $('#evtClose')?.addEventListener('click', closeEventDialog);
   $('#evtCampaign')?.addEventListener('change', syncEventDialog);
   $('#evtConfirm')?.addEventListener('click', () => { void submitEventInvite(); });
@@ -3133,6 +3169,10 @@ function init() {
   initConnections();
   initEnrichment();
   initSearch();
+  // posts.js is a separate script tag. Guarded so a load failure costs the Posts screen and
+  // nothing else: an unguarded call would throw out of init() and leave the whole dashboard —
+  // including the live queue's controls — unwired.
+  if (typeof initPosts === 'function') initPosts();
   initAttention();
   initEvents();
   initLogViewer();

@@ -2,6 +2,7 @@ import type { DB } from './database.js';
 import type {
   Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind,
   Connection, ConnectionInput, ConnectionSource, EnrichStatus, EnrichedProfile, EnrichHaltReason,
+  PostsHaltReason,
 } from '../types.js';
 import { firstNameFrom } from '../core/first-name.js';
 import type { ReservationWindow } from '../core/reservations.js';
@@ -9,6 +10,7 @@ import {
   EventCampaignRepo, EventBucketRepo, EventInviteeRepo, EventRunRepo,
 } from './event-repos.js';
 import { EngagementRepo } from './engagement-repo.js';
+import { PostRepo, TrackedProfileRepo } from './posts-repos.js';
 
 const PROFILE_COLUMNS = new Set([
   'first_name', 'full_name', 'custom_message', 'attempts', 'last_error', 'skip_reason',
@@ -28,6 +30,8 @@ const SETTINGS_COLUMNS = new Set([
   'event_run_budget_minutes', 'event_shard_threshold',
   'engage_weekly_cap', 'engage_batch_size', 'engage_batches_per_day',
   'engage_comment_daily_cap',
+  'posts_sweep_per_day', 'posts_max_per_sweep', 'posts_sweep_batch_size',
+  'posts_retention_days', 'tracked_profile_cap',
 ]);
 
 export class CohortRepo {
@@ -224,6 +228,25 @@ export class AppStateRepo {
     this.db.prepare(
       'UPDATE app_state SET enrich_halted = 0, enrich_halt_reason = NULL, enrich_halt_detail = NULL, enrich_halted_at = NULL WHERE id = 1',
     ).run();
+  }
+
+  /** Latch the posts sweep off. An ERROR latch, not a spend cap. */
+  haltPosts(reason: PostsHaltReason, detail: string, atIso: string): void {
+    this.db.prepare(
+      'UPDATE app_state SET posts_halted = 1, posts_halt_reason = ?, posts_halt_detail = ?, posts_halted_at = ? WHERE id = 1',
+    ).run(reason, detail, atIso);
+  }
+
+  /** Clear the latch entirely — a half-cleared halt would render a stale reason. */
+  clearPostsHalt(): void {
+    this.db.prepare(
+      'UPDATE app_state SET posts_halted = 0, posts_halt_reason = NULL, posts_halt_detail = NULL, posts_halted_at = NULL WHERE id = 1',
+    ).run();
+  }
+
+  /** Stamped ONLY on a clean sweep, so a failed pass is retried by the next tick. */
+  markPostsSwept(atIso: string): void {
+    this.db.prepare('UPDATE app_state SET posts_swept_at = ? WHERE id = 1').run(atIso);
   }
 
   /** Increment the consecutive-failure counter and return the new value. */
@@ -654,6 +677,10 @@ export class Repos {
   eventRuns: EventRunRepo;
   /** Post engagements — the fourth pipeline. */
   engagements: EngagementRepo;
+  /** Posts feed — the tracked set. */
+  trackedProfiles: TrackedProfileRepo;
+  /** Posts feed — the swept posts. */
+  posts: PostRepo;
   constructor(public db: DB) {
     this.cohorts = new CohortRepo(db);
     this.profiles = new ProfileRepo(db);
@@ -667,5 +694,7 @@ export class Repos {
     this.eventInvitees = new EventInviteeRepo(db);
     this.eventRuns = new EventRunRepo(db);
     this.engagements = new EngagementRepo(db);
+    this.trackedProfiles = new TrackedProfileRepo(db);
+    this.posts = new PostRepo(db);
   }
 }

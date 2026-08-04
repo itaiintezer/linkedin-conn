@@ -59,6 +59,33 @@ export const SETTING_RULES: Record<string, SettingRule> = {
   // Public and attributable, so deliberately an order of magnitude below reactions.
   engage_comment_daily_cap: { label: 'Comments / day', min: 0, max: 50 },
 
+  // --- Posts feed ---
+  // The only group here bounded by money rather than by what LinkedIn tolerates. The sweep
+  // buys posts from Apify per result, and these four multiply together into the bill:
+  // profiles × posts-per-profile × sweeps-per-day. Nothing downstream notices an expensive
+  // setting — the sweep runs unattended — so the ceiling is the whole safeguard.
+  //
+  // `posts_max_per_sweep` is the one that has to be right. It reaches the actor as `maxPosts`,
+  // where **0 means "all posts, ever"** — and 0 is exactly what an operator types to mean
+  // "off". A single save would turn a ~$1.60/month sweep into an unbounded scrape of every
+  // tracked profile's entire posting history, repeating daily until someone reads the invoice.
+  // A `min` of 1 is what makes that untypable; `HttpApifyPostsClient` and the run's `maxItems`
+  // ceiling are the two layers behind it.
+  //
+  // Sweeps / day is the one posts setting whose floor is 0: it only gates the tick, so
+  // "never sweep automatically" is a legitimate — and free — choice.
+  posts_sweep_per_day: { label: 'Sweeps / day (posts)', min: 0, max: 4 },
+  // 200 profiles × 3 posts × 30 days ≈ $36/mo at the top of the window, so the default is 3.
+  // The actor substitutes its own default of 10 for a missing value; a ceiling above that
+  // stays honest about what the actor will do while still bounding a mistyped digit.
+  posts_max_per_sweep: { label: 'Posts / profile / sweep', min: 1, max: 25 },
+  // Costs disk, not money — engaged posts are kept regardless. A year is well past the point
+  // where an un-engaged post is still worth reacting to.
+  posts_retention_days: { label: 'Keep posts for (days)', min: 1, max: 365 },
+  // The outer multiplier on every sweep. 1000 matches the event picker's row cap for
+  // consistency; at that many profiles the Apify bill binds long before the code does.
+  tracked_profile_cap: { label: 'Tracked profile cap', min: 1, max: 1000 },
+
   // --- Both engines ---
   workday_start_hour: { label: 'Workday start hour', min: 0, max: 23 },
   workday_end_hour: { label: 'Workday end hour', min: 0, max: 23 },
@@ -73,6 +100,10 @@ export const SETTING_RULES: Record<string, SettingRule> = {
   enrich_concurrency: { label: 'Enrichment concurrency', min: 1, max: 32 },
   // Above the picker's 1000-row cap the threshold could never trigger.
   event_shard_threshold: { label: 'Event shard threshold', min: 1, max: 1000 },
+  // A safety valve rather than a dial (see README): how many profiles ride in one Apify run.
+  // The actor documents no maximum on `targetUrls`, so this ceiling matches
+  // `tracked_profile_cap`'s — one run can always cover the largest legal roster.
+  posts_sweep_batch_size: { label: 'Posts sweep batch size', min: 1, max: 1000 },
 };
 
 export interface SettingFailure { key: string; message: string; }

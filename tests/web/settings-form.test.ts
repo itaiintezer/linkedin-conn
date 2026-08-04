@@ -22,16 +22,21 @@ beforeEach(() => {
 afterEach(() => { globalThis.fetch = realFetch; });
 
 /**
- * A settings payload carrying a value for ALL eighteen form fields, and the real rule table.
+ * A settings payload carrying a value for EVERY form field, and the real rule table.
  *
- * All eighteen, not just the keys under assertion: an empty box is a validation failure (a
- * number input reports '' for text it can't parse), so a partial payload would leave thirteen
- * fields empty and every submit test would drown in unrelated failures. The values below are
- * the schema.sql defaults, so this is also what a fresh install actually sends.
+ * Every one, not just the keys under assertion: an empty box is a validation failure (a
+ * number input reports '' for text it can't parse), so a partial payload would leave the rest
+ * empty and every submit test would drown in unrelated failures. The values below are the
+ * schema.sql defaults, so this is also what a fresh install actually sends.
+ *
+ * Kept exhaustive by `every form field has a value in the SETTINGS fixture` below rather than
+ * by this comment naming a count — the count went stale the first time a field was added
+ * (the Posts feed group), and a stale number here reads as reassurance while four boxes load
+ * blank.
  *
  * `rules` is SETTING_RULES itself rather than a hand-copied subset, matching the server —
- * GET /api/settings spreads the same table (server.ts:1008). A hand-written copy here could
- * drift from the real ceilings and quietly assert the wrong sentence.
+ * GET /api/settings spreads the same table. A hand-written copy here could drift from the
+ * real ceilings and quietly assert the wrong sentence.
  */
 const SETTINGS = {
   weekly_cap: 120, batch_size: 5, batches_per_day: 4,
@@ -41,8 +46,18 @@ const SETTINGS = {
   event_run_budget_minutes: 20,
   engage_weekly_cap: 500, engage_batch_size: 15, engage_batches_per_day: 6,
   engage_comment_daily_cap: 10,
+  posts_sweep_per_day: 1, posts_max_per_sweep: 3, posts_retention_days: 30,
+  tracked_profile_cap: 200,
   rules: SETTING_RULES,
 };
+
+/* The guard the comment above used to be. A field absent from the fixture loads blank, which
+   is a validation failure, which turns every submit test in this file into "Fix N settings"
+   noise that points nowhere near the actual cause. */
+test('every form field has a value in the SETTINGS fixture', () => {
+  const missing = app.SETTINGS_FIELDS.filter(({ key }) => !(key in SETTINGS));
+  expect(missing.map((f) => f.key)).toEqual([]);
+});
 
 /**
  * Route every endpoint loadSettings() reaches, not just /api/settings — it fans out to
@@ -87,10 +102,10 @@ test('a response with no rules still populates the form', async () => {
  * The three below check the map itself rather than a code path through it.
  *
  * They exist because the behavioural tests above barely touch it: they name four fields, and
- * both walkers skip an input they can't find (`if (!input) return`). A mistyped id in any of
- * the other fourteen entries is therefore invisible — the setting silently stops loading and
- * saving, and every test still passes. These pin all 18 in both directions instead, the same
- * way the rule table is pinned against the real settings columns rather than a hand list.
+ * both walkers skip an input they can't find (`if (!input) return`). A mistyped id in any
+ * other entry is therefore invisible — the setting silently stops loading and saving, and
+ * every test still passes. These pin every entry in both directions instead, the same way the
+ * rule table is pinned against the real settings columns rather than a hand list.
  */
 
 test('every id in SETTINGS_FIELDS resolves to an element', () => {
@@ -293,10 +308,10 @@ test('a clean load says nothing', async () => {
 /*
  * A failed GET used to be survivable in silence: index.html carried its own min/max and the
  * form still looked like a form. With those attributes gone and an empty box now a failure,
- * silence means eighteen blanks and a Save that answers "Fix 18 settings before saving." —
- * eighteen red fields accusing the operator of mistyping values they never saw.
+ * silence means every box blank and a Save that answers "Fix 22 settings before saving." — a
+ * screen of red fields accusing the operator of mistyping values they never saw.
  */
-test('a failed settings fetch says so, instead of leaving 18 blanks to blame the operator', async () => {
+test('a failed settings fetch says so, instead of blank boxes that blame the operator', async () => {
   stubFetchRoutes({ '/api/settings': { status: 500, error: 'boom' } });
   await app.loadSettings();
 
@@ -312,9 +327,9 @@ test('a failed settings fetch says so, instead of leaving 18 blanks to blame the
 /*
  * SETTINGS_FIELDS order is load-bearing, not cosmetic: a failing submit focuses failures[0],
  * so if this list disagrees with the screen the operator is scrolled past their first bad
- * field to a later one. It drifted once already — the three "both engines" fields sat at
- * positions 8-10 here while rendering 16-18. The DOM and SETTING_RULES already agree, so this
- * pins all three together rather than picking one as the authority.
+ * field to a later one. It drifted once already — the three "both engines" fields sat at what
+ * were then positions 8-10 here while rendering at 16-18. The DOM and SETTING_RULES already
+ * agree, so this pins all three together rather than picking one as the authority.
  */
 test('SETTINGS_FIELDS, the DOM and SETTING_RULES are all in the same order', () => {
   const domOrder = [...byId('settingsForm').querySelectorAll('input[type="number"]')].map((el) => el.id);
@@ -338,6 +353,7 @@ test('prose range hints match the rule table they now come from', async () => {
   await app.loadSettings();
   expect(hint('setReplyChecks')).toBe('1–4');
   expect(hint('setRosterSync')).toBe('1–24');
+  expect(hint('setTrackedProfileCap')).toBe('1–1000');
 });
 
 /* The assertion above would hold on the static HTML too, since it is currently in step. This

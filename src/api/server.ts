@@ -7,7 +7,8 @@ import { INCIDENTS_DIR } from '../config.js';
 import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
 import type {
-  BrowserDriver, CampaignKind, Engagement, EngagementStatus, ProfileStatus, Reaction, Settings,
+  BrowserDriver, CampaignKind, Engagement, EngagementStatus, PostFilter, ProfileStatus, Reaction,
+  Settings, TrackReject,
 } from '../types.js';
 import { isCampaignKind, parseKind } from '../core/campaign-kind.js';
 import { parseReaction, DEFAULT_REACTION } from '../core/engagement-action.js';
@@ -25,6 +26,11 @@ import { runReplyCheck } from '../worker/reply-checker.js';
 import { runRosterSync } from '../worker/roster-sync.js';
 import { parseRosterInput } from '../core/roster-input.js';
 import { HttpApifyClient, COST_PER_PROFILE_USD, type ApifyClient } from '../core/apify-client.js';
+import {
+  type ApifyPostsClient, HttpApifyPostsClient, COST_PER_POST_USD,
+} from '../core/apify-posts-client.js';
+import { runPostsSweep, isPostsSweepRunning } from '../worker/posts-sweep.js';
+import { isRetryableEngagement } from '../db/posts-repos.js';
 import { runEnrichment, enrichmentProgress, isEnrichmentRunning, pauseEnrichment } from '../worker/enrichment.js';
 import { extractProfile, isEmptyProfile } from '../core/apify-extract.js';
 import { searchConnections } from '../core/connection-search.js';
@@ -59,6 +65,8 @@ const ALLOWED_SETTINGS_KEYS = new Set([
   'event_run_budget_minutes', 'event_shard_threshold',
   'engage_weekly_cap', 'engage_batch_size', 'engage_batches_per_day',
   'engage_comment_daily_cap',
+  'posts_sweep_per_day', 'posts_max_per_sweep', 'posts_sweep_batch_size',
+  'posts_retention_days', 'tracked_profile_cap',
 ]);
 
 /**
@@ -102,6 +110,9 @@ export function buildServer(
     /** Injected so tests never reach Apify. Production builds a real HTTP client per run
      *  from the key currently in settings, so a re-keyed operator takes effect immediately. */
     apifyClientFactory?: (token: string) => ApifyClient;
+    /** Injected so tests never reach Apify. Production builds a real client per sweep from
+     *  the key currently in settings. */
+    apifyPostsClientFactory?: (token: string) => ApifyPostsClient;
     /** Injected so tests never reach the network. Used only to expand a lnkd.in shortlink
      *  on the engagement enqueue path; production falls through to globalThis.fetch. */
     fetchImpl?: typeof fetch;
@@ -113,6 +124,8 @@ export function buildServer(
   // runSenderOnce falls back to the real timer-based sleep; tests inject a no-op so a
   // multi-profile run-now batch never performs a real 20-90s wait, regardless of batch size.
   const senderOptions = opts.senderOptions ?? {};
+  const postsClientFactory = opts.apifyPostsClientFactory
+    ?? ((t: string) => new HttpApifyPostsClient(t));
   mkdirSync(incidentsDir, { recursive: true }); // @fastify/static requires the root to exist
 
   app.setErrorHandler((err, _req, reply) => {
@@ -954,6 +967,363 @@ export function buildServer(
       last_error: null, skip_reason: 'dismissed', scheduled_for: null,
     });
     return { ok: true };
+  });
+
+  // --- Posts feed ---------------------------------------------------------------------
+  //
+  // Registered after createEngagement (above) on purpose: the engage routes below delegate
+  // every validation judgement to it, so it has to be in scope.
+
+  /**
+   * The tracked set: who gets swept.
+   *
+   * Accepts `{ profile_urls: [...] }` (the Connections "Track posts" button) or
+   * `{ text: "..." }` (the paste box), because a pasted blob is the other real-world input
+   * shape and making the browser parse it would duplicate extractProfileUrls.
+   *
+   * Bulk-shaped with rejects reported BY URL AND REASON, like POST /api/events: finding out
+   * later that a URL was junk is far too late.
+   */
+  app.post('/api/tracked-profiles', async (req, reply) => {
+    const b = (req.body ?? {}) as { profile_urls?: unknown; text?: unknown };
+    const raws: string[] = Array.isArray(b.profile_urls)
+      ? b.profile_urls.map((u) => (typeof u === 'string' ? u.trim() : ''))
+      : typeof b.text === 'string' ? extractProfileUrls(b.text) : [];
+    if (raws.length === 0) return reply.code(400).send({ error: 'no profile urls supplied' });
+
+    const s = repos.settings.get();
+    const rejected: TrackReject[] = [];
+    const added: number[] = [];
+    // Recomputed per item rather than once: each successful add consumes a slot, so a batch
+    // straddling the cap must stop exactly at it.
+    for (const raw of raws) {
+      const url = normalizeProfileUrl(raw);
+      if (url === null) {
+        rejected.push({ profile_url: raw, reason: 'invalid_url',
+          message: `not a LinkedIn profile URL: ${raw === '' ? '(empty)' : raw}` });
+        continue;
+      }
+      const existing = repos.trackedProfiles.findByUrl(url);
+      if (existing && existing.active === 1) {
+        rejected.push({ profile_url: url, reason: 'already_tracked',
+          message: `already tracked (id ${existing.id})` });
+        continue;
+      }
+      // A reactivation consumes a slot too, so it is counted here rather than exempted.
+      if (repos.trackedProfiles.countActive() >= s.tracked_profile_cap) {
+        rejected.push({ profile_url: url, reason: 'cap_reached',
+          message: `tracking cap of ${s.tracked_profile_cap} reached — remove some profiles first` });
+        continue;
+      }
+      const conn = repos.connections.findByUrl(url);
+      const row = repos.trackedProfiles.add(url, conn?.id ?? null,
+        Array.isArray(b.profile_urls) ? 'search' : 'urls');
+      added.push(row.id);
+    }
+
+    if (added.length > 0) {
+      defaultLog.info('api', 'profiles tracked', { added: added.length, rejected: rejected.length });
+    }
+    // Always 201, even when everything was rejected: the per-item verdicts are the payload,
+    // not the status code. Same contract as POST /api/engagements.
+    return reply.code(201).send({ added: added.length, ids: added, rejected });
+  });
+
+  app.get('/api/tracked-profiles', async () => ({
+    tracked: repos.trackedProfiles.withCounts(),
+    cap: repos.settings.get().tracked_profile_cap,
+    swept_at: repos.appState.get().posts_swept_at,
+  }));
+
+  /** Untrack. Soft (active = 0) so posts keep a valid parent and history survives. */
+  app.delete('/api/tracked-profiles/:id', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const row = repos.trackedProfiles.findById(id);
+    if (!row) return reply.code(404).send({ error: `no tracked profile ${id}` });
+    repos.trackedProfiles.deactivate(id);
+    defaultLog.info('api', 'profile untracked', { id, url: row.profile_url });
+    return { ok: true, id };
+  });
+
+  const POST_FILTERS = new Set<PostFilter>(['new', 'queued', 'engaged']);
+  const FEED_LIMIT_DEFAULT = 25;
+  const FEED_LIMIT_MAX = 100;
+
+  /**
+   * One page of the feed, plus everything the screen's header needs, in ONE round-trip —
+   * chip counts, the tracked total, the last sweep and the cost readout. Three separate
+   * endpoints for that would mean four requests to render one screen.
+   *
+   * `before` is the opaque `next_cursor` from the previous page. Keyset rather than offset
+   * because the sweep inserts rows between requests, and offset would skip or repeat posts
+   * as the set shifts underneath the reader.
+   */
+  app.get('/api/posts', async (req, reply) => {
+    const q = (req.query ?? {}) as Record<string, string | undefined>;
+    const filter = (q.filter ?? 'new') as PostFilter;
+    // Refused rather than defaulted: silently answering the `new` feed for a filter the
+    // caller misspelled looks like an empty result, not a mistake.
+    if (!POST_FILTERS.has(filter)) {
+      return reply.code(400).send({ error: `unknown filter: ${String(q.filter)}` });
+    }
+    const asked = Number(q.limit);
+    const limit = Number.isFinite(asked) && asked > 0
+      ? Math.min(Math.floor(asked), FEED_LIMIT_MAX)
+      : FEED_LIMIT_DEFAULT;
+    const cursor = typeof q.before === 'string' && q.before !== '' ? q.before : null;
+
+    // One extra row is fetched to learn whether another page exists, rather than issuing a
+    // second COUNT for the same question.
+    //
+    // A malformed `before` throws out of feed() — deliberately not caught here. The global
+    // error handler maps a status-less throw to 400, which is the right answer for a junk
+    // cursor, and catching it would only let it degrade into a silent page one.
+    const rows = repos.posts.feed(filter, limit + 1, cursor);
+    const page = rows.slice(0, limit);
+    const last = page[page.length - 1];
+    const nextCursor = rows.length > limit && last
+      ? `${last.posted_at ?? last.first_seen_at}|${last.id}`
+      : null;
+
+    const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const scraped = repos.posts.countSince(since);
+    // NOT named `app`: that is the Fastify instance this route is registered on, and shadowing
+    // it inside the handler is a trap for whoever edits this next.
+    const state = repos.appState.get();
+    return {
+      posts: page,
+      filter,
+      counts: repos.posts.counts(),
+      next_cursor: nextCursor,
+      tracked: repos.trackedProfiles.countActive(),
+      swept_at: state.posts_swept_at,
+      // The halt latch rides along so the screen renders its banner without a second
+      // request. Same treatment as the enrichment halt.
+      halt: {
+        halted: state.posts_halted,
+        reason: state.posts_halt_reason,
+        detail: state.posts_halt_detail,
+        at: state.posts_halted_at,
+      },
+      // Informational only. No enforcement — a spend ceiling was explicitly declined; this
+      // exists so the cost question is a number the operator can watch.
+      cost_30d: { posts: scraped, usd: scraped * COST_PER_POST_USD },
+    };
+  });
+
+  /**
+   * The sentence both engage routes use for an engagement no click may re-drive.
+   *
+   * A reacted row gets its own wording: "already queued (failed)" reads like a stuck task the
+   * operator should re-push, when in fact the reaction is live on LinkedIn and only the comment
+   * step is outstanding — which /api/engagements/:id/retry is the tool for.
+   */
+  const heldEngagementMessage = (held: Engagement): string =>
+    held.reacted_at !== null
+      ? `already reacted as engagement ${held.id} (${held.status}) — use retry to re-run the comment`
+      : `already queued as engagement ${held.id} (${held.status})`;
+
+  /**
+   * Re-queue a failed or skipped engagement. What a second engage click MEANS on a post the
+   * feed still lists as New.
+   *
+   * Needed because an engagement is UNIQUE on post_urn: once a post has one, no amount of
+   * clicking can create a second, so without this the retry the feed's own filter promises
+   * ("not reacted, status failed/skipped -> new, retryable") would be a link that is already
+   * there — a click that answers 200 and changes nothing, leaving the post in New forever.
+   *
+   * Same field set as POST /api/engagements/:id/retry, for the same reasons: commented_at is
+   * cleared so the comment step re-runs, and reacted_at deliberately survives, because
+   * re-driving a reaction that already landed is the one thing a retry must never do.
+   *
+   * The row's own reaction and comment are left as they were, exactly as on the adoption path
+   * below: this re-drives work that already exists rather than replacing it, and rewriting the
+   * text of a queued task from a request that names no new text is how a comment gets published
+   * that nobody typed. Changing them is dismiss-then-requeue, not retry.
+   */
+  const requeueEngagement = (engagementId: number): Engagement => {
+    repos.engagements.setStatus(engagementId, 'queued', {
+      scheduled_for: null, last_error: null, skip_reason: null, commented_at: null,
+    });
+    return repos.engagements.findById(engagementId)!;
+  };
+
+  /**
+   * Queue one post's engagement from the feed.
+   *
+   * Delegates every judgement to createEngagement: URL and URN normalization, the six valid
+   * reactions, the 1250-character comment limit, and whitespace-only comments collapsing to
+   * null. A second copy of those rules here is how they drift apart.
+   */
+  app.post('/api/posts/:id/engage', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const row = repos.posts.findById(id);
+    if (!row) return reply.code(404).send({ error: `no post ${id}` });
+
+    if (row.engagement_id !== null) {
+      const held = repos.engagements.findById(row.engagement_id);
+      if (held && !isRetryableEngagement(held)) {
+        return reply.code(409).send({ error: heldEngagementMessage(held) });
+      }
+    }
+
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    // `expanded` is null: a post_url from the sweep is already canonical, and isShortlink
+    // is false for it, so the shortlink branch is never taken.
+    const outcome = createEngagement({ reaction: b.reaction, comment: b.comment },
+      row.post_url, null);
+
+    if ('reason' in outcome) {
+      // A duplicate means an engagement for this URN already exists — either queued by hand
+      // through /api/engagements before the feed existed, or this post's own earlier attempt.
+      if (outcome.reason === 'duplicate') {
+        const held = repos.engagements.findByUrn(row.post_urn);
+        if (held) {
+          // Linked either way. Adopt rather than reporting a conflict the operator cannot
+          // resolve: the work is already scheduled, it just was not linked.
+          repos.posts.setEngagement(id, held.id);
+          // Retryable means the previous attempt is over and did not react, so this click is
+          // "try again" and has to put real work back in the queue — see requeueEngagement.
+          // 201 rather than the adoption 200 because a task genuinely re-enters the pipeline.
+          if (isRetryableEngagement(held)) {
+            const requeued = requeueEngagement(held.id);
+            planAndAssignToday(repos, new Date());
+            defaultLog.info('api', 'post engagement re-queued from feed',
+              { post_id: id, engagement: held.id, was: held.status });
+            // Flagged, like `adopted` below: nothing was created and the row keeps the reaction
+            // and comment it already had, so a caller that assumed "201 means my reaction" would
+            // render the wrong badge. See requeueEngagement for why the text is left alone.
+            return reply.code(201).send({ post_id: id, engagement: requeued, requeued: true });
+          }
+          return reply.code(200).send({ post_id: id, engagement: held, adopted: true });
+        }
+      }
+      return reply.code(REJECT_STATUS[outcome.reason]).send({ error: outcome.message });
+    }
+
+    repos.posts.setEngagement(id, outcome.id);
+    // Same reasoning as /api/engagements: give the new task a real slot now rather than
+    // leaving it until the hourly tick. planAndAssignToday declines on its own while paused,
+    // halted, off-hours or on a non-sending day.
+    planAndAssignToday(repos, new Date());
+    defaultLog.info('api', 'post engaged from feed', { post_id: id, engagement: outcome.id });
+    return reply.code(201).send({
+      post_id: id,
+      engagement: repos.engagements.findById(outcome.id) ?? outcome,
+    });
+  });
+
+  /**
+   * Bulk: one reaction across several selected posts.
+   *
+   * There is NO comment parameter, deliberately. Identical comment text on several posts is a
+   * recognizable spam pattern published under the operator's own name, and
+   * engage_comment_daily_cap defaults to 10/day — so one click would spend the whole day's
+   * allowance looking automated. Comments are per-post only.
+   */
+  app.post('/api/posts/engage', async (req, reply) => {
+    const b = (req.body ?? {}) as { post_ids?: unknown; reaction?: unknown };
+    // `n > 0` is not decoration: Number(null), Number(false) and Number('') are all 0, and
+    // Number.isInteger(0) is true — so without it every junk entry survived as "post 0" and came
+    // back as a `no post 0` reject, burying the real verdicts in noise no id ever produced.
+    const ids = Array.isArray(b.post_ids)
+      ? b.post_ids.map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0)
+      : [];
+    if (ids.length === 0) return reply.code(400).send({ error: 'no post ids supplied' });
+
+    // Validated ONCE up front: a bad reaction is one mistake for the whole batch, and
+    // half-applying it would leave the operator undoing real queued rows.
+    const parsed = parseReaction(b.reaction);
+    if (!parsed.ok) return reply.code(400).send({ error: parsed.error });
+    const reaction = parsed.reaction ?? DEFAULT_REACTION;
+
+    // Three outcomes, reported under three keys rather than one. Folded together they are
+    // indistinguishable — a re-selected `celebrate` row that came back re-queued under the
+    // operator's newly chosen `insightful` looked exactly like a fresh create, and only a feed
+    // refetch would have shown otherwise. `added` stays the one number to read out loud.
+    const created: number[] = [];
+    const adopted: number[] = [];
+    const requeued: number[] = [];
+    const rejected: { post_id: number; reason: string; message: string }[] = [];
+    for (const id of ids) {
+      const row = repos.posts.findById(id);
+      if (!row) {
+        rejected.push({ post_id: id, reason: 'not_found', message: `no post ${id}` });
+        continue;
+      }
+      if (row.engagement_id !== null) {
+        const held = repos.engagements.findById(row.engagement_id);
+        if (held && !isRetryableEngagement(held)) {
+          rejected.push({ post_id: id, reason: 'duplicate', message: heldEngagementMessage(held) });
+          continue;
+        }
+      }
+      // No comment is passed, so no bulk path can ever publish one.
+      const outcome = createEngagement({ reaction }, row.post_url, null);
+      if ('reason' in outcome) {
+        if (outcome.reason === 'duplicate') {
+          const held = repos.engagements.findByUrn(row.post_urn);
+          if (held) {
+            repos.posts.setEngagement(id, held.id);
+            // Same rule as the single-post route: a retryable row is re-queued, so a bulk
+            // re-select of failed posts is a real retry rather than a silent relink.
+            if (isRetryableEngagement(held)) { requeueEngagement(held.id); requeued.push(id); }
+            else adopted.push(id);
+            continue;
+          }
+        }
+        rejected.push({ post_id: id, reason: outcome.reason, message: outcome.message });
+        continue;
+      }
+      repos.posts.setEngagement(id, outcome.id);
+      created.push(id);
+    }
+
+    const added = created.length + adopted.length + requeued.length;
+    if (added > 0) {
+      planAndAssignToday(repos, new Date());
+      defaultLog.info('api', 'posts bulk-engaged', {
+        added, adopted: adopted.length, requeued: requeued.length,
+        rejected: rejected.length, reaction,
+      });
+    }
+    // Always 201: the per-item verdicts are the payload. Same contract as /api/engagements.
+    // `post_ids` is the freshly created set ONLY — an adopted or re-queued post keeps whatever
+    // reaction and comment its existing engagement already had, which is not `reaction`.
+    return reply.code(201).send({ added, post_ids: created, adopted, requeued, rejected });
+  });
+
+  /**
+   * Sweep now — the override for the once-per-slot gate and for `paused`.
+   *
+   * Mirrors the per-belt "Run now": long on purpose, since it returns only after the actor
+   * run finishes. Do not retry it.
+   */
+  app.post('/api/posts/sweep-now', async (req, reply) => {
+    const s = repos.settings.get();
+    // A sweep already in flight must not be joined by a second one: two concurrent runs
+    // double-bill, and the scheduled tick can be mid-sweep when the operator clicks. The
+    // worker refuses re-entry itself (it throws), but answering 409 here gives the operator
+    // a real explanation instead of a 400 from a thrown error.
+    if (isPostsSweepRunning()) {
+      return reply.code(409).send({ error: 'a posts sweep is already running — wait for it to finish' });
+    }
+    if (repos.trackedProfiles.countActive() === 0) {
+      return reply.code(400).send({ error: 'no profiles are being tracked' });
+    }
+    if (!s.apify_api_key) {
+      return reply.code(400).send({ error: 'No Apify API key is configured — add one in Settings.' });
+    }
+    // A manual sweep is the operator saying "try again", so clear a previous latch first.
+    repos.appState.clearPostsHalt();
+    const result = await runPostsSweep(repos, {
+      client: postsClientFactory(s.apify_api_key),
+      now: new Date(),
+      maxPosts: s.posts_max_per_sweep,
+      batchSize: s.posts_sweep_batch_size,
+      retentionDays: s.posts_retention_days,
+    });
+    return result;
   });
 
   app.get('/api/metrics', async () => {

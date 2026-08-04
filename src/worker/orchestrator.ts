@@ -2,6 +2,7 @@ import type { Repos } from '../db/repositories.js';
 import type { BrowserDriver } from '../types.js';
 import { Mutex } from '../core/mutex.js';
 import { type ApifyClient, HttpApifyClient } from '../core/apify-client.js';
+import { type ApifyPostsClient, HttpApifyPostsClient } from '../core/apify-posts-client.js';
 import { runEnrichment, isEnrichmentRunning } from './enrichment.js';
 import {
   planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending,
@@ -13,6 +14,7 @@ import { runReplyCheck } from './reply-checker.js';
 import { runRosterSync } from './roster-sync.js';
 import { dueEventRun, ensureEventReservation } from './event-campaign.js';
 import { runEventCampaign } from './event-runner.js';
+import { runPostsSweep, isPostsSweepRunning } from './posts-sweep.js';
 import { log } from '../core/log.js';
 
 /**
@@ -78,6 +80,10 @@ export class Orchestrator {
      *  settings — same shape and reason as buildServer's — so re-keying takes effect on the
      *  next tick rather than needing a restart. */
     private apifyClientFactory: (token: string) => ApifyClient = (t: string) => new HttpApifyClient(t),
+    /** Injected so no test ever spends money. Built per run from the key currently in
+     *  settings — same shape and reason as apifyClientFactory above. */
+    private apifyPostsClientFactory: (token: string) => ApifyPostsClient =
+      (t: string) => new HttpApifyPostsClient(t),
   ) {}
 
   /**
@@ -234,6 +240,59 @@ export class Orchestrator {
   }
 
   /**
+   * Sweep the tracked profiles' recent posts, at most once per slot.
+   *
+   * The gate reads the PERSISTED `posts_swept_at`, which runPostsSweep stamps only on a
+   * clean pass — so a failed sweep leaves the stamp untouched and the next 30-minute tick
+   * retries it inside the same slot. Same reasoning as the roster sync.
+   *
+   * `guardrail_tripped` is deliberately NOT a gate: the guardrail means the LinkedIn session
+   * is in trouble, and Apify never touches that session. This mirrors runEnrichDrainTick.
+   * Please do not "fix" this.
+   */
+  async runPostsSweepTick(now: Date = new Date()): Promise<void> {
+    const s = this.repos.settings.get();
+    // Pause is the operator's "stop doing things" switch, so it also stops unattended
+    // spending. The manual Sweep now endpoint is the override.
+    if (s.paused) return;
+    // A latched halt is a problem already reported on the dashboard. Retrying it every 30
+    // minutes would hammer Apify and bury the alert in noise.
+    if (this.repos.appState.get().posts_halted === 1) return;
+    // A sweep can outlast the tick interval, so overlap is prevented explicitly rather than
+    // relying on the slot gate (which an unstamped failed pass does not close).
+    if (isPostsSweepRunning()) return;
+
+    const app = this.repos.appState.get();
+    const slot = daySlot(now, s.posts_sweep_per_day);
+    if (app.posts_swept_at
+      && daySlot(new Date(app.posts_swept_at), s.posts_sweep_per_day) === slot) return;
+
+    // The steady state must be cheap: one indexed COUNT and nothing else.
+    if (this.repos.trackedProfiles.countActive() === 0) return;
+
+    // There is work but no credential. Say so where the operator will see it — but only once
+    // something is actually tracked, so a fresh install never nags about a key it needs.
+    if (!s.apify_api_key) {
+      this.repos.appState.haltPosts('no_api_key', 'No Apify API key is configured.',
+        now.toISOString());
+      log.error('posts', 'halted', { reason: 'no_api_key' });
+      return;
+    }
+
+    try {
+      await runPostsSweep(this.repos, {
+        client: this.apifyPostsClientFactory(s.apify_api_key),
+        now,
+        maxPosts: s.posts_max_per_sweep,
+        batchSize: s.posts_sweep_batch_size,
+        retentionDays: s.posts_retention_days,
+      });
+    } catch (err) {
+      this.handleTickError('posts', err);
+    }
+  }
+
+  /**
    * Run an event campaign whose reserved window is open.
    *
    * Uses the blocking `run` rather than `tryRun`: the window was reserved precisely so
@@ -317,6 +376,10 @@ export class Orchestrator {
     // The consumer for everything the sweep and the roster sync enqueue. A minute's latency
     // on a newly-discovered connection is invisible, and an idle tick is one indexed COUNT.
     this.timers.push(setInterval(() => { void this.runEnrichDrainTick(); }, 60 * 1000));
+    // Posts sweep. 30 minutes for the same reason the roster sync uses it: the slot gate
+    // decides how often a sweep actually happens, and a frequent tick is what lets a failed
+    // pass retry inside the same slot instead of waiting a whole day.
+    this.timers.push(setInterval(() => { void this.runPostsSweepTick(); }, 30 * 60 * 1000));
   }
 
   stop(): void { this.timers.forEach(clearInterval); this.timers = []; }

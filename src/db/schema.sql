@@ -117,6 +117,22 @@ CREATE TABLE IF NOT EXISTS settings (
   -- Comments are capped separately and far lower: 90 published comments a day under the
   -- operator's own name is a materially different risk from 90 likes.
   engage_comment_daily_cap INTEGER NOT NULL DEFAULT 10
+  ,
+  -- Posts feed. The sweep window is the cost model, not a filter: INSERT OR IGNORE dedupes
+  -- storage but never the bill, so a window wider than the gap since the last sweep re-bills
+  -- posts already stored (a relative 'week' on a daily sweep, ~20x). Which is why the window
+  -- is NOT configured here: it is derived per profile from its own last_swept_at — see
+  -- windowFor in worker/posts-sweep.ts, and note the elapsed-time threshold that used to
+  -- live there and why it was wrong.
+  posts_sweep_per_day INTEGER NOT NULL DEFAULT 1,
+  posts_max_per_sweep INTEGER NOT NULL DEFAULT 3,
+  -- Safety valve only. One run covers every tracked profile in practice; this splits the
+  -- run if the profile cap is ever raised well past 200.
+  posts_sweep_batch_size INTEGER NOT NULL DEFAULT 200,
+  -- Load-bearing, not hygiene: with no dismiss action, ageing out is the ONLY way a post
+  -- leaves the New chip. Without it, New grows without bound and stops meaning anything.
+  posts_retention_days INTEGER NOT NULL DEFAULT 30,
+  tracked_profile_cap INTEGER NOT NULL DEFAULT 200
 );
 
 INSERT OR IGNORE INTO settings (id) VALUES (1);
@@ -141,6 +157,15 @@ CREATE TABLE IF NOT EXISTS app_state (
   replies_checked_at TEXT,
   roster_synced_at TEXT,
   connections_seeded_at TEXT
+  ,
+  -- Gates the sweep PASS (per-day slot). Stamped only on a clean pass.
+  posts_swept_at TEXT,
+  -- An ERROR latch, not a spend cap (a spend ceiling was explicitly declined). It exists
+  -- so a bad key does not produce 1,440 failed Apify calls a day and bury the alert.
+  posts_halted INTEGER NOT NULL DEFAULT 0,
+  posts_halt_reason TEXT,
+  posts_halt_detail TEXT,
+  posts_halted_at TEXT
 );
 
 INSERT OR IGNORE INTO app_state (id) VALUES (1);
@@ -379,3 +404,81 @@ CREATE TABLE IF NOT EXISTS engagements (
 );
 CREATE INDEX IF NOT EXISTS idx_engagements_status ON engagements(status);
 CREATE INDEX IF NOT EXISTS idx_engagements_reacted ON engagements(reacted_at);
+
+-- ============================================================================
+-- Posts feed (2026-08-04). Track a set of profiles, sweep their recent posts
+-- via Apify, and act on them through the EXISTING engagements pipeline.
+--
+-- CAREFUL: CREATE TABLE IF NOT EXISTS back-fills the whole table on every
+-- openDatabase, but is a no-op once the table exists. A column added here
+-- LATER is silently absent on existing databases and needs its own guarded
+-- ALTER in runMigrations — the same trap documented for event_buckets.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS tracked_profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  profile_url TEXT NOT NULL UNIQUE,        -- normalizeProfileUrl(), same form as connections
+  -- Nullable on purpose: the paste box accepts any profile URL, and someone worth watching
+  -- need not be a 1st-degree connection. When set, the connection row owns name/headline.
+  connection_id INTEGER REFERENCES connections(id),
+  full_name TEXT,                          -- display fallback when connection_id IS NULL
+  headline TEXT,                            -- filled from the first sweep's author payload
+  source TEXT NOT NULL,                     -- search | urls
+  -- Untracking sets this to 0; it never deletes. A delete strands posts.tracked_profile_id,
+  -- and cascading it would destroy the record of posts already engaged with.
+  active INTEGER NOT NULL DEFAULT 1,
+  -- Bounds THIS profile's next sweep window — it is sent verbatim as the actor's
+  -- postedLimitDate ("posts from now back to this instant") — and bounds retries. Distinct
+  -- from app_state.posts_swept_at, which gates the pass as a whole. Advanced ONLY by a run
+  -- that actually returned for this profile: advancing it otherwise bounds the next window on
+  -- a sweep that never happened, losing the posts in between for good.
+  --
+  -- The CHECK pins the exact shape toISOString() produces, for a STRONGER reason than the
+  -- posted_at/first_seen_at CHECKs below (which only protect a TEXT sort key): this value is
+  -- forwarded verbatim to a paid actor as its run bound. A zone-less shape — precisely what
+  -- SQLite's own datetime('now') produces, as `created_at` two lines down does — would be read
+  -- as local by us and as its own zone by the actor, silently shifting the window by hours.
+  last_swept_at TEXT CHECK (
+    last_swept_at IS NULL
+    OR last_swept_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  ),
+  last_sweep_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tracked_active ON tracked_profiles(active);
+
+CREATE TABLE IF NOT EXISTS posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  -- THE identity, same rule as engagements.post_urn. INSERT OR IGNORE on this is what
+  -- makes re-sweeping idempotent with no cursor to maintain.
+  post_urn TEXT NOT NULL UNIQUE,
+  post_url TEXT NOT NULL,
+  tracked_profile_id INTEGER NOT NULL REFERENCES tracked_profiles(id),
+  author_name TEXT,
+  author_headline TEXT,
+  content TEXT,
+  -- The CHECKs pin the exact shape toISOString() produces, NULL still allowed. Not
+  -- decoration: the retention prune compares these with `<` as TEXT, which is only a
+  -- chronological comparison while every value is that one fixed-width shape. See the
+  -- send_log.at scar documented on engagements.reacted_at.
+  posted_at TEXT CHECK (
+    posted_at IS NULL
+    OR posted_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  ),
+  is_repost INTEGER NOT NULL DEFAULT 0,
+  reaction_count INTEGER,
+  comment_count INTEGER,
+  -- A DIRECT id, deliberately not a join on post_urn. An engagement's URN is provisional:
+  -- the driver reads the canonical one off the live post and rewrites the row (see API.md).
+  -- A URN join would silently lose this link exactly when reconciliation fires.
+  engagement_id INTEGER REFERENCES engagements(id),
+  first_seen_at TEXT NOT NULL CHECK (
+    first_seen_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'
+  ),
+  raw_json TEXT,                      -- the raw Apify sweep payload, so fields not yet
+                                       -- promoted to a column aren't lost
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_posts_profile ON posts(tracked_profile_id);
+CREATE INDEX IF NOT EXISTS idx_posts_engagement ON posts(engagement_id);
+CREATE INDEX IF NOT EXISTS idx_posts_posted ON posts(posted_at);

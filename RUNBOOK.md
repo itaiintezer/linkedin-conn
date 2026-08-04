@@ -51,7 +51,7 @@ If anything above fails, run `npm run preflight` — it lists every requirement 
 one-line fix for whatever is wrong.
 
 You only ever do this once. When a newer version comes out, you don't repeat any of it —
-see **§12, Getting a newer version**.
+see **§13, Getting a newer version**.
 
 ## 2. Connect your LinkedIn (first run)
 A setup wizard appears the first time.
@@ -242,7 +242,7 @@ from someone you hadn't. Treat **Replied** as a floor, and your LinkedIn inbox a
 - **Stop everything** → click the terminal running `npm start` and press **Ctrl+C**. Wait
   for it to return to a prompt. Only then close the window.
 - **`npm run update` refused to run** → that's it working as intended; it stops before
-  changing anything. The `FAIL` line says what to fix — see §12.
+  changing anything. The `FAIL` line says what to fix — see §13.
 
 ## 10. Your connection list
 Separate from campaigns, The Machine keeps a list of everyone you're actually connected to,
@@ -367,7 +367,55 @@ exits non-zero if any line says FAIL, so it can be run from another script.
 
 Click any row to see everything The Machine knows about that person.
 
-## 12. Getting a newer version
+## 12. Tracking people's posts
+
+Beyond invites, messages and reacting to a post you paste in yourself, The Machine can watch a
+set of people and automatically pull in their recent posts for you to react to (and, one at a
+time, comment on). This is the **Posts** tab.
+
+**What tracking is.** You give it a list of LinkedIn profiles — paste URLs, or select people
+from your connection list and click **Track posts**. From then on, The Machine periodically
+checks those profiles for new posts (once a day by default) and drops what it finds into the
+Posts feed. **Each post it pulls in costs a small amount of money** — a fraction of a cent —
+because fetching them uses a paid scraping service (Apify), the same one that enriches your
+connection list. You can watch the running total on the Posts tab.
+
+**There is no history import.** When you first track someone, their feed starts **nearly
+empty** — The Machine does not go back and fetch everything they've ever posted, only what
+they post from here on. It fills in gradually as they post. If you were hoping to see last
+month's posts from someone you just started tracking, that's expected: there's nothing to
+see yet.
+
+**Reacting from the feed doesn't send anything immediately.** Clicking **like** (or
+**celebrate**, **support**, **love**, **insightful**, **funny**) on a post — one at a time or
+in bulk across several selected posts — puts that reaction in the **same paced queue** as
+everything else The Machine sends. It goes out later, spaced out through the day, capped the
+same way invites and messages are (reactions default to 500/week, ~90/day). It is **not**
+instant.
+
+**Comments are different, and slower.** You can add a comment to a post one at a time (not in
+bulk), and it's published under **your own name**, visible to everyone. Because that carries
+real reputational weight, comments are capped far lower than reactions — **10 a day by
+default** — which is also why the bulk "react to several posts at once" action only ever
+places reactions, never comments.
+
+**Old posts disappear on their own.** Anything The Machine pulled in that's older than 30
+days and that you never reacted to gets quietly dropped from the feed — it isn't worth storing
+forever, and it keeps the "New" list meaningful rather than growing without end. Anything you
+did react to or comment on stays, as a record of what was done.
+
+**Bare reshares don't show up, on purpose.** If someone reshares another person's post without
+adding a comment of their own, The Machine skips it — there's no text of *theirs* to react to,
+so it isn't the kind of post this feature is for.
+
+**If you see a red "post sweeping is halted" banner** on the Posts tab, something stopped the
+automatic checking — usually a missing or invalid Apify key, or several checks in a row that
+failed the same way. Fix the underlying cause (add/replace the key under **Settings**, check
+the log if it's unclear), then press **Sweep now**. That button does two things at once: it
+runs a check immediately, and it's how you tell The Machine "I've fixed it, try again" —
+pressing it clears the halt regardless of whether the next check succeeds.
+
+## 13. Getting a newer version
 When The Machine is improved, you get the improvements by running one command. You do **not**
 download anything again, reinstall Node, or log in to LinkedIn again.
 

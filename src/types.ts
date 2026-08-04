@@ -96,6 +96,11 @@ export interface Settings {
   engage_batch_size: number;
   engage_batches_per_day: number;
   engage_comment_daily_cap: number;
+  posts_sweep_per_day: number;
+  posts_max_per_sweep: number;
+  posts_sweep_batch_size: number;
+  posts_retention_days: number;
+  tracked_profile_cap: number;
 }
 
 // --- Event invites -----------------------------------------------------------------
@@ -371,6 +376,11 @@ export interface AppState {
   replies_checked_at: string | null;    // ISO, last successful reply-check read
   roster_synced_at: string | null;      // ISO, last successful roster read
   connections_seeded_at: string | null; // ISO, one-time seed from existing profiles
+  posts_swept_at: string | null;       // ISO, last clean sweep pass
+  posts_halted: number;                // 0 | 1 — automatic sweeping stopped itself
+  posts_halt_reason: PostsHaltReason | null;
+  posts_halt_detail: string | null;    // operator-facing message; never the API token
+  posts_halted_at: string | null;      // ISO
 }
 
 /** A point-in-time read of LinkedIn auth from the browser's li_at cookie. */
@@ -514,3 +524,121 @@ export type EnrichOutcome =
   | { kind: 'enriched'; profile: EnrichedProfile }
   | { kind: 'empty' }                       // silent-empty shell: 200 OK, no signal
   | { kind: 'failed'; error: string };
+
+// --- Posts feed -----------------------------------------------------------------
+
+/** A profile whose posts are swept. `active = 0` means untracked (soft delete). */
+export interface TrackedProfile {
+  id: number;
+  profile_url: string;
+  connection_id: number | null;
+  full_name: string | null;
+  headline: string | null;
+  source: 'search' | 'urls';
+  active: number;
+  last_swept_at: string | null;
+  last_sweep_error: string | null;
+  created_at: string;
+}
+
+/** One scraped post. Identity is post_urn, never post_url. */
+export interface Post {
+  id: number;
+  post_urn: string;
+  post_url: string;
+  tracked_profile_id: number;
+  author_name: string | null;
+  author_headline: string | null;
+  content: string | null;
+  posted_at: string | null;
+  is_repost: number;
+  reaction_count: number | null;
+  comment_count: number | null;
+  engagement_id: number | null;
+  first_seen_at: string;
+  raw_json: string | null;
+  created_at: string;
+}
+
+/** What `PostRepo.upsertMany` accepts. Everything the extractor produces, minus the row's
+ *  own id. Lives here rather than in db/posts-repos.ts for the same reason ConnectionInput
+ *  sits next to Connection: it is a plain data shape, and core/apify-posts-extract.ts
+ *  (which produces it) has no business importing from db/. */
+export interface PostInput {
+  post_urn: string;
+  post_url: string;
+  tracked_profile_id: number;
+  author_name: string | null;
+  author_headline: string | null;
+  content: string | null;
+  posted_at: string | null;
+  is_repost: number;
+  reaction_count: number | null;
+  comment_count: number | null;
+  raw_json: string | null;
+}
+
+/** A feed row: a post plus the engagement columns the UI renders a badge from. */
+export interface FeedPost extends Post {
+  engagement_status: EngagementStatus | null;
+  engagement_reaction: Reaction | null;
+  engagement_reacted_at: string | null;
+  author_display: string | null;
+  headline_display: string | null;
+}
+
+export type PostFilter = 'new' | 'queued' | 'engaged';
+
+/** Why the sweep latched off. Mirrors EnrichHaltReason. */
+export type PostsHaltReason = 'no_api_key' | 'auth' | 'run_failed';
+
+export type TrackRejectReason = 'invalid_url' | 'already_tracked' | 'cap_reached';
+
+export interface TrackReject {
+  profile_url: string;
+  reason: TrackRejectReason;
+  message: string;
+}
+
+/**
+ * One item from harvestapi~linkedin-profile-posts. Every field optional: this is untrusted
+ * upstream JSON, and the extractor's job is to survive any of it being absent or reshaped.
+ *
+ * Field names verified against a 26,256-item corpus of real actor output at
+ * `C:\Projects\prospecting\icp_cache_posts` (2026-08-04). Two findings that overrode the
+ * original spec (ported from the *profile* actor, where these names are correct but this
+ * one never sends them): `author.position`/`author.headline` occur 0 times — the real
+ * headline field is `author.info` (100% of items). And `resharedPost` occurs 0 times — the
+ * real reshare shape is `repost` (reshare-with-added-commentary) or `repostedBy`/
+ * `repostedAt` (bare reshare, no commentary); `type` is `'post'` on every single item, so it
+ * is not a usable repost discriminator despite the original spec's comment.
+ */
+export interface ApifyPost {
+  id?: unknown;
+  type?: unknown;
+  linkedinUrl?: unknown;
+  content?: unknown;
+  postedAt?: unknown;
+  author?: {
+    name?: unknown; linkedinUrl?: unknown;
+    /** The real headline field — see the corpus note above. */
+    info?: unknown;
+    /** Never observed in the corpus; kept as a forward-compat fallback only. */
+    position?: unknown; headline?: unknown;
+  } | null;
+  /** `reactions` is an array of `{type, count}` on every real item, never a bare number —
+   *  `likes` (the total) is the field to read; see apify-posts-extract.ts's `num()` use. */
+  engagement?: { likes?: unknown; reactions?: unknown; comments?: unknown } | null;
+  /** Echoes the exact input URL, which is how a batched run's items split per profile. */
+  query?: { targetUrl?: unknown } | null;
+  /** Present on a reshare-with-commentary: the nested original post, including its own
+   *  `content` — the field a caller falls back to when the outer `content` is empty. */
+  repost?: unknown;
+  /** Present on a BARE reshare (no added commentary). `author` is still the ORIGINAL
+   *  post's author in this case, and LinkedIn already puts the original's own text at the
+   *  top-level `content` — there is no separate nested object to read it from. */
+  repostedBy?: unknown;
+  repostedAt?: unknown;
+  /** Never observed in the corpus; kept only because the original spec named it. */
+  resharedPost?: unknown;
+}

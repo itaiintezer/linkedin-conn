@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'src', 'web');
 
-/** The internals under test. app.js declares these as plain function statements. */
+/** The internals under test. app.js and posts.js declare these as plain function statements. */
 export interface AppInternals {
   renderEngine: (status: Record<string, unknown>) => void;
   applyEngineState: (status: Record<string, unknown>) => void;
@@ -40,12 +40,21 @@ export interface AppInternals {
   initSettings: () => void;
   applyEnrichHaltUi: (status: Record<string, unknown>) => void;
   initSearch: () => void;
+  /** app.js's module-level `selected` Set of profile URLs (app.js:1879) — the ONE selection
+   *  store the Connections bar's three buttons read. */
+  searchSelection: () => Set<string>;
   initEvents: () => void;
   initDashboard: () => void;
   refreshQueue: () => Promise<void>;
   evRenderDetail: (detail: Record<string, unknown>) => void;
   evLoadList: () => Promise<void>;
   evOpen: (id: number, quiet?: boolean) => Promise<void>;
+  /* ---- src/web/posts.js (loaded into the same scope, see loadApp) ---- */
+  initPosts: () => void;
+  renderPostsFeed: (payload: Record<string, unknown>, append?: boolean) => void;
+  refreshPosts: (append?: boolean) => Promise<void>;
+  refreshTracked: () => Promise<void>;
+  postsState: { filter: string; selected: Set<number>; cursor: string | null };
   /** The bootstrap. Never called by loadApp — see the readyState note below. */
   init: () => void;
 }
@@ -63,7 +72,8 @@ export interface AppInternals {
  *    to that tail can't silently start leaking timers into the suite.
  *
  * Scripts referenced by index.html are NOT executed: assigning innerHTML never runs
- * <script> tags in jsdom, which is exactly what we want — app.js is loaded explicitly.
+ * <script> tags in jsdom, which is exactly what we want — app.js and posts.js are loaded
+ * explicitly, in that order.
  */
 export function loadApp(): AppInternals {
   const html = readFileSync(join(WEB_DIR, 'index.html'), 'utf8');
@@ -75,9 +85,15 @@ export function loadApp(): AppInternals {
   Object.defineProperty(document, 'readyState', { value: 'loading', configurable: true });
 
   const src = readFileSync(join(WEB_DIR, 'app.js'), 'utf8');
+  /* posts.js is concatenated into the SAME function body, in the same order index.html loads
+     the two script tags. That is not a convenience: they are classic scripts sharing one
+     global lexical scope, so posts.js reads app.js's api/el/$/toast helpers, and a top-level
+     name declared in both would throw "Identifier has already been declared" here exactly as
+     it does in the browser. Loading them separately would hide that collision from the suite. */
+  const postsSrc = readFileSync(join(WEB_DIR, 'posts.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, loadSettings, initSettings, applyEnrichHaltUi, initSearch, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, init };`,
+    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, loadSettings, initSettings, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }

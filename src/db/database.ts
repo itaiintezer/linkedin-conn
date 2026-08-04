@@ -426,4 +426,38 @@ export function runMigrations(db: DB): void {
   // Runs last, after the profiles rebuild above has settled the table these two reference.
   // No-op on a fresh database and on a second run: see rebuildLogTablesAsIso.
   rebuildLogTablesAsIso(db);
+
+  // --- Posts feed (2026-08-04) ---
+  // New TABLES need nothing here: schema.sql's CREATE TABLE IF NOT EXISTS covers them.
+  // Only new COLUMNS on pre-existing tables require an explicit ALTER.
+  if (cols.length > 0 && !cols.includes('posts_sweep_per_day')) {
+    db.exec('ALTER TABLE settings ADD COLUMN posts_sweep_per_day INTEGER NOT NULL DEFAULT 1');
+  }
+  if (cols.length > 0 && !cols.includes('posts_max_per_sweep')) {
+    db.exec('ALTER TABLE settings ADD COLUMN posts_max_per_sweep INTEGER NOT NULL DEFAULT 3');
+  }
+  if (cols.length > 0 && !cols.includes('posts_sweep_batch_size')) {
+    db.exec('ALTER TABLE settings ADD COLUMN posts_sweep_batch_size INTEGER NOT NULL DEFAULT 200');
+  }
+  if (cols.length > 0 && !cols.includes('posts_retention_days')) {
+    db.exec('ALTER TABLE settings ADD COLUMN posts_retention_days INTEGER NOT NULL DEFAULT 30');
+  }
+  if (cols.length > 0 && !cols.includes('tracked_profile_cap')) {
+    db.exec('ALTER TABLE settings ADD COLUMN tracked_profile_cap INTEGER NOT NULL DEFAULT 200');
+  }
+  if (appCols.length > 0 && !appCols.includes('posts_swept_at')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN posts_swept_at TEXT');
+  }
+  if (appCols.length > 0 && !appCols.includes('posts_halted')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN posts_halted INTEGER NOT NULL DEFAULT 0');
+  }
+  if (appCols.length > 0 && !appCols.includes('posts_halt_reason')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN posts_halt_reason TEXT');
+  }
+  if (appCols.length > 0 && !appCols.includes('posts_halt_detail')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN posts_halt_detail TEXT');
+  }
+  if (appCols.length > 0 && !appCols.includes('posts_halted_at')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN posts_halted_at TEXT');
+  }
 }
