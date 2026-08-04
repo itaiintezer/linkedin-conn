@@ -737,13 +737,14 @@ export class PostRepo {
     `);
     let added = 0;
     for (const it of items) {
-      const before = this.countAll();
-      stmt.run(
+      // `changes` is 0 when OR IGNORE swallowed a duplicate and 1 on a real insert, which is
+      // exactly the count we want. Number() because it can arrive as a bigint — same wrapping
+      // as EventInviteeRepo and ConnectionRepo already use.
+      added += Number(stmt.run(
         it.post_urn, it.post_url, it.tracked_profile_id, it.author_name, it.author_headline,
         it.content, it.posted_at, it.is_repost, it.reaction_count, it.comment_count,
         it.raw_json, firstSeenAtIso,
-      );
-      if (this.countAll() > before) added++;
+      ).changes);
     }
     return added;
   }
@@ -832,12 +833,10 @@ export class PostRepo {
    */
   prune(days: number, now: Date): number {
     const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
-    const before = this.countAll();
-    this.db.prepare(
+    return Number(this.db.prepare(
       `DELETE FROM posts WHERE engagement_id IS NULL
        AND COALESCE(posted_at, first_seen_at) < ?`,
-    ).run(cutoff);
-    return before - this.countAll();
+    ).run(cutoff).changes);
   }
 }
 ```
