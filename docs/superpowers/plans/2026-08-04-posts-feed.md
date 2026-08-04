@@ -1909,6 +1909,17 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 /** An auth failure will not fix itself, so it latches. Anything else is retried next tick. */
+/**
+ * Should this failure latch the halt rather than be retried next tick?
+ *
+ * 401/403 will not fix themselves on a retry, so both latch. But note 403 is AMBIGUOUS at
+ * Apify: it is returned both for a bad key AND for "monthly usage hard limit exceeded"
+ * (confirmed in a real 403 body: `{"type":"insufficient-permissions","message":"monthly usage
+ * hard limit exceeded"}`). Halting is right either way — neither resolves by retrying — but
+ * the REASON shown to the operator must not assert a bad key when the key is fine and the
+ * account is simply out of budget. The client surfaces Apify's own message, so pass it through
+ * rather than overwriting it with an interpretation.
+ */
 function isAuthFailure(message: string): boolean {
   return /HTTP 40[13]/.test(message);
 }
@@ -1991,7 +2002,10 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
           for (const m of batch) repos.trackedProfiles.markSweepError(m.id, error);
           log.error('posts', 'sweep batch failed', { count: batch.length, postedLimit, error });
           if (isAuthFailure(error)) {
-            repos.appState.haltPosts('auth', `Apify rejected the API key: ${error}`, nowIso);
+            // Pass Apify's own message through rather than asserting a cause: a 403 means
+            // either a bad key or a spent monthly budget, and telling an operator their key
+            // is wrong when it isn't sends them down the wrong path.
+            repos.appState.haltPosts('auth', `Apify refused the request — ${error}`, nowIso);
             return result;   // every remaining batch would fail the same way
           }
         }
@@ -3176,6 +3190,29 @@ ids alongside it in the same two places (the populate function and the save payl
 
 `posts_sweep_batch_size` is deliberately **not** exposed: it is a safety valve for a raised
 profile cap, not an operator dial.
+
+- [ ] **Step 3b: VALIDATE the new numeric settings server-side**
+
+`POST /api/settings` (`src/api/server.ts`, ~line 1005) allowlists *keys* and then writes the raw
+value through with no value checking — `repos.settings.update(patch as any)`. That is the
+established pattern for every existing setting, and mostly harmless because a nonsense
+`batch_size` just produces odd pacing.
+
+**`posts_max_per_sweep` is different and must be validated.** `0` is the value an operator would
+naturally type to mean "off", and to the Apify actor `maxPosts: 0` means **all posts, ever** —
+turning a ~$1.60/month sweep into an unbounded scrape of 200 profiles' entire history. `NaN`
+is bad in the other direction: it serializes to `null` and the actor silently applies its own
+default of 10.
+
+Add a small numeric guard for the four posts settings before the `update` call — each must be a
+finite integer `>= 1` (`posts_sweep_per_day` may also be `0`, meaning "never sweep automatically",
+which is safe because it only gates the tick). Reject with a `400` naming the field and the
+allowed range, in the plain language the rest of this API uses.
+
+Note `HttpApifyPostsClient` also refuses `maxPosts < 1` and passes `maxItems` on the run start
+as an API-enforced billing ceiling — so this is the outer layer of three. Defence in depth is
+deliberate here: the settings row is operator-editable, persists, and is read by an unattended
+tick, so a bad value written once spends money every day until someone notices.
 
 - [ ] **Step 4: Load `posts.js`**
 
