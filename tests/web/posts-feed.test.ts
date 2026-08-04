@@ -563,3 +563,75 @@ test('Sweep now disables itself for the duration and reports what it found', asy
   });
   expect(btn.textContent).toBe('Sweep now');
 });
+
+/* ---------- the Connections "Track posts" button ---------- */
+
+test('Track posts sends the selected connection URLs to the tracking endpoint', async () => {
+  const calls = stubFetch({ added: 2, ids: [1, 2], rejected: [] });
+  internals.initSearch();
+
+  // `selected` is app.js's module-level Set of profile URLs (app.js:1879) — the SAME store
+  // "Invite to event" and "Add to message campaign" already read. Seeded directly rather than
+  // through a second selection mechanism.
+  const urls = ['https://www.linkedin.com/in/dana', 'https://www.linkedin.com/in/marcus'];
+  internals.searchSelection().clear();
+  for (const u of urls) internals.searchSelection().add(u);
+
+  (document.getElementById('selectionTrack') as HTMLButtonElement).click();
+  await vi.waitFor(() => {
+    const call = calls.find((c) => c.url === '/api/tracked-profiles');
+    expect(call).toBeTruthy();
+    expect(call!.method).toBe('POST');
+    expect(call!.body).toEqual({ profile_urls: urls });
+    expect(document.getElementById('searchMeta')!.textContent).toContain('2 people');
+  });
+});
+
+test('Track posts reads the same selection the other two buttons do', () => {
+  // Not a second store: a divergent one is how the wrong people get acted on.
+  internals.initSearch();
+  internals.searchSelection().clear();
+  internals.searchSelection().add('https://www.linkedin.com/in/dana');
+  expect(internals.postsState.selected.size).toBe(0);
+  expect(internals.searchSelection().size).toBe(1);
+});
+
+test('Track posts does nothing with an empty selection', async () => {
+  const calls = stubFetch({ added: 0, ids: [], rejected: [] });
+  internals.initSearch();
+  internals.searchSelection().clear();
+  (document.getElementById('selectionTrack') as HTMLButtonElement).click();
+  await new Promise((r) => setTimeout(r, 5));
+  expect(calls).toHaveLength(0);
+});
+
+test('a rejected profile is named rather than silently dropped', async () => {
+  stubFetch({
+    added: 1, ids: [4],
+    rejected: [{ profile_url: 'https://www.linkedin.com/in/dana', reason: 'cap_reached',
+      message: 'tracking cap of 200 reached — remove some profiles first' }],
+  });
+  internals.initSearch();
+  internals.searchSelection().clear();
+  internals.searchSelection().add('https://www.linkedin.com/in/dana');
+  (document.getElementById('selectionTrack') as HTMLButtonElement).click();
+  await vi.waitFor(() => {
+    expect(document.getElementById('searchMeta')!.textContent).toContain('tracking cap of 200');
+  });
+});
+
+test('a failed Track posts leaves the button usable and says why', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: false, status: 400, statusText: 'Bad Request',
+    json: async () => ({ error: 'no profile urls supplied' }),
+  } as Response)));
+  internals.initSearch();
+  internals.searchSelection().clear();
+  internals.searchSelection().add('https://www.linkedin.com/in/dana');
+  const btn = document.getElementById('selectionTrack') as HTMLButtonElement;
+  btn.click();
+  await vi.waitFor(() => {
+    expect(document.getElementById('searchMeta')!.textContent).toContain('no profile urls supplied');
+  });
+  expect(btn.disabled).toBe(false);
+});

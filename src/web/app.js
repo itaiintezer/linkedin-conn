@@ -1878,6 +1878,12 @@ function buildSearchQuery() {
    changed is exactly how the wrong people get queued. */
 const selected = new Set();
 
+/* Exposed for the jsdom harness, which seeds a selection directly rather than clicking its way
+   through a rendered results table. It hands back the REAL Set on purpose: there is exactly one
+   selection store behind all three buttons in that bar, and a test that could not reach it
+   would have to invent a second one. */
+function searchSelection() { return selected; }
+
 function connRow(r) {
   const slug = slugFromUrl(r.profile_url);
   const tr = el('tr', { class: 'search-row', 'data-slug': slug, 'data-url': r.profile_url });
@@ -2258,6 +2264,32 @@ function initSearch() {
   $('#selectionClear')?.addEventListener('click', clearSelection);
   $('#selectionAdd')?.addEventListener('click', () => { void openCampaignDialog(); });
   $('#selectionEvent')?.addEventListener('click', () => { void openEventDialog(); });
+
+  $('#selectionTrack')?.addEventListener('click', async (ev) => {
+    // `selected` is the module-level Set the other two buttons already read (app.js:1879,
+    // spread the same way in submitEventInvite). No second selection store.
+    const urls = [...selected];
+    if (urls.length === 0) return;
+    const btn = ev.currentTarget;
+    const result = $('#searchMeta');
+    btn.disabled = true;
+    try {
+      // Tracking is not a send: it queues nothing in front of anyone, it only decides whose
+      // posts get scraped. So no confirmation dialog, unlike "Add to message campaign".
+      const res = await api('/api/tracked-profiles', { method: 'POST', body: { profile_urls: urls } });
+      const rejects = Array.isArray(res?.rejected) ? res.rejected : [];
+      // Named, not counted: "1 skipped" leaves the operator guessing who and why — the usual
+      // reason is the tracking cap, which they have to act on.
+      toast(result, rejects.length === 0
+        ? `Now tracking posts for ${plural(res.added, 'person', 'people')}.`
+        : `Tracking ${fmtInt(res.added)} · ${fmtInt(rejects.length)} skipped: ${rejects[0].message}`,
+      res.added === 0);
+    } catch (err) {
+      toast(result, `Could not track: ${err.message}`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
   $('#evtClose')?.addEventListener('click', closeEventDialog);
   $('#evtCampaign')?.addEventListener('change', syncEventDialog);
   $('#evtConfirm')?.addEventListener('click', () => { void submitEventInvite(); });

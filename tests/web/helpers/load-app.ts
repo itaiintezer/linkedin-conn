@@ -36,6 +36,9 @@ export interface AppInternals {
   renderApifyKey: (settings: Record<string, unknown>) => void;
   applyEnrichHaltUi: (status: Record<string, unknown>) => void;
   initSearch: () => void;
+  /** app.js's module-level `selected` Set of profile URLs (app.js:1879) — the ONE selection
+   *  store the Connections bar's three buttons read. */
+  searchSelection: () => Set<string>;
   initEvents: () => void;
   initDashboard: () => void;
   refreshQueue: () => Promise<void>;
@@ -86,7 +89,7 @@ export function loadApp(): AppInternals {
   const postsSrc = readFileSync(join(WEB_DIR, 'posts.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, applyEnrichHaltUi, initSearch, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
+    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }
