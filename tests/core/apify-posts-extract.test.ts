@@ -5,11 +5,14 @@
  * observed in a 26,256-item corpus of real actor output at
  * `C:\Projects\prospecting\icp_cache_posts` (2026-08-04), but every name, url and id in it is
  * made up, so nothing here depends on a path that only exists on one machine or distributes
- * a real person's data. It covers: a normal post with `author.info`; a bare reshare via
- * `repostedBy` (no added commentary, content already at the top level); a reshare WITH added
- * commentary via `repost` (both with and without the resharer's own words); and
- * array-valued `engagement.reactions` throughout, since that is the real shape and never a
- * bare number.
+ * a real person's data. It covers: a normal post with `author.info`, using the
+ * `/posts/<slug>-activity-<id>-<hash>` URL form that 99.6% of real items actually send; a
+ * bare reshare via `repostedBy` (no added commentary, content already at the top level,
+ * `repostedAt` equal to `postedAt` as real data always has it); a reshare WITH added
+ * commentary via `repost` (both with and without the resharer's own words — the latter is
+ * OUT OF SCOPE and dropped, see extractPost's doc comment for why); a percent-encoded,
+ * non-ASCII profile identity; and array-valued `engagement.reactions` throughout, since
+ * that is the real shape and never a bare number.
  *
  * The `postedAt` shape used below (`{timestamp, date, postedAgoShort, postedAgoText}`, with
  * `date` already a full `Z`-suffixed ISO string) is what the corpus actually sends. The
@@ -21,6 +24,7 @@ import { test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { extractPost, parsePostedAt, attribute } from '../../src/core/apify-posts-extract.js';
+import { normalizeProfileUrl } from '../../src/core/url.js';
 import type { ApifyPost } from '../../src/types.js';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
@@ -84,6 +88,11 @@ test('a zone-less T-separated timestamp is read as UTC, not local time', () => {
   const prevTz = process.env.TZ;
   process.env.TZ = 'Asia/Jerusalem';
   try {
+    // Self-checking: if this ever reads 0, the override above did nothing (e.g. a future
+    // Node/vitest change stops honouring a runtime process.env.TZ write) and the assertions
+    // below would pass trivially without exercising anything — so fail loudly instead of
+    // silently testing nothing.
+    expect(new Date('2026-08-03T12:00:00Z').getTimezoneOffset()).not.toBe(0);
     expect(parsePostedAt('2026-08-03T14:23:00')).toBe('2026-08-03T14:23:00.000Z');
     // The space-separated defensive form must behave identically.
     expect(parsePostedAt('2026-08-03 14:23:00')).toBe('2026-08-03T14:23:00.000Z');
@@ -100,11 +109,21 @@ test('a real UTC offset is honoured, not overridden', () => {
 
 test('an impossible calendar day is rejected, not silently rolled into the next month', () => {
   // `Date` silently rolls Feb 30 -> Mar 2 rather than rejecting it, which would otherwise
-  // still pass the posted_at CHECK and land two days off with nothing to say why.
+  // still pass the posted_at CHECK and land two days off with nothing to say why. This must
+  // hold on the Z/offset-bearing branch too — the ONE real data actually reaches
+  // (`postedAt.date` is a `Z`-suffixed ISO string on every corpus item) — not just the two
+  // defensive-only branches (bare date, zone-less) that happen to share the same regex
+  // shape. A guard that covered only those two would read as tested while the live path
+  // stayed unguarded.
   expect(parsePostedAt('2026-02-30')).toBeNull();
   expect(parsePostedAt('2026-02-30 14:23:00')).toBeNull();
+  expect(parsePostedAt('2026-02-30T10:00:00')).toBeNull();
+  expect(parsePostedAt('2026-02-30T10:00:00Z')).toBeNull();
+  expect(parsePostedAt('2026-02-30T10:00:00+03:00')).toBeNull();
+  expect(parsePostedAt({ date: '2026-02-30T10:00:00.000Z' })).toBeNull();
   // A real calendar day one day earlier must still parse normally (the guard isn't blanket).
   expect(parsePostedAt('2026-02-28')).toBe('2026-02-28T00:00:00.000Z');
+  expect(parsePostedAt('2026-02-28T10:00:00Z')).toBe('2026-02-28T10:00:00.000Z');
 });
 
 test('extractPost maps a full item', () => {
@@ -146,21 +165,25 @@ test('an item with no resolvable identity is dropped, not guessed at', () => {
   expect(extractPost({ ...base, id: 'not-a-urn', linkedinUrl: 'https://example.com/x' }, 1)).toBeNull();
 });
 
-test('an item with no text anywhere is dropped — there is nothing to judge or engage with', () => {
+test('an item with no top-level text is dropped — there is nothing to judge or engage with', () => {
   expect(extractPost({ ...base, content: '   ' }, 1)).toBeNull();
   expect(extractPost({ ...base, content: undefined }, 1)).toBeNull();
-  // Still nothing to read even after checking the reshare fallback below.
-  expect(extractPost({ ...base, content: undefined, repost: { content: '   ' } }, 1)).toBeNull();
+  // A NESTED repost.content is NOT a substitute, even when it has real text — see the next
+  // test for why: top-level content is the only thing extractPost will read.
+  expect(extractPost({ ...base, content: undefined, repost: { content: 'Nested original text.' } }, 1))
+    .toBeNull();
 });
 
-test("a reshare-with-commentary that added no words of its own falls back to the nested original's text", () => {
-  // Measured: of the 9.0% of real items with no top-level content, most are reshares whose
-  // ORIGINAL is worth showing even though the resharer typed nothing — reacting to a post
-  // needs no text of the resharer's own. Only when the nested post ALSO has no content is
-  // the item genuinely unusable (covered by the previous test).
-  const out = extractPost({ ...base, content: undefined, repost: { content: 'Nested original text.' } }, 1)!;
-  expect(out.content).toBe('Nested original text.');
-  expect(out.is_repost).toBe(1);
+test('a reshare-with-commentary that added no words of its own is dropped, not filled in from the nested original', () => {
+  // Requiring TOP-LEVEL content is a deliberate scope decision (2026-08-04), not an
+  // oversight: a fallback to `repost.content` was measured directly and found to mislabel
+  // authorship on 401 of 704 rows it produced — the recovered content belonged to a
+  // different person than the row's own `author` (e.g. author "Aaron Fenimore / IT Security
+  // Manager" with content actually written by Stuart Wolstenholme). Same hazard as a bare
+  // reshare's stranger's-name problem, just carried by the text instead of the byline — see
+  // extractPost's own doc comment for the full writeup.
+  expect(extractPost({ ...base, content: undefined, repost: { content: 'Nested original text.' } }, 1))
+    .toBeNull();
 });
 
 test('missing author and engagement degrade to null rather than throwing', () => {
@@ -273,14 +296,39 @@ test("a reshare-with-commentary fixture keeps the resharer's own words when pres
   expect(out.is_repost).toBe(1);
 });
 
-test('a reshare-with-commentary fixture with no added words falls back to the nested original', () => {
-  const out = extractPost(byLabel('reshare_with_commentary_no_own_words'), 1)!;
-  expect(out.content).toBe('Alert fatigue is the number one reason tier-1 analysts burn out within a year.');
-  expect(out.is_repost).toBe(1);
+test('a reshare-with-commentary fixture with no added words is dropped (out of scope, not recovered)', () => {
+  expect(extractPost(byLabel('reshare_with_commentary_no_own_words'), 1)).toBeNull();
 });
 
 test('a bare reshare fixture with no recoverable content anywhere is dropped', () => {
   expect(extractPost(byLabel('bare_reshare_no_recoverable_content'), 1)).toBeNull();
+});
+
+test('a percent-encoded, non-ASCII profile identity round-trips through attribute()', () => {
+  // Real corpus hazard: 46 items carry a percent-encoded targetUrl and 478 carry non-ASCII
+  // in the author name (sample: publicIdentifier "💽scott-s-54900bb4", targetUrl
+  // "http://www.linkedin.com/in/%f0%9f%92%bdscott-s-54900bb4"). Verified directly against
+  // normalizeProfileUrl: it lowercases the percent-encoded hex, so `query.targetUrl` (lower,
+  // http, no query string) and `author.linkedinUrl` (upper, https, with a miniProfileUrn
+  // query string) for the SAME percent-encoded identity normalize to the identical key and
+  // attribute correctly — this fixture item and the assertion below are that proof, not an
+  // assumption. (A RAW, already-percent-DEcoded emoji in a URL is a different, separate
+  // case that normalizeProfileUrl cannot parse at all — untested here because no field in
+  // the real corpus ever arrives in that form; see the module's own report for the
+  // distinction.)
+  const item = byLabel('percent_encoded_identity');
+  const byUrl = new Map([[normalizeProfileUrl(item.author!.linkedinUrl as string)!, 1]]);
+  const { rows, unattributed } = attribute([item], byUrl);
+  expect(unattributed).toBe(0);
+  expect(rows.map((r) => r.tracked_profile_id)).toEqual([1]);
+});
+
+test("a fixture item's linkedinUrl uses the /posts/<slug>-activity-<id>-<hash> form real data actually sends", () => {
+  // 26,162 of 26,256 real items (99.64%) use this form; /feed/update/ is the rare 94. It
+  // exercises normalizePostUrl's POSTS_SLUG_RE path (src/core/url.ts) rather than the
+  // simpler direct-URN path every OTHER fixture item happens to take.
+  const out = extractPost(byLabel('normal_post'), 1)!;
+  expect(out.post_urn).toBe('urn:li:activity:7500000000000000001');
 });
 
 // --- Schema round-trip -------------------------------------------------------------
@@ -291,7 +339,8 @@ test('every row extractPost produces actually inserts against the real posts CHE
   const rows = fx
     .map((f) => extractPost(f, profile.id))
     .filter((r): r is NonNullable<typeof r> => r !== null);
-  // Sanity: the fixture set is expected to yield 4 usable rows (one is genuinely unusable).
+  // Sanity: 2 of the 6 fixture items are genuinely unusable (no top-level content, nothing
+  // recoverable in scope) — the rest insert cleanly.
   expect(rows.length).toBe(4);
   const { added, rejected } = repos.posts.upsertMany(rows, new Date().toISOString());
   expect(rejected).toBe(0);

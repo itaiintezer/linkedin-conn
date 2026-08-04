@@ -3,7 +3,7 @@
     "_label": "normal_post",
     "type": "post",
     "id": "7500000000000000001",
-    "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7500000000000000001/",
+    "linkedinUrl": "https://www.linkedin.com/posts/priya-chandran-example_alert-triage-is-an-ownership-problem-activity-7500000000000000001-XyZ1",
     "content": "Alert triage is an ownership problem.",
     "author": {
       "name": "Priya Chandran",
@@ -44,7 +44,7 @@
       "linkedinUrl": "https://www.linkedin.com/in/jordan-blake-example"
     },
     "repostedAt": { "timestamp": 1785766980000, "date": "2026-08-03T14:23:00.000Z" },
-    "postedAt": { "timestamp": 1785680580000, "date": "2026-08-02T14:23:00.000Z" },
+    "postedAt": { "timestamp": 1785766980000, "date": "2026-08-03T14:23:00.000Z" },
     "engagement": {
       "likes": 12,
       "comments": 0,
@@ -56,7 +56,7 @@
     "_label": "reshare_with_commentary",
     "type": "post",
     "id": "7500000000000000003",
-    "linkedinUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7500000000000000003/",
+    "linkedinUrl": "https://www.linkedin.com/posts/jordan-blake-example_this-mirrors-exactly-what-were-seeing-activity-7500000000000000003-AbC2",
     "content": "This mirrors exactly what we're seeing in our own SOC.",
     "author": {
       "name": "Jordan Blake",
@@ -121,12 +121,31 @@
       "linkedinUrl": "https://www.linkedin.com/in/jordan-blake-example"
     },
     "repostedAt": { "timestamp": 1785766980000, "date": "2026-08-03T14:23:00.000Z" },
-    "postedAt": { "timestamp": 1785680580000, "date": "2026-08-02T14:23:00.000Z" },
+    "postedAt": { "timestamp": 1785766980000, "date": "2026-08-03T14:23:00.000Z" },
     "engagement": {
       "likes": 3,
       "comments": 0,
       "reactions": [{ "type": "LIKE", "count": 3 }]
     },
     "query": { "targetUrl": "https://www.linkedin.com/in/jordan-blake-example" }
+  },
+  {
+    "_label": "percent_encoded_identity",
+    "type": "post",
+    "id": "7500000000000000006",
+    "linkedinUrl": "https://www.linkedin.com/posts/alexrivera-example_our-soc-just-hit-a-milestone-activity-7500000000000000006-QwE9",
+    "content": "Our SOC just hit a milestone worth celebrating.",
+    "author": {
+      "name": "💽 Alex Rivera",
+      "linkedinUrl": "https://www.linkedin.com/in/%F0%9F%92%BDalexrivera-example?miniProfileUrn=urn%3Ali%3Afsd_profile%3AexampleUrn",
+      "info": "Detection Engineer"
+    },
+    "postedAt": { "timestamp": 1785766980000, "date": "2026-08-03T14:23:00.000Z" },
+    "engagement": {
+      "likes": 8,
+      "comments": 0,
+      "reactions": [{ "type": "LIKE", "count": 8 }]
+    },
+    "query": { "targetUrl": "http://www.linkedin.com/in/%f0%9f%92%bdalexrivera-example" }
   }
 ]

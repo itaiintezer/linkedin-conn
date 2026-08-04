@@ -31,6 +31,11 @@ const ISO_MS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  * instead of rejecting it — `Date.UTC(2026, 1, 30)` (Feb 30) becomes March 2 — and that
  * rolled instant still serializes to a value `ISO_MS` accepts, so the shape check alone
  * cannot catch it. Round-tripping the components is what does.
+ *
+ * Also rejects any two-digit year (0-99): `Date.UTC` maps those into 1900-1999 (legacy
+ * JS Date behaviour), so the round-trip can never succeed and this always returns false for
+ * them. That is the right direction to fail in — a LinkedIn post cannot be dated year 0-99 —
+ * but it is a side effect of the round-trip, not a decision this function makes on purpose.
  */
 function isValidYmd(y: number, mo: number, d: number): boolean {
   const dt = new Date(Date.UTC(y, mo - 1, d));
@@ -110,8 +115,14 @@ export function parsePostedAt(value: unknown): string | null {
   }
 
   // ISO 8601 carrying its own zone (a trailing Z or a numeric offset) — unambiguous for
-  // `new Date` to parse directly.
-  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+  // `new Date` to parse directly. THIS is the branch real data actually reaches:
+  // `postedAt.date` is a `Z`-suffixed ISO string on every corpus item, so it is the one
+  // that must not skip the day round-trip check. Validating the wall-clock date as WRITTEN
+  // is correct regardless of the offset that follows — a rolled `Feb 30` is a defect in the
+  // source string no matter what zone it claims to be in.
+  const zoned = s.match(/^(\d{4})-(\d{2})-(\d{2})T/);
+  if (zoned) {
+    if (!isValidYmd(+zoned[1], +zoned[2], +zoned[3])) return null;
     return iso(new Date(s));
   }
 
@@ -164,16 +175,6 @@ function isRepost(raw: ApifyPost): number {
   return 0;
 }
 
-/** The nested original post's text on a reshare-with-commentary (`repost.content`). A bare
- *  reshare (`repostedBy` only, no `repost`) has no separate nested original to fall back to
- *  — LinkedIn already puts the original's own text at the top-level `content` in that case,
- *  which is why the fallback below only ever looks at `repost`. */
-function repostContent(raw: ApifyPost): string | null {
-  const r = raw.repost;
-  if (!r || typeof r !== 'object') return null;
-  return str((r as { content?: unknown }).content);
-}
-
 /** `JSON.stringify` throws on a circular reference or a BigInt. Neither is expected from
  *  actor JSON, but the sibling `apify-extract.ts` module's contract is that a malformed
  *  payload yields nulls, never a throw — and inside a batch (`attribute` below), an
@@ -182,18 +183,36 @@ function safeStringify(raw: unknown): string | null {
   try { return JSON.stringify(raw); } catch { return null; }
 }
 
-/** One item -> one row, or null when it is unusable. */
+/**
+ * One item -> one row, or null when it is unusable.
+ *
+ * TOP-LEVEL `content` IS REQUIRED, and that single rule is what puts bare reshares out of
+ * scope (decided 2026-08-04). A reshare *with* commentary carries the tracked person's own
+ * words in `content` and flows through here as an ordinary post. A BARE reshare carries none,
+ * so it lands here with `content` empty and is dropped.
+ *
+ * Do not "fix" that by recovering text from the nested `repost.content`. On a bare reshare the
+ * `author` object is the ORIGINAL author, not the tracked profile (measured: author and
+ * repostedBy identities differ in 1,122 of 1,122 sampled items), so the card would display a
+ * stranger's name, headline and words on a row that appeared because the operator tracks
+ * someone else. Presenting that honestly needs an author-display override and a "X reshared
+ * this" affordance, and it walks the operator into the pre-existing reshare defect where
+ * comment `data-id`s key on the ugcPost URN and silently lose attribution. Deliberately not
+ * in scope; the ~32% of items this drops are the lowest-signal ones in the feed.
+ *
+ * This also covers the reshare-WITH-commentary case where the resharer added no words of
+ * their own: measured directly on the fallback this replaced, 662 of 704 such rows had the
+ * tracked profile as the row's author, but 401 of THOSE had recovered content that belonged
+ * to a different person than the byline — the same stranger's-words-under-someone-else's-name
+ * hazard as the bare-reshare case, just carried by `repost.content` instead of `author`. A
+ * real example: author "Aaron Fenimore / IT Security Manager", recovered content a hiring
+ * post actually written by Stuart Wolstenholme. Requiring top-level `content` rules out both
+ * shapes with the same one rule.
+ */
 export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput | null {
   if (!raw || typeof raw !== 'object') return null;
-  // A bare reshare's own text IS the top-level `content` (measured: 7,876 real bare
-  // reshares — `repostedBy` present, no `repost` — with content present on all but 118 of
-  // them, and those 118 have no recoverable text anywhere in the payload: the original
-  // itself was image/document/article-only).
-  // A reshare-WITH-commentary can have an empty top-level `content` (the resharer added no
-  // words of their own) while the original post it wraps still has text worth showing and
-  // engaging with — that text lives at `repost.content`, so it is the one fallback tried.
-  const content = str(raw.content) ?? repostContent(raw);
-  if (content === null) return null;       // nothing to judge, nothing to engage with
+  const content = str(raw.content);
+  if (content === null) return null;       // no words of their own — see above
   const ref = identify(raw);
   if (ref === null) return null;
 
@@ -231,10 +250,11 @@ export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput
  * assigned to whichever profile happens to be nearby, which would attribute a post to the
  * wrong person.
  *
- * `unusable` is counted SEPARATELY from `unattributed`: measured across the corpus, ~9% of
- * items have no resolvable text anywhere (`extractPost` returns null) — some are plain
- * image/video/document posts with no caption, some are reshares whose original itself had
- * no text — and that is a content-policy fact about the item, nothing to do with
+ * `unusable` is counted SEPARATELY from `unattributed`: measured across the corpus, ~9.1% of
+ * items have an empty top-level `content` (`extractPost` returns null) — plain
+ * image/video/document posts with no caption, reshares-with-commentary where the resharer
+ * added no words of their own, and bare reshares — and that is a content-policy fact about
+ * the item (see extractPost's own doc for why it is not recovered), nothing to do with
  * attribution. Folding the two together would make a caller's single
  * "dropped unattributable items" log line blame URL normalization for a content policy on
  * every sweep, forever — exactly the kind of misleading telemetry the wrong count would
