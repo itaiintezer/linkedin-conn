@@ -13,6 +13,10 @@ import {
   POST_LOAD_TIMEOUT_MS, FLYOUT_TIMEOUT_MS, REACTED_TIMEOUT_MS, SUBMIT_ARM_TIMEOUT_MS,
   COMMENT_CONFIRM_TIMEOUT_MS,
 } from './post-selectors.js';
+import {
+  RSEL, flyoutEntry, postKeyFromShellId, postContainerSelector, urnFromFacepileTestid,
+  readReactionVerdict, commentUrnFromRowId, type ReactionVerdict,
+} from './post-selectors-react.js';
 import { normalizeProfileUrl } from '../core/url.js';
 import {
   classifyRelationship, skipsInvite, confirmsInviteLanded, mayReceiveDirectMessage,
@@ -794,6 +798,14 @@ export class LinkedInDriver implements BrowserDriver {
         if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
       }
 
+      // LinkedIn serves TWO post surfaces, per-account (observed live 2026-08-05: this
+      // account renders the classic Ember/artdeco UI, another operator's renders the
+      // hashed-class React one). Detect which rendered and dispatch; `none` continues on
+      // the classic path, which lands in the same unavailable-with-evidence it always has.
+      if (await this.detectPostSurface(page) === 'react') {
+        return await this.reactOnReactSurface(page, postUrl, reaction);
+      }
+
       const post = await this.resolvePostContainer(page);
       if (await post.count()) {
         observedUrn = (await post.getAttribute('data-urn').catch(() => null)) ?? undefined;
@@ -940,6 +952,13 @@ export class LinkedInDriver implements BrowserDriver {
       {
         const scan = await this.scanCheckpoint(page);
         if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+      }
+
+      // Same two-surface dispatch as reactToPost. The react comment method owns its whole
+      // outcome, including the submitted-means-unverified rule — nothing it returns is
+      // reinterpreted here.
+      if (await this.detectPostSurface(page) === 'react') {
+        return await this.commentOnReactSurface(page, postUrl, text);
       }
 
       const post = await this.resolvePostContainer(page);
@@ -1145,13 +1164,420 @@ export class LinkedInDriver implements BrowserDriver {
   private async engagementUnavailable(page: Page, post: Locator, error: string): Promise<EngagementOutcome> {
     const ev = await captureEvidence(page, 'engage-unavailable', {
       error,
+      surface: 'classic',
       hasPostContainer: (await post.count()) > 0,
       hasActionBar: (await post.locator(PSEL.actionBar).count()) > 0,
       hasIdentityToggle: (await post.locator(PSEL.identityToggleNeverClick).count()) > 0,
       hasReactTrigger: (await post.locator(PSEL.reactTrigger).count()) > 0,
       hasCommentForm: (await post.locator(PSEL.commentForm).count()) > 0,
+      // If the account is mid-migration to the React surface, this is the field that says
+      // so from the JSON alone — `hasPostContainer: false` with a shell present means "the
+      // surface changed", not "the page did not load". (2026-08-05's diagnosis needed the
+      // HTML dump precisely because this was not recorded.)
+      reactDetailShells: await page.locator(RSEL.detailShell).count(),
     });
     log.warn('engage', 'control unavailable', { url: page.url(), error });
+    return { result: 'unavailable', error, evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null } };
+  }
+
+  // --- Post engagements: the hashed-class React surface ---------------------------------
+  // LinkedIn serves two post detail surfaces at once, per-account. The classic path above
+  // is live-verified on THIS repo's account; everything below encodes the DOM another
+  // operator's migrated account rendered (2026-08-05 diagnosis, four live captures).
+  // Selectors: browser/post-selectors-react.ts. Neither surface's code may reach into the
+  // other's selectors — the dispatch in reactToPost/commentOnPost is the only join.
+
+  /**
+   * Which post surface this page rendered. Each answer is a POSITIVE signal — the classic
+   * container (`div[data-urn][role="article"]`) and the react shell are each ABSENT from
+   * the other surface's captures, so presence decides. `none` means neither anchor
+   * resolved; callers continue on the classic path, whose unavailable-with-evidence now
+   * records both probes. Both present has never been observed; the classic path wins there
+   * because it is the one proven on this account, and the log says so.
+   */
+  private async detectPostSurface(page: Page): Promise<'classic' | 'react' | 'none'> {
+    const anchor = page.locator(`${PSEL.postContainer}, ${RSEL.detailShell}`).first();
+    await anchor.waitFor({ state: 'attached', timeout: POST_LOAD_TIMEOUT_MS }).catch(() => {});
+    const classic = await page.locator(PSEL.postContainer).count();
+    const react = await page.locator(RSEL.detailShell).count();
+    if (classic > 0 && react > 0) {
+      log.warn('engage', 'both post surfaces detected on one page — taking the classic path',
+        { url: page.url(), classic, react });
+      return 'classic';
+    }
+    if (classic > 0) return 'classic';
+    if (react > 0) {
+      log.info('engage', 'react post surface detected', { url: page.url() });
+      return 'react';
+    }
+    return 'none';
+  }
+
+  /**
+   * The react-surface post scope: the shell, and inside it the post container DERIVED from
+   * the shell's own id (`expanded<postKey>FeedType_FEED_DETAIL` -> `componentkey=<postKey>`)
+   * — read from one element, used to find the other, never assumed.
+   *
+   * Container scoping is what structurally excludes comment-level controls on this surface
+   * (comments sit OUTSIDE the post container — the opposite of the classic UI). When the
+   * derivation fails, scope falls back to the shell and that guarantee weakens to the
+   * trigger selector's tag-name check alone, so the fallback logs a warning. Null when the
+   * page does not carry exactly one shell — not a single-post detail page.
+   */
+  private async resolveReactScope(
+    page: Page,
+  ): Promise<{ scope: Locator; shell: Locator; scopedBy: 'container' | 'shell' } | null> {
+    const shells = page.locator(RSEL.detailShell);
+    if ((await shells.count()) !== 1) return null;
+    const shell = shells.first();
+    const key = postKeyFromShellId(await shell.getAttribute('id').catch(() => null));
+    if (key !== null) {
+      const container = shell.locator(postContainerSelector(key));
+      if ((await container.count()) === 1) return { scope: container.first(), shell, scopedBy: 'container' };
+    }
+    log.warn('engage',
+      'react-surface post container could not be derived from the shell id — scoping to the shell'
+      + ' (comment-level control exclusion rests on the trigger tag-name check alone)',
+      { url: page.url(), shellKey: key });
+    return { scope: shell, shell, scopedBy: 'shell' };
+  }
+
+  /** The trigger's state, judged by post-selectors-react's pure state machine over the
+   *  element's icon ids + aria-label. Re-reads the live element every call, so the
+   *  confirmation poll below sees state changes. */
+  private async readReactTriggerVerdict(trigger: Locator): Promise<ReactionVerdict> {
+    const label = await trigger.getAttribute('aria-label').catch(() => null);
+    const icons = await trigger.locator('svg[id]')
+      .evaluateAll((els) => els.map((e) => e.id))
+      .catch(() => [] as string[]);
+    return readReactionVerdict(icons, label);
+  }
+
+  /**
+   * reactToPost, react surface. Same contract and the same toggle hazard as the classic
+   * path, with one difference of substance: `aria-pressed` does not exist here, so state is
+   * a two-signal judgement (icon primary, label corroborating) and A CLICK IS GREEN-LIT
+   * ONLY ON A POSITIVE UNREACTED SIGNAL — an `unknown` verdict is `unavailable` (evidence,
+   * failure streak, loud halt), never a guess in either direction.
+   */
+  private async reactOnReactSurface(
+    page: Page, postUrl: string, reaction: Reaction,
+  ): Promise<EngagementOutcome> {
+    let observedUrn: string | undefined;
+    const urn = () => (observedUrn ? { observedUrn } : {});
+
+    const resolved = await this.resolveReactScope(page);
+    if (!resolved) {
+      return await this.engagementUnavailableReact(page, null, 'not exactly one post detail shell on the page');
+    }
+    const { scope } = resolved;
+
+    observedUrn = urnFromFacepileTestid(
+      await scope.locator(RSEL.urnCarrier).first().getAttribute('data-testid').catch(() => null),
+    );
+
+    // The trigger must be UNIQUE inside the post scope: the same union that finds it also
+    // describes what a rot-shifted page could mis-offer, and two candidates means we no
+    // longer know which one is the post's.
+    const triggers = scope.locator(RSEL.reactTrigger);
+    const triggerCount = await triggers.count();
+    if (triggerCount !== 1) {
+      const why = triggerCount === 0
+        ? 'no react trigger on the post'
+        : `${triggerCount} react triggers resolved inside the post scope — refusing to guess`;
+      return { ...(await this.engagementUnavailableReact(page, resolved, why)), ...urn() };
+    }
+    const trigger = triggers.first();
+
+    // 1) STATE FIRST — before hovering, before clicking anything. Same order as classic.
+    const verdict = await this.readReactTriggerVerdict(trigger);
+    if (verdict.state === 'reacted') {
+      log.info('engage', 'post already carries a reaction — not clicking (a click would REMOVE it)',
+        { postUrl, existing: verdict.existingReaction ?? '(unnamed)', surface: 'react' });
+      return {
+        result: 'already',
+        ...(verdict.existingReaction ? { existingReaction: verdict.existingReaction } : {}),
+        ...urn(),
+      };
+    }
+    if (verdict.state === 'unknown') {
+      return {
+        ...(await this.engagementUnavailableReact(page, resolved, `trigger state unreadable: ${verdict.why}`)),
+        ...urn(),
+      };
+    }
+
+    if (reaction === 'like') {
+      await trigger.scrollIntoViewIfNeeded().catch(() => {});
+      await trigger.click();
+    } else {
+      const entry = await this.openReactFlyout(page, scope, trigger, reaction);
+      if (!entry) {
+        return {
+          ...(await this.engagementUnavailableReact(page, resolved, `reaction flyout did not offer ${reaction}`)),
+          ...urn(),
+        };
+      }
+      await entry.click();
+    }
+    await sleep(rand(1500, 3000));
+
+    // 2) LinkedIn's own state is the confirmation — never the click. No aria-pressed to
+    // wait on, so this POLLS the same verdict the pre-click read used until both signals
+    // say `reacted` (live-verified: label and icon flip together after the click).
+    const deadline = Date.now() + REACTED_TIMEOUT_MS;
+    let after = await this.readReactTriggerVerdict(trigger);
+    while (after.state !== 'reacted' && Date.now() < deadline) {
+      await sleep(1000);
+      after = await this.readReactTriggerVerdict(trigger);
+    }
+    if (after.state === 'reacted') {
+      log.info('engage', 'reaction placed', {
+        postUrl, reaction, placed: after.existingReaction ?? null,
+        observedUrn: observedUrn ?? null, surface: 'react',
+      });
+      return { result: 'done', ...urn() };
+    }
+    const scan = await this.scanCheckpoint(page);
+    if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+    // Retryable for the same reason as classic: placing the same reaction twice is
+    // idempotent, and a second pass reads `reacted` and reports `already`.
+    return { ...(await this.engagementErrorOutcome(page, 'reaction did not register')), ...urn() };
+  }
+
+  /**
+   * Hover the trigger and resolve one reaction's flyout entry, or null. The flyout is
+   * PORTALLED to the body root on this surface (it appears under `#root`, not in the post),
+   * so entries are matched page-wide — and required to be UNIQUE, because page-wide is the
+   * whole page. Safe regardless: `flyoutEntry` demands the label and the icon id agree on
+   * one element, and only one flyout can be open. Falls back to clicking the chevron
+   * (`Open reactions menu`) when hovering does not mount it.
+   */
+  private async openReactFlyout(
+    page: Page, scope: Locator, trigger: Locator, reaction: Reaction,
+  ): Promise<Locator | null> {
+    await trigger.scrollIntoViewIfNeeded().catch(() => {});
+    await trigger.hover();
+    const entry = page.locator(flyoutEntry(reaction));
+    const visible = await entry.first().waitFor({ state: 'visible', timeout: FLYOUT_TIMEOUT_MS })
+      .then(() => true).catch(() => false);
+    if (visible && (await entry.count()) === 1) return entry.first();
+
+    // Chevron fallback — scoped to the post and required unique, because comment rows carry
+    // their own `Open reactions menu` buttons and shell-scoping could see them.
+    const chevrons = scope.locator(RSEL.reactionsMenuTrigger);
+    if ((await chevrons.count()) === 1) {
+      await chevrons.first().click().catch(() => {});
+      const opened = await entry.first().waitFor({ state: 'visible', timeout: FLYOUT_TIMEOUT_MS })
+        .then(() => true).catch(() => false);
+      if (opened && (await entry.count()) === 1) return entry.first();
+    }
+    return null;
+  }
+
+  /**
+   * commentOnPost, react surface. The composer is Tiptap/ProseMirror instead of Quill and
+   * lives OUTSIDE the post container (inside the shell), the submit control is found by its
+   * container id (`…commentButtonSection…` — the button itself has no aria-label and its
+   * accessible name collides with the action bar's Comment button), and comment rows carry
+   * their id in `id`, not `data-id`. Everything judgemental is unchanged: novelty is still
+   * the ownership proof, and NOTHING after submit may surface as a retryable `error`.
+   */
+  private async commentOnReactSurface(
+    page: Page, postUrl: string, text: string,
+  ): Promise<EngagementOutcome> {
+    let observedUrn: string | undefined;
+    let submitted = false; // once true, an ambiguous outcome is `unverified`, never `error`
+    const urn = () => (observedUrn ? { observedUrn } : {});
+    try {
+      const resolved = await this.resolveReactScope(page);
+      if (!resolved) {
+        return await this.engagementUnavailableReact(page, null, 'not exactly one post detail shell on the page');
+      }
+      const { scope, shell } = resolved;
+
+      observedUrn = urnFromFacepileTestid(
+        await scope.locator(RSEL.urnCarrier).first().getAttribute('data-testid').catch(() => null),
+      );
+
+      // The wording probe is unchanged and still provisional — no restricted post has ever
+      // been observed on either surface.
+      if (await page.locator(PSEL.commentsDisabledText).first().count()) {
+        const ev = await captureEvidence(page, 'engage-comments-disabled',
+          { signal: 'wording', postUrl, surface: 'react' });
+        log.info('engage', 'comments appear to be disabled (wording signal)', { postUrl });
+        return {
+          result: 'comments_disabled', ...urn(),
+          evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+        };
+      }
+
+      // On a detail page the composer is inline. Scoped to the SHELL: it sits outside the
+      // post container on this surface.
+      const editor = shell.locator(RSEL.commentEditor).first();
+      if (!(await editor.count())) {
+        const commentBtn = scope.locator(RSEL.commentButton);
+        if (await commentBtn.count()) {
+          await commentBtn.first().click().catch(() => {});
+          await sleep(rand(1500, 3000));
+        } else if ((await scope.locator(RSEL.reactTrigger).count()) === 1
+          && (await shell.locator(RSEL.commentComposer).count()) === 0) {
+          // Same two-language-independent-signal rule as classic, with the second signal
+          // repaired for this surface: the composer must be absent from the WHOLE SHELL.
+          // Checking only the post container would be trivially true here (the composer
+          // never lives inside it) and would fire comments_disabled on every post. The
+          // trigger resolving is what makes the missing comment control a statement about
+          // the post rather than about our selectors.
+          const ev = await captureEvidence(page, 'engage-comments-disabled', {
+            signal: 'no comment control on the post and no composer anywhere in the shell',
+            postUrl, surface: 'react',
+          });
+          log.info('engage', 'no comment affordance on a rendered post — treating as disabled',
+            { postUrl, surface: 'react' });
+          return {
+            result: 'comments_disabled', ...urn(),
+            evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+          };
+        }
+      }
+      if (!(await editor.count())) {
+        return {
+          ...(await this.engagementUnavailableReact(page, resolved, 'comment composer never appeared')),
+          ...urn(),
+        };
+      }
+
+      // Tiptap/ProseMirror: insertText in one shot, same astral-plane reason as Quill.
+      await editor.scrollIntoViewIfNeeded().catch(() => {});
+      await editor.click();
+      await sleep(rand(600, 1400));
+      await page.keyboard.insertText(text);
+      await sleep(rand(1200, 2200));
+
+      // The submit control DOES NOT EXIST until the editor has text — its presence is the
+      // armed signal, exactly like the classic surface.
+      const submit = shell.locator(RSEL.commentSubmit).first();
+      const armed = await submit.waitFor({ state: 'visible', timeout: SUBMIT_ARM_TIMEOUT_MS })
+        .then(() => true).catch(() => false);
+      if (!armed) {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+        return {
+          ...(await this.engagementErrorOutcome(page, 'comment submit control never appeared after typing')),
+          ...urn(),
+        };
+      }
+
+      // The ownership baseline — every comment id rendered before the click. Novelty is
+      // still the only proof a row is ours (see confirmPostedComment).
+      const knownIds = (await this.readThreadReact(page)).rows.map((r) => r.dataId);
+
+      submitted = true; // IRREVERSIBLE from here
+      await submit.click();
+      await sleep(rand(3000, 5000));
+
+      const needle = commentNeedle(text);
+      const confirm = async (): Promise<CommentConfirmation> => {
+        const t = await this.readThreadReact(page);
+        return confirmPostedComment(t.rows, t.editors, needle, knownIds);
+      };
+      const deadline = Date.now() + COMMENT_CONFIRM_TIMEOUT_MS;
+      let seen = await confirm();
+      while (!(seen.cleared && seen.matched) && Date.now() < deadline) {
+        await sleep(1000);
+        seen = await confirm();
+      }
+      if (seen.cleared && seen.matched) {
+        log.info('engage', 'comment posted', {
+          postUrl, commentId: seen.commentId, ownBadge: seen.ownBadge,
+          knownBefore: knownIds.length, surface: 'react',
+        });
+        return { result: 'done', ...urn() };
+      }
+
+      const scan = await this.scanCheckpoint(page);
+      const why = scan.hit
+        ? `comment not confirmed and a checkpoint appeared at ${scan.url}`
+        : `comment not confirmed (cleared=${seen.cleared}, newRowInThread=${seen.matched})`;
+      const ev = await captureEvidence(page, 'engage-comment-unverified',
+        { error: why, postUrl, surface: 'react' });
+      log.warn('engage', 'comment could not be verified — parking it', { postUrl, why });
+      return {
+        result: 'unverified', error: why, ...urn(),
+        evidence: { pageUrl: page.url(), matched: scan.matched, screenshot: ev?.screenshot ?? null },
+      };
+    } catch (e) {
+      const message = (e as Error).message;
+      if (submitted) {
+        const ev = await captureEvidence(page, 'engage-comment-unverified',
+          { error: message, postUrl, surface: 'react' });
+        log.warn('engage', 'comment threw after submit — parking it', { postUrl, error: message });
+        return {
+          result: 'unverified', error: message, ...urn(),
+          evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+        };
+      }
+      const scan = await this.scanCheckpoint(page);
+      if (scan.hit) return this.engagementCheckpointOutcome(page, scan);
+      return { ...(await this.engagementErrorOutcome(page, message)), ...urn() };
+    }
+  }
+
+  /**
+   * readThread for the react surface. Same shape and the same one-evaluate rule as the
+   * classic readThread; the differences are the row selector, the id living in `id` (with a
+   * `replaceableComment_` prefix stripped afterwards — outside the evaluate, so the pure
+   * helper stays testable), and meta: this surface has no known meta-line selector, so it is
+   * empty and the `• You` badge simply never corroborates here. It was never load-bearing.
+   */
+  private async readThreadReact(page: Page): Promise<{ rows: ThreadRow[]; editors: string[] }> {
+    const raw = await page.evaluate(({ rowSel, bodySel, editorSel }) => ({
+      rows: Array.from(document.querySelectorAll(rowSel)).map((el) => ({
+        dataId: el.id || '',
+        body: (el.querySelector(bodySel)?.textContent || '').replace(/\s+/g, ' ').trim(),
+        meta: '',
+      })),
+      editors: Array.from(document.querySelectorAll(editorSel))
+        .map((e) => (e.textContent || '').replace(/\s+/g, ' ').trim()),
+    }), { rowSel: RSEL.commentEntity, bodySel: RSEL.commentBody, editorSel: RSEL.commentEditor });
+    return {
+      rows: raw.rows.map((r) => ({ ...r, dataId: commentUrnFromRowId(r.dataId) ?? r.dataId })),
+      editors: raw.editors,
+    };
+  }
+
+  /**
+   * engagementUnavailable for the react surface: every layer's count, so the NEXT selector
+   * rot is readable from the incident JSON alone — the 2026-08-05 diagnosis needed a DOM
+   * archaeology session precisely because the classic evidence recorded booleans about a
+   * surface that was not there.
+   */
+  private async engagementUnavailableReact(
+    page: Page,
+    resolved: { scope: Locator; shell: Locator; scopedBy: 'container' | 'shell' } | null,
+    error: string,
+  ): Promise<EngagementOutcome> {
+    const shell = resolved?.shell ?? page.locator(RSEL.detailShell).first();
+    const scope = resolved?.scope ?? shell;
+    const trigger = scope.locator(RSEL.reactTrigger).first();
+    const shellId = await shell.getAttribute('id').catch(() => null);
+    const ev = await captureEvidence(page, 'engage-unavailable', {
+      error,
+      surface: 'react',
+      shells: await page.locator(RSEL.detailShell).count(),
+      scopedBy: resolved?.scopedBy ?? null,
+      postKey: postKeyFromShellId(shellId),
+      reactTriggers: await scope.locator(RSEL.reactTrigger).count(),
+      triggerLabel: await trigger.getAttribute('aria-label').catch(() => null),
+      triggerIcons: await trigger.locator('svg[id]')
+        .evaluateAll((els) => els.map((e) => e.id)).catch(() => []),
+      reactionsMenu: await scope.locator(RSEL.reactionsMenuTrigger).count(),
+      commentButtons: await scope.locator(RSEL.commentButton).count(),
+      composers: await shell.locator(RSEL.commentComposer).count(),
+      commentSubmits: await shell.locator(RSEL.commentSubmit).count(),
+      urnCarriers: await scope.locator(RSEL.urnCarrier).count(),
+    });
+    log.warn('engage', 'control unavailable', { url: page.url(), error, surface: 'react' });
     return { result: 'unavailable', error, evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null } };
   }
 
