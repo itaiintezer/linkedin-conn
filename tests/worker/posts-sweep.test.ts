@@ -384,7 +384,7 @@ test('a failing prune still returns the pass that already happened', async () =>
   expect(repos.appState.get().posts_swept_at).toBe(NOW.toISOString());
 });
 
-test('unattributed and unusable are counted separately, not folded together', async () => {
+test('unattributed, unusable and bare reshares are counted separately, not folded together', async () => {
   const a = repos.trackedProfiles.add(URL_A, null, 'urls');
   const client = fakeClient(() => [
     postFor(URL_A, 'urn:li:activity:1', '2026-08-04T08:00:00.000Z'),
@@ -392,15 +392,25 @@ test('unattributed and unusable are counted separately, not folded together', as
     // attribute() would rightly recover it. An attribution problem, and the only one of the
     // three that should ever make someone go and read url.ts.
     postFor('https://www.linkedin.com/in/stranger', 'urn:li:activity:2', '2026-08-04T08:00:00.000Z'),
-    // Attributable but wordless — a bare reshare. Routine, and must not be reported as an
-    // attribution failure.
+    // Attributable but wordless: a caption-less media post, or a commentary reshare where no
+    // commentary was added. Routine, and not an attribution failure.
     { ...postFor(URL_A, 'urn:li:activity:3', '2026-08-04T08:00:00.000Z'), content: '' },
+    // A BARE reshare, which is a third and distinct thing: it carries plenty of content, but
+    // the content and the `author` both belong to the original poster and only `repostedBy`
+    // names the tracked profile. Must land in `reshares`, never in `unusable` — conflating
+    // the two is what let 98.5% of these reach the feed while the log said they were skipped.
+    {
+      ...postFor(URL_A, 'urn:li:activity:4', '2026-08-04T08:00:00.000Z'),
+      content: 'Words written by somebody the operator does not track.',
+      repostedBy: { name: 'Tracked Person', linkedinUrl: URL_A },
+    },
   ]);
 
   const res = await runPostsSweep(repos, { client, now: NOW, maxPosts: 3, batchSize: 200 });
   expect(res.postsAdded).toBe(1);
   expect(res.unattributed).toBe(1);
   expect(res.unusable).toBe(1);
+  expect(res.reshares).toBe(1);
   expect(res.postsRejected).toBe(0);
   // Neither is a failure of the pass: the profile is still swept and the pass is still clean.
   expect(res.clean).toBe(true);

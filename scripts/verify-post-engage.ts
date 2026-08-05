@@ -30,6 +30,10 @@ import { CloakSession } from '../src/browser/cloak-session.js';
 import {
   PSEL, reactionEntry, existingReactionFrom, POST_LOAD_TIMEOUT_MS,
 } from '../src/browser/post-selectors.js';
+import {
+  RSEL, flyoutEntry, postKeyFromShellId, postContainerSelector, urnFromFacepileTestid,
+  readReactionVerdict,
+} from '../src/browser/post-selectors-react.js';
 import { isNotFoundUrl } from '../src/browser/linkedin-selectors.js';
 import { parseReaction, DEFAULT_REACTION, REACTIONS, type Reaction } from '../src/core/engagement-action.js';
 import { normalizePostUrl, isShortlink, resolveShortlink } from '../src/core/url.js';
@@ -302,8 +306,20 @@ async function dryInspect(page: Page): Promise<void> {
     return;
   }
 
+  // Two live surfaces, per-account. Wait for EITHER anchor, then report the one that
+  // rendered — the same detection the driver dispatches on.
   const wide = page.locator(PSEL.postContainer);
-  await wide.first().waitFor({ state: 'attached', timeout: POST_LOAD_TIMEOUT_MS }).catch(() => {});
+  await page.locator(`${PSEL.postContainer}, ${RSEL.detailShell}`).first()
+    .waitFor({ state: 'attached', timeout: POST_LOAD_TIMEOUT_MS }).catch(() => {});
+
+  const reactShells = await page.locator(RSEL.detailShell).count();
+  if (!(await wide.count()) && reactShells > 0) {
+    console.log(`surface    : REACT (hashed-class) — ${reactShells} detail shell(s); the classic container is absent`);
+    await dryInspectReact(page);
+    return;
+  }
+  console.log('surface    : classic (Ember/artdeco)'
+    + (reactShells > 0 ? ` — but ${reactShells} react shell(s) ALSO present, which has never been observed` : ''));
 
   const shells = await page.locator(PSEL.detailShell).count();
   const containers = await wide.count();
@@ -370,6 +386,92 @@ async function dryInspect(page: Page): Promise<void> {
     fail('no react trigger inside the action bar — PSEL.reactTrigger does not resolve on this post');
   } else {
     pass('the post, its action bar and its react trigger all resolve through the shipped selectors');
+  }
+}
+
+/**
+ * The react-surface twin of dryInspect: the same layer-by-layer read the driver performs,
+ * through the same RSEL selectors, clicking and hovering NOTHING. Mirrors the layered
+ * diagnostics the driver's engagementUnavailableReact records.
+ */
+async function dryInspectReact(page: Page): Promise<void> {
+  const shell = page.locator(RSEL.detailShell).first();
+  const shellId = await shell.getAttribute('id').catch(() => null);
+  const postKey = postKeyFromShellId(shellId);
+
+  let scope = shell;
+  let scopedBy = 'the shell (post container underivable — comment exclusion rests on tag names)';
+  if (postKey !== null) {
+    const container = shell.locator(postContainerSelector(postKey));
+    if (await container.count() === 1) {
+      scope = container.first();
+      scopedBy = 'the post container derived from the shell id (structural)';
+    }
+  }
+
+  const observedUrn = urnFromFacepileTestid(
+    await scope.locator(RSEL.urnCarrier).first().getAttribute('data-testid').catch(() => null),
+  ) ?? null;
+
+  const triggers = scope.locator(RSEL.reactTrigger);
+  const triggerCount = await triggers.count();
+  const trigger = triggers.first();
+  const triggerLabel = triggerCount ? await trigger.getAttribute('aria-label').catch(() => null) : null;
+  const triggerIcons = triggerCount
+    ? await trigger.locator('svg[id]').evaluateAll((els) => els.map((e) => e.id)).catch(() => [])
+    : [];
+  const verdict = readReactionVerdict(triggerIcons, triggerLabel);
+
+  console.log('\n--- what the driver would see (react surface) ---');
+  console.log({
+    detailShells: await page.locator(RSEL.detailShell).count(),
+    postKey,
+    scopedBy,
+    observedUrn,
+    urnMatchesUrl: observedUrn === post.urn,
+    reactTriggers: triggerCount,
+    triggerLabel,
+    triggerIcons,
+    verdict,
+    reactionsMenu: await scope.locator(RSEL.reactionsMenuTrigger).count(),
+    commentButton: await scope.locator(RSEL.commentButton).count(),
+    composerInline: await shell.locator(RSEL.commentComposer).count(),
+    commentEditorInline: await shell.locator(RSEL.commentEditor).count(),
+    commentRows: await page.locator(RSEL.commentEntity).count(),
+    commentsDisabledWording: await page.locator(PSEL.commentsDisabledText).first().count(),
+    // Zero is correct for both: the flyout mounts on hover (this run never hovers) and the
+    // submit control does not exist until the editor has text (this run never types).
+    flyoutEntryBeforeHover: await page.locator(flyoutEntry(reaction)).count(),
+    commentSubmitBeforeTyping: await shell.locator(RSEL.commentSubmit).count(),
+  });
+
+  console.log('\n--- what a live run WOULD do ---');
+  if (verdict.state === 'reacted') {
+    console.log(`  reaction: report "already" (${verdict.existingReaction ?? 'unnamed'}) and click nothing.`);
+  } else if (verdict.state === 'unreacted') {
+    console.log(reaction === 'like'
+      ? '  reaction: click the trigger directly.'
+      : `  reaction: hover the trigger and click the "${reaction}" flyout entry (page-wide, unique).`);
+  } else {
+    console.log(`  reaction: report "unavailable" — ${verdict.why}`);
+  }
+  console.log(comment === undefined
+    ? '  comment : none requested.'
+    : `  comment : type ${JSON.stringify(comment)} into the Tiptap composer and publish it.`);
+
+  if (!observedUrn) {
+    fail('no ReactionFacepileCollection testid resolved — observedUrn would come back undefined and'
+      + ' the sender would have nothing to re-key the row from');
+  } else if (observedUrn !== post.urn) {
+    fail(`observedUrn ${observedUrn} does not match the URL's ${post.urn} — on this surface the facepile`
+      + ' matched the URL on every capture, re-shares included, so a mismatch needs a human look');
+  }
+  if (triggerCount !== 1) {
+    fail(`expected exactly 1 react trigger in the post scope, found ${triggerCount}`);
+  } else if (verdict.state === 'unknown') {
+    fail(`the trigger state is unreadable: ${verdict.why}`);
+  } else {
+    pass('the shell, the derived post scope, the trigger and its state all resolve through RSEL');
   }
 }
 

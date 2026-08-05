@@ -3,7 +3,7 @@
  * read — the same containment `apify-extract.ts` provides for the profile actor, so a
  * harvestapi rename is one file and one test rather than a hunt.
  *
- * Field-shape claims below are measured against a 26,256-item corpus of real actor output
+ * Field-shape claims below are measured against a 13,128-item corpus of real actor output
  * at `C:\Projects\prospecting\icp_cache_posts` (2026-08-04), not guessed from the profile
  * actor's shape — see the ApifyPost JSDoc in types.ts for what that overrode.
  */
@@ -63,7 +63,7 @@ function iso(d: Date): string | null {
  *
  * The real actor shape, per the corpus, is `{timestamp, date, postedAgoShort,
  * postedAgoText}`, where `date` already arrives as a full `...Z`-suffixed ISO string and
- * `timestamp` the same instant in epoch ms — the two never disagree in 26,256 samples. The
+ * `timestamp` the same instant in epoch ms — the two never disagree in 13,128 samples. The
  * bare-string, space-separated, and bare-date branches below are NOT reachable from that
  * shape; they are defensive-only, kept for an older cache format or a differently-shaped
  * upstream and covered because the reference Python handles them.
@@ -157,12 +157,17 @@ function identify(raw: ApifyPost): { url: string; urn: string } | null {
 }
 
 /**
- * Is this a reshare? `type` is `'post'` on every one of 26,256 real items, including actual
+ * Is this a reshare? `type` is `'post'` on every one of 13,128 real items, including actual
  * reshares — it is NOT a usable discriminator despite being one in other Apify actors'
  * output, and is kept below only as a harmless forward-compat check. The real signal is a
  * nested/attribution object: `repost` (reshare with the resharer's own added commentary) or
  * `repostedBy`/`repostedAt` (a bare reshare, no commentary added). `resharedPost` never
  * occurs in the corpus; kept because the original spec named it.
+ *
+ * In practice only the `repost` branch can fire: `extractPost` drops bare reshares before it
+ * gets here, so the `repostedBy` check labels nothing. It stays because this function answers
+ * "is this a reshare", not "did we keep it" — and if the drop is ever narrowed to admit some
+ * reshares, the label needs to already be right.
  *
  * Defaults to 0 when indeterminate, so an unrecognized payload shape UNDER-labels rather
  * than mislabels. Reposts are engageable (one container, all selectors resolve), but comment
@@ -184,33 +189,61 @@ function safeStringify(raw: unknown): string | null {
 }
 
 /**
- * One item -> one row, or null when it is unusable.
+ * Is this a BARE reshare — the tracked profile passing on someone else's post with no words
+ * of their own? `repostedBy` is the signal, and the ONLY reliable one.
  *
- * TOP-LEVEL `content` IS REQUIRED, and that single rule is what puts bare reshares out of
- * scope (decided 2026-08-04). A reshare *with* commentary carries the tracked person's own
- * words in `content` and flows through here as an ordinary post. A BARE reshare carries none,
- * so it lands here with `content` empty and is dropped.
+ * Do not test `content` for this. A bare reshare's top-level `content` holds the ORIGINAL
+ * author's words, and `author` is that original author, with `repostedBy` the only field
+ * naming the tracked profile. Measured over the 13,128 unique items in the corpus:
  *
- * Do not "fix" that by recovering text from the nested `repost.content`. On a bare reshare the
- * `author` object is the ORIGINAL author, not the tracked profile (measured: author and
- * repostedBy identities differ in 1,122 of 1,122 sampled items), so the card would display a
- * stranger's name, headline and words on a row that appeared because the operator tracks
- * someone else. Presenting that honestly needs an author-display override and a "X reshared
- * this" affordance, and it walks the operator into the pre-existing reshare defect where
- * comment `data-id`s key on the ugcPost URN and silently lose attribution. Deliberately not
- * in scope; the ~32% of items this drops are the lowest-signal ones in the feed.
+ *   - 4,182 items (31.9%) are bare reshares
+ *   - 4,120 of them (98.5%) carry non-empty top-level `content`
+ *   - on 4,170 of them `author` is a stranger — neither the resharer nor the sweep target
  *
- * This also covers the reshare-WITH-commentary case where the resharer added no words of
- * their own: measured directly on the fallback this replaced, 662 of 704 such rows had the
- * tracked profile as the row's author, but 401 of THOSE had recovered content that belonged
- * to a different person than the byline — the same stranger's-words-under-someone-else's-name
- * hazard as the bare-reshare case, just carried by `repost.content` instead of `author`. A
- * real example: author "Aaron Fenimore / IT Security Manager", recovered content a hiring
- * post actually written by Stuart Wolstenholme. Requiring top-level `content` rules out both
- * shapes with the same one rule.
+ * A `content`-based rule therefore catches 1.5% of them, which is exactly the bug this
+ * function was extracted to fix (production, 2026-08-04): 31% of the feed was stranger-written
+ * posts, displayed under the tracked connection's name because `author_display` prefers the
+ * connections join over `posts.author_name`. One reached the point of an operator sending a
+ * Like — which landed on the original author's post, not the tracked profile's reshare, since
+ * `linkedinUrl` on these items is the original and the reshare's own activity URN appears
+ * only in `header.linkedinUrl`.
+ *
+ * Cost of the rule: on 12 of 13,128 items the author IS the sweep target — self-reshares
+ * ("Reposting for visibility") of the person's own earlier post, 11 of which have a sibling
+ * item carrying the same `shareUrn` that survives. 0.09%, and mostly duplicates.
+ */
+export function isBareReshare(raw: ApifyPost): boolean {
+  return !!raw && typeof raw === 'object' && raw.repostedBy != null;
+}
+
+/**
+ * One item -> one row, or null when it is out of scope or unusable.
+ *
+ * Two rules drop an item, and they are NOT the same rule:
+ *
+ * 1. A BARE reshare is out of scope (decided 2026-08-04) — see `isBareReshare` for the
+ *    measurements, and note that this is checked BEFORE content precisely because those items
+ *    do carry content.
+ * 2. TOP-LEVEL `content` is required. A reshare *with* commentary carries the tracked person's
+ *    own words there and flows through as an ordinary post; one where they added no words of
+ *    their own has nothing at the top level and is dropped here, as are caption-less image,
+ *    video and document posts.
+ *
+ * Do not "fix" rule 2 by recovering text from the nested `repost.content`. Measured directly
+ * on the fallback this replaced, 662 of 704 such rows had the tracked profile as the row's
+ * author, but 401 of THOSE had recovered content belonging to a different person than the
+ * byline — a real example being author "Aaron Fenimore / IT Security Manager" over a hiring
+ * post actually written by Stuart Wolstenholme. Same stranger's-words-under-someone-else's-name
+ * hazard as a bare reshare, just carried by `repost.content` instead of by `author`.
+ *
+ * Presenting reshares honestly instead of dropping them needs an author-display override and
+ * an "X reshared this" affordance, and it walks the operator into the pre-existing reshare
+ * defect where comment `data-id`s key on the ugcPost URN and silently lose attribution.
+ * Deliberately not in scope.
  */
 export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput | null {
   if (!raw || typeof raw !== 'object') return null;
+  if (isBareReshare(raw)) return null;     // not their words at all — see above
   const content = str(raw.content);
   if (content === null) return null;       // no words of their own — see above
   const ref = identify(raw);
@@ -225,7 +258,7 @@ export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput
     post_url: ref.url,
     tracked_profile_id: trackedProfileId,
     author_name: author ? str(author.name) : null,
-    // `info` is the real headline field (100% of 26,256 real items; `position`/`headline`
+    // `info` is the real headline field (100% of 13,128 real items; `position`/`headline`
     // never occur) — see the ApifyPost JSDoc in types.ts. Kept as fallbacks only.
     author_headline: author ? str(author.info) ?? str(author.position) ?? str(author.headline) : null,
     content,
@@ -250,24 +283,33 @@ export function extractPost(raw: ApifyPost, trackedProfileId: number): PostInput
  * assigned to whichever profile happens to be nearby, which would attribute a post to the
  * wrong person.
  *
- * `unusable` is counted SEPARATELY from `unattributed`: measured across the corpus, ~9.1% of
- * items have an empty top-level `content` (`extractPost` returns null) — plain
- * image/video/document posts with no caption, reshares-with-commentary where the resharer
- * added no words of their own, and bare reshares — and that is a content-policy fact about
- * the item (see extractPost's own doc for why it is not recovered), nothing to do with
- * attribution. Folding the two together would make a caller's single
- * "dropped unattributable items" log line blame URL normalization for a content policy on
- * every sweep, forever — exactly the kind of misleading telemetry the wrong count would
- * cause someone to chase in the wrong file.
+ * Three counters because there are three unrelated causes, and only one of them is a fault:
+ *
+ *   - `reshares` — a bare reshare, out of scope by decision. ~31% of real items.
+ *   - `unusable` — nothing at the top level to judge or engage with. ~9% of real items:
+ *     caption-less media posts and reshares-with-commentary that added no commentary.
+ *   - `unattributed` — matched no tracked profile. The only one worth investigating.
+ *
+ * Folding any of these together makes a caller's single "dropped items" log line blame URL
+ * normalization for a scope decision on every sweep, forever — exactly the misleading
+ * telemetry that would send someone hunting in the wrong file. It is not hypothetical: while
+ * bare reshares were silently reaching the feed, the sweep's log line claimed they were being
+ * skipped, which is a large part of why the bug went unnoticed.
+ *
+ * Reshares are detected BEFORE attribution on purpose. `author.linkedinUrl` — the fallback
+ * attribution key — is the ORIGINAL author on these items, so resolving attribution first
+ * would file the post under that person whenever they happen to be tracked too.
  */
 export function attribute(
   items: ApifyPost[],
   profileIdByUrl: Map<string, number>,
-): { rows: PostInput[]; unattributed: number; unusable: number } {
+): { rows: PostInput[]; unattributed: number; unusable: number; reshares: number } {
   const rows: PostInput[] = [];
   let unattributed = 0;
   let unusable = 0;
+  let reshares = 0;
   for (const raw of items) {
+    if (isBareReshare(raw)) { reshares++; continue; }
     const candidates = [
       raw?.query?.targetUrl,
       raw?.author?.linkedinUrl,
@@ -282,5 +324,5 @@ export function attribute(
     if (row === null) { unusable++; continue; }
     rows.push(row);
   }
-  return { rows, unattributed, unusable };
+  return { rows, unattributed, unusable, reshares };
 }

@@ -406,7 +406,9 @@ did react to or comment on stays, as a record of what was done.
 
 **Bare reshares don't show up, on purpose.** If someone reshares another person's post without
 adding a comment of their own, The Machine skips it — there's no text of *theirs* to react to,
-so it isn't the kind of post this feature is for.
+so it isn't the kind of post this feature is for. This is usually **around a third** of
+everything it checks, so expect the feed to hold noticeably fewer posts than the number of
+posts those people appear to have. That's the filter doing its job, not a fault.
 
 **If you see a red "post sweeping is halted" banner** on the Posts tab, something stopped the
 automatic checking — usually a missing or invalid Apify key, or several checks in a row that

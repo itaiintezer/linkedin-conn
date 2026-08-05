@@ -1067,12 +1067,22 @@ failure.
 
 ```json
 { "runs": 1, "profilesSwept": 12, "postsAdded": 6, "postsRejected": 0, "unattributed": 0,
-  "unusable": 2, "pruned": 3, "clean": true }
+  "unusable": 2, "reshares": 9, "pruned": 3, "clean": true }
 ```
 
-`unusable` posts (bare reshares carrying no text of the profile's own) and `unattributed`
-items (matched no tracked profile) are both routine and non-fatal; `clean: false` is what
-actually means "something needs attention" — check the log.
+Three separate counts for three unrelated reasons an item didn't become a post, and only the
+last is a fault:
+
+- `reshares` — bare reshares, skipped by design because the words are the original author's
+  and not the tracked profile's. Around **31%** of what the actor returns, so this is normally
+  the largest of the three. A big number here is the feature working.
+- `unusable` — nothing at the top level to react to: a caption-less image or video, or a
+  reshare-with-commentary where no commentary was actually added. Around 9%.
+- `unattributed` — matched no tracked profile. The only one worth investigating, and the only
+  one that hints at a URL-normalization problem.
+
+All three are non-fatal; `clean: false` is what actually means "something needs attention" —
+check the log.
 
 ```
 curl -s -X POST http://localhost:4400/api/posts/sweep-now
