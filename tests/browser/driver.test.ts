@@ -34,6 +34,71 @@ test('a pending pre-visit skip captures evidence and reports the signals', async
   expect(existsSync(join(dir, outcome.evidence!.screenshot!))).toBe(true);
 }, 20_000);
 
+// Root cause 3.1 of the 2026-08-07 false skips: with 50+ invites outstanding, the
+// operator's own Pending badges render on the recommendation cards of every profile they
+// visit, and the old page-wide fallback read one as the target's. A neighbour badge must
+// not stop the attempt: this connectable profile proceeds to the composer (and lands on
+// 'unavailable' only because the fake page has none).
+test("a neighbour card's pending badge does not skip a connectable target", async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incidents-'));
+  const page = new FakeProfilePage({
+    url: 'https://www.linkedin.com/in/target-person-123/',
+    title: 'Target Person | LinkedIn',
+    elements: [
+      {
+        tag: 'button',
+        attrs: { 'aria-label': 'Pending, click to withdraw invitation sent to Neighbour Guy' },
+        cardSlug: 'neighbour-guy-9z',
+      },
+      {
+        tag: 'a',
+        attrs: {
+          'aria-label': 'Invite Target Person to connect',
+          href: '/preload/custom-invite/?vanityName=target-person-123',
+        },
+        cardSlug: 'target-person-123',
+      },
+    ],
+  });
+  const outcome = await driverFor(page, dir)
+    .sendConnectionRequest('https://www.linkedin.com/in/target-person-123', null, { firstName: 'Target' });
+  expect(outcome.result).not.toBe('already');
+  expect(outcome.result).toBe('unavailable');
+}, 40_000);
+
+// Root cause 3.6, the same read in the opposite direction: after submitting, the old
+// code confirmed 'sent' off ANY visible Pending badge — a neighbour's counted. A submit
+// that never registers must not be recorded as sent.
+test("a neighbour badge does not confirm a submitted invite as sent", async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incidents-'));
+  const page = new FakeProfilePage({
+    url: 'https://www.linkedin.com/in/target-person-123/',
+    title: 'Target Person | LinkedIn',
+    elements: [
+      {
+        tag: 'button',
+        attrs: { 'aria-label': 'Pending, click to withdraw invitation sent to Neighbour Guy' },
+        cardSlug: 'neighbour-guy-9z',
+      },
+      {
+        tag: 'a',
+        attrs: {
+          'aria-label': 'Invite Target Person to connect',
+          href: '/preload/custom-invite/?vanityName=target-person-123',
+        },
+        cardSlug: 'target-person-123',
+      },
+      // The composer IS present, so the submit itself succeeds — but no Pending badge
+      // for the target ever appears afterwards.
+      { tag: 'button', text: 'Send without a note', zone: 'body' },
+    ],
+  });
+  const outcome = await driverFor(page, dir)
+    .sendConnectionRequest('https://www.linkedin.com/in/target-person-123', null, { firstName: 'Target' });
+  expect(outcome.result).not.toBe('sent');
+  expect(outcome.result).toBe('unconfirmed');
+}, 60_000);
+
 test('a connected pre-visit skip (via the expanded overflow) captures evidence too', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'incidents-'));
   const page = new FakeProfilePage({

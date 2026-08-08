@@ -3,7 +3,7 @@
 import { launchPersistentContext } from 'cloakbrowser';
 import type { Locator } from 'playwright-core';
 import { BROWSER_PROFILE_DIR } from '../src/config.js';
-import { find, customInviteUrl } from '../src/browser/linkedin-selectors.js';
+import { find, customInviteUrl, PENDING_BADGE_SELECTOR } from '../src/browser/linkedin-selectors.js';
 
 const slug = process.argv[2] ?? 'liron-lalezary';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -38,7 +38,7 @@ try {
   // there), not the composer route. Informational: only present if already invited.
   await page.goto(`https://www.linkedin.com/in/${slug}`, { waitUntil: 'domcontentloaded' });
   await sleep(4000);
-  await check('pendingBadge (informational; only if already invited)', find.pendingBadge(page), false);
+  await check('pendingBadge (informational; only if already invited)', page.locator(PENDING_BADGE_SELECTOR), false);
 
   console.log('\nSELECTOR HEALTH:');
   for (const r of results) {

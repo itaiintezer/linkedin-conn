@@ -18,6 +18,8 @@
  *   connected   → "Remove connection" in the expanded overflow
  */
 
+import { canonicalName, nameTokens, tokensContained } from './name-match.js';
+
 export type Relationship =
   /** An invite of ours is outstanding. */
   | 'pending'
@@ -40,6 +42,48 @@ export interface RelationshipSignals {
   connectForTarget: boolean;
   /** A "Remove connection" control — only an existing connection has one. */
   removeConnection: boolean;
+}
+
+/** One Pending badge as read off the page: its full aria-label, plus the /in/<slug> of
+ *  the nearest ancestor card that links to one (null when nothing claims it). */
+export interface PendingBadge { label: string; cardSlug: string | null }
+
+/** Slug equality that survives percent-encoding and case differences: stored profile URLs
+ *  can be percent-encoded (andr%c3%a9-…) while DOM hrefs carry the decoded form. */
+function sameSlug(a: string, b: string): boolean {
+  const norm = (s: string): string => {
+    try { return decodeURIComponent(s).toLowerCase(); } catch { return s.toLowerCase(); }
+  };
+  return norm(a) === norm(b);
+}
+
+/**
+ * Does this Pending badge belong to the TARGET profile? True only on a positive claim:
+ *  - the badge's card links to the target's slug (structural — covers labels with no name), or
+ *  - the label's "…invitation sent to <name>" tail canonically names the target, under the
+ *    reply-checker's rules (canonicalName + tokensContained), so post-nominals ("Thomas
+ *    Smith, CRISC"), parentheticals and zero-widths cannot break the match.
+ * False otherwise — including when the label names nobody and the card links nowhere.
+ *
+ * This replaces the page-wide fallback ("any visible badge counts"), which is how 2026-08-07's
+ * false skips happened: with dozens of invites outstanding, the operator's OWN badges render
+ * on the "More profiles for you" cards of nearly every profile page, and one of them
+ * satisfied the fallback. The name tail is extracted BEFORE canonicalName on purpose:
+ * canonicalizing the whole label can never token-match a bare name (tokensContained pins the
+ * first and last tokens), and substring containment is not identity ("Ann Lee" is inside
+ * "Mary-Ann Leeson").
+ */
+export function pendingBadgeMatchesTarget(
+  b: PendingBadge, targetName: string, targetSlug: string,
+): boolean {
+  if (b.cardSlug && targetSlug && sameSlug(b.cardSlug, targetSlug)) return true;
+  const target = canonicalName(targetName);
+  if (!target) return false; // name-match.ts hard rule: '' is not a name, it matches everything
+  const namedRaw = b.label.match(/sent to (.+)$/i)?.[1];
+  if (!namedRaw) return false;
+  const named = canonicalName(namedRaw);
+  if (!named) return false;
+  return named === target || tokensContained(nameTokens(named), nameTokens(target));
 }
 
 /**

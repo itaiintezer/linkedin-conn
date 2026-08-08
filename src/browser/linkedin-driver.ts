@@ -6,7 +6,9 @@ import type {
 } from '../types.js';
 import { attendEvent, openEvent, runBucket } from './event-invite-driver.js';
 import { CloakSession } from './cloak-session.js';
-import { SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl } from './linkedin-selectors.js';
+import {
+  SEL, find, URLS, customInviteUrl, profileSlug, isNotFoundUrl, readPendingBadges,
+} from './linkedin-selectors.js';
 import {
   PSEL, reactionEntry, existingReactionFrom, commentNeedle, confirmPostedComment,
   type ThreadRow, type CommentConfirmation,
@@ -20,6 +22,7 @@ import {
 import { normalizeProfileUrl } from '../core/url.js';
 import {
   classifyRelationship, skipsInvite, confirmsInviteLanded, mayReceiveDirectMessage,
+  pendingBadgeMatchesTarget,
   type Relationship, type RelationshipSignals,
 } from '../core/relationship.js';
 
@@ -162,17 +165,26 @@ export class LinkedInDriver implements BrowserDriver {
 
       // 3) Confirm the invite actually registered. The composer route only spins after
       //    submit and gives no success signal, so we trust LinkedIn's own state instead
-      //    of the click: the profile must now show a Pending badge.
+      //    of the click: the profile must now show a Pending badge FOR THE TARGET. The
+      //    old page-wide waitFor was satisfied instantly by a neighbour card's badge,
+      //    which could record an invite that never registered as 'sent' (root cause 3.6
+      //    of the 2026-08-07 false skips — the same unscoped read as the pre-visit's).
       await page.goto(url, { waitUntil: 'domcontentloaded' });
-      try {
-        await find.pendingBadge(page).first().waitFor({ state: 'visible', timeout: 9000 });
-        return { result: 'sent', firstName };
-      } catch {
+      {
+        const name = await this.readFullName(page);
+        const deadline = Date.now() + 9000; // the same budget the old waitFor spent
+        while (name) {
+          if (await this.pendingForTarget(page, url, name)) return { result: 'sent', firstName };
+          if (Date.now() >= deadline) break;
+          await sleep(700);
+        }
+      }
+      {
         const scan = await this.scanCheckpoint(page);
         if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
-        // The top card showed no Pending badge within the window. Under Sales Navigator it
-        // never will — Pending is demoted into the "More" overflow — so classify properly
-        // before judging, expanding the overflow if the top card is inconclusive.
+        // No target-scoped Pending badge within the window. Under Sales Navigator there
+        // never will be one on the top card — Pending is demoted into the "More" overflow —
+        // so classify properly before judging, expanding the overflow if inconclusive.
         const after = await this.classifyRelationship(page, url);
         if (confirmsInviteLanded(after.relationship)) {
           return { result: 'sent', firstName, relationship: after.relationship };
@@ -344,7 +356,7 @@ export class LinkedInDriver implements BrowserDriver {
     const read = async (overflowExpanded: boolean): Promise<RelationshipRead> => {
       const signals: RelationshipSignals = {
         nameRead: true,
-        pendingForTarget: await this.pendingForTarget(page, name),
+        pendingForTarget: await this.pendingForTarget(page, url, name),
         connectForTarget: await this.connectForTarget(page, url, name),
         // Only trustworthy inside the overflow we just opened (see selectors).
         removeConnection: overflowExpanded && (await this.removeConnectionVisible(page)),
@@ -359,13 +371,20 @@ export class LinkedInDriver implements BrowserDriver {
   }
 
   /**
-   * A Pending badge for THIS person. Prefers the name-scoped label, which cannot be
-   * satisfied by a pending invite to someone in the right-rail recommendations, then falls
-   * back to the bare badge so any layout whose label omits the name behaves as it did before.
+   * A Pending badge that belongs to THIS person: its label canonically names them, or the
+   * card containing it links to their slug (core/relationship.ts pins the rule). The old
+   * page-wide fallback — any visible badge counts — is deliberately gone: with dozens of
+   * invites outstanding the operator's own badges render on the neighbouring
+   * recommendation cards of nearly every profile page, and one of those satisfied the
+   * fallback (2026-08-07: 21 of 105 sender verdicts were such skips, 9 of 10 checkable
+   * ones false). A layout whose label omits the name still matches through the card-slug
+   * test; if both miss on a genuinely-pending profile, the attempt falls to 'unavailable'
+   * (LinkedIn shows no composer for a pending invitee) — never a duplicate invite.
    */
-  private async pendingForTarget(page: Page, name: string): Promise<boolean> {
-    if (await find.pendingBadgeForName(page, name).first().isVisible().catch(() => false)) return true;
-    return find.pendingBadge(page).first().isVisible().catch(() => false);
+  private async pendingForTarget(page: Page, url: string, name: string): Promise<boolean> {
+    const slug = profileSlug(url) ?? '';
+    const badges = await readPendingBadges(page).catch(() => []);
+    return badges.some((b) => pendingBadgeMatchesTarget(b, name, slug));
   }
 
   /** A Connect/Invite control for THIS person: top card by name, or a custom-invite anchor

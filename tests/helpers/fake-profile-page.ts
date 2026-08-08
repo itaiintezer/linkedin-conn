@@ -76,6 +76,12 @@ function matchOne(e: FakeElement, alt: string): boolean {
 }
 
 function matchesSelector(e: FakeElement, selector: string): boolean {
+  // Playwright's text engine ('text=/re/i' or 'text=literal') — used by SEL.noteQuotaDialog.
+  if (selector.startsWith('text=')) {
+    const body = selector.slice('text='.length);
+    const re = body.match(/^\/(.*)\/([a-z]*)$/s);
+    return re ? new RegExp(re[1]!, re[2]).test(e.text) : e.text.includes(body);
+  }
   return selector.split(',').some((alt) => matchOne(e, alt));
 }
 
@@ -214,5 +220,10 @@ export class FakeProfilePage {
 
   getByRole(role: string, opts?: { name?: RegExp | string; expanded?: boolean }): FakeLocator {
     return new FakeLocator(this, (all) => all).getByRole(role, opts ?? {});
+  }
+
+  getByText(pattern: RegExp | string): FakeLocator {
+    return new FakeLocator(this, (all) => all.filter((e) =>
+      typeof pattern === 'string' ? e.text.includes(pattern) : pattern.test(e.text)));
   }
 }
