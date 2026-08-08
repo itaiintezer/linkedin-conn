@@ -16,8 +16,8 @@ export type { Reaction };
 
 // Re-exported for the same reason as CampaignKind: SendOutcome carries one, so consumers of
 // this module need the name without reaching into core/.
-import type { Relationship } from './core/relationship.js';
-export type { Relationship };
+import type { Relationship, RelationshipSignals } from './core/relationship.js';
+export type { Relationship, RelationshipSignals };
 
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
@@ -294,6 +294,10 @@ export interface SendOutcome {
    *  Reported so a verdict can name the real reason — an 'already' that is a pending invite
    *  is not the same thing as an existing connection, and the log used to conflate them. */
   relationship?: Relationship;
+  /** The raw signal booleans behind `relationship`, so a skip verdict is checkable after
+   *  the fact — the 2026-08-07 false-skip investigation had 21 such verdicts and zero
+   *  evidence of what the page actually showed. */
+  signals?: RelationshipSignals;
   threadUrl?: string;
   error?: string;
   evidence?: SendEvidence;

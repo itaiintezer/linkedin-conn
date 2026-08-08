@@ -327,9 +327,10 @@ async function attemptInvite(
       // Both cases are terminal skips and share skip_reason, but they are not the same fact.
       // The log said "already connected" for a pending invite too, which made the Sales
       // Navigator misread (2026-08-03) read as a plausible verdict instead of a bug.
-      logVerdict(p, outcome.relationship === 'pending'
+      logVerdict(p, (outcome.relationship === 'pending'
         ? 'skipped: an invite is already pending'
-        : 'skipped: already connected');
+        : 'skipped: already connected')
+        + (outcome.evidence?.screenshot ? ` — screenshot: /incidents/${outcome.evidence.screenshot}` : ''));
       return { halted: false, contacted: true };
     case 'unconfirmed':
       // Submitted, unconfirmable. Recorded as a SEND in send_log even though the status is

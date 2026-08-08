@@ -1,5 +1,54 @@
 import { test, expect } from 'vitest';
+import { mkdtempSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { FakeDriver } from '../../src/browser/driver.js';
+import { LinkedInDriver } from '../../src/browser/linkedin-driver.js';
+import { FakeProfilePage } from '../helpers/fake-profile-page.js';
+
+/** LinkedInDriver against a fake page: session whose page() returns the fake. */
+function driverFor(page: FakeProfilePage, incidentsDir: string): LinkedInDriver {
+  return new LinkedInDriver({ page: async () => page, launched: true } as never, incidentsDir);
+}
+
+// The 'already' skip verdict parks a profile terminally, so it must carry the same
+// evidence the other judged verdicts do — the 2026-08-07 false-skip investigation found
+// 21 of 105 verdicts were this skip, and not one had a screenshot to check it against.
+test('a pending pre-visit skip captures evidence and reports the signals', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incidents-'));
+  const page = new FakeProfilePage({
+    url: 'https://www.linkedin.com/in/jane-doe-123/',
+    title: 'Jane Doe | LinkedIn',
+    elements: [{
+      tag: 'a',
+      attrs: { 'aria-label': 'Pending, click to withdraw invitation sent to Jane Doe' },
+      cardSlug: 'jane-doe-123',
+    }],
+  });
+  const outcome = await driverFor(page, dir)
+    .sendConnectionRequest('https://www.linkedin.com/in/jane-doe-123', null, { firstName: 'Jane' });
+  expect(outcome.result).toBe('already');
+  expect(outcome.relationship).toBe('pending');
+  expect(outcome.signals?.pendingForTarget).toBe(true);
+  expect(outcome.evidence?.screenshot).toBeTruthy();
+  expect(existsSync(join(dir, outcome.evidence!.screenshot!))).toBe(true);
+}, 20_000);
+
+test('a connected pre-visit skip (via the expanded overflow) captures evidence too', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incidents-'));
+  const page = new FakeProfilePage({
+    url: 'https://www.linkedin.com/in/john-roe/',
+    title: 'John Roe | LinkedIn',
+    hasMoreButton: true,
+    overflowOnExpand: [{ attrs: { role: 'menuitem' }, text: 'Remove connection' }],
+  });
+  const outcome = await driverFor(page, dir)
+    .sendConnectionRequest('https://www.linkedin.com/in/john-roe', null, { firstName: 'John' });
+  expect(outcome.result).toBe('already');
+  expect(outcome.relationship).toBe('connected');
+  expect(outcome.signals?.removeConnection).toBe(true);
+  expect(outcome.evidence?.screenshot).toBeTruthy();
+}, 20_000);
 
 test('FakeDriver returns the scripted connection cards', async () => {
   const d = new FakeDriver();

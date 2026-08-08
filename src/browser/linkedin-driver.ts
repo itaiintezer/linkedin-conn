@@ -20,8 +20,12 @@ import {
 import { normalizeProfileUrl } from '../core/url.js';
 import {
   classifyRelationship, skipsInvite, confirmsInviteLanded, mayReceiveDirectMessage,
-  type Relationship,
+  type Relationship, type RelationshipSignals,
 } from '../core/relationship.js';
+
+/** One relationship read: the verdict plus the raw signals it was derived from, so
+ *  outcomes can carry the evidence and not just the conclusion. */
+interface RelationshipRead { relationship: Relationship; signals: RelationshipSignals }
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
 import { firstNameFrom } from '../core/first-name.js';
 import { detectCheckpoint } from '../core/checkpoint.js';
@@ -33,7 +37,14 @@ const rand = (min: number, max: number) => min + Math.floor(Math.random() * (max
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export class LinkedInDriver implements BrowserDriver {
-  constructor(private session = new CloakSession()) {}
+  /** `incidentsDir` is injectable so tests can drive real outcome paths without writing
+   *  into the production data/incidents (undefined → captureEvidence's default). */
+  constructor(private session = new CloakSession(), private incidentsDir?: string) {}
+
+  /** captureEvidence bound to this driver's incidents dir. */
+  private capture(page: Parameters<typeof captureEvidence>[0], tag: string, extra: Record<string, unknown> = {}) {
+    return captureEvidence(page, tag, extra, this.incidentsDir);
+  }
 
   browserOpen(): boolean {
     return this.session.launched;
@@ -88,7 +99,9 @@ export class LinkedInDriver implements BrowserDriver {
       // skipsInvite deliberately also covers 'unknown', which is what the pre-2026-08-03 code
       // treated as connected; keeping that keeps every classic-layout outcome unchanged.
       const preVisit = await this.classifyRelationship(page, url);
-      if (skipsInvite(preVisit)) return { result: 'already', firstName, relationship: preVisit };
+      if (skipsInvite(preVisit.relationship)) {
+        return this.alreadyOutcome(page, firstName, preVisit);
+      }
 
       // 2) Open the invite composer: direct custom-invite route first, then
       //    fall back to clicking the Connect control on the profile UI.
@@ -114,7 +127,7 @@ export class LinkedInDriver implements BrowserDriver {
         }
         // Unexplained: no composer, no known gate. Snapshot the page — this verdict
         // feeds the failure streak, so a halt on it must be diagnosable after the fact.
-        const ev = await captureEvidence(page, 'composer-unavailable', {});
+        const ev = await this.capture(page, 'composer-unavailable', {});
         return {
           result: 'unavailable',
           firstName,
@@ -161,16 +174,18 @@ export class LinkedInDriver implements BrowserDriver {
         // never will — Pending is demoted into the "More" overflow — so classify properly
         // before judging, expanding the overflow if the top card is inconclusive.
         const after = await this.classifyRelationship(page, url);
-        if (confirmsInviteLanded(after)) return { result: 'sent', firstName, relationship: after };
+        if (confirmsInviteLanded(after.relationship)) {
+          return { result: 'sent', firstName, relationship: after.relationship };
+        }
         // Deliberately NOT 'already' here, however little we can see. The pre-visit above
         // classified them invitable seconds ago and nobody becomes a 1st-degree connection in
         // between, so "no signals" means we failed to read the page — not that they were
         // connected all along. Returning 'already' recorded live pending invites as terminal
         // already_connected skips, with no send_log row and no evidence (2026-08-03).
         if (await this.invitePendingOnSentList(url)) {
-          return { result: 'sent', firstName, relationship: after };
+          return { result: 'sent', firstName, relationship: after.relationship };
         }
-        return this.unconfirmedOutcome(page, firstName, after);
+        return this.unconfirmedOutcome(page, firstName, after.relationship);
       }
     } catch (e) {
       const scan = await this.scanCheckpoint(page);
@@ -194,7 +209,7 @@ export class LinkedInDriver implements BrowserDriver {
 
   /** A checkpoint verdict, with the page snapshotted so the halt is explainable. */
   private async checkpointOutcome(page: Page, scan: CheckpointScan, firstName?: string): Promise<SendOutcome> {
-    const ev = await captureEvidence(page, 'checkpoint', { matched: scan.matched, via: scan.via });
+    const ev = await this.capture(page, 'checkpoint', { matched: scan.matched, via: scan.via });
     return {
       result: 'checkpoint',
       error: `checkpoint detected at ${scan.url}`,
@@ -205,7 +220,7 @@ export class LinkedInDriver implements BrowserDriver {
 
   /** A failed-send verdict, with the page snapshotted so the failure is explainable. */
   private async errorOutcome(page: Page, error: string, firstName?: string): Promise<SendOutcome> {
-    const ev = await captureEvidence(page, 'send-failed', { error });
+    const ev = await this.capture(page, 'send-failed', { error });
     return {
       result: 'error',
       error,
@@ -223,12 +238,33 @@ export class LinkedInDriver implements BrowserDriver {
   private async unconfirmedOutcome(
     page: Page, firstName: string | undefined, relationship: Relationship,
   ): Promise<SendOutcome> {
-    const ev = await captureEvidence(page, 'send-unconfirmed', { relationship });
+    const ev = await this.capture(page, 'send-unconfirmed', { relationship });
     return {
       result: 'unconfirmed',
       error: 'invite submitted but not confirmed — check the profile before retrying',
       firstName,
       relationship,
+      evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+    };
+  }
+
+  /**
+   * The pre-visit said this person cannot be invited (pending invite or existing
+   * connection). A terminal skip that nobody re-observes, so it carries the same evidence
+   * as the judged verdicts: the 2026-08-07 investigation found 21 of 105 sender verdicts
+   * were this skip — 9 of 10 provably wrong against the connections roster — and this was
+   * the only outcome path with nothing in data/incidents to check it against.
+   */
+  private async alreadyOutcome(
+    page: Page, firstName: string | undefined, read: RelationshipRead,
+  ): Promise<SendOutcome> {
+    const ev = await this.capture(page, 'already-connected',
+      { relationship: read.relationship, ...read.signals });
+    return {
+      result: 'already',
+      firstName,
+      relationship: read.relationship,
+      signals: read.signals,
       evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
     };
   }
@@ -242,7 +278,7 @@ export class LinkedInDriver implements BrowserDriver {
   /** LinkedIn's weekly invitation limit dialog is showing in place of the composer.
    *  Evidence is captured BEFORE dismissing so the screenshot shows the dialog. */
   private async weeklyLimitOutcome(page: Page, firstName?: string): Promise<SendOutcome> {
-    const ev = await captureEvidence(page, 'weekly-limit', {});
+    const ev = await this.capture(page, 'weekly-limit', {});
     await find.dismissDialog(page).first().click().catch(() => {}); // leave no modal behind
     return {
       result: 'weekly_limit',
@@ -254,7 +290,7 @@ export class LinkedInDriver implements BrowserDriver {
   /** The profile URL no longer exists (LinkedIn redirected to /404/) — terminal, never
    *  retryable. Evidence keeps the verdict auditable without re-visiting the URL. */
   private async notFoundOutcome(page: Page): Promise<SendOutcome> {
-    const ev = await captureEvidence(page, 'profile-not-found', {});
+    const ev = await this.capture(page, 'profile-not-found', {});
     return {
       result: 'not_found',
       evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
@@ -264,7 +300,7 @@ export class LinkedInDriver implements BrowserDriver {
   /** The member requires their email to connect — terminal, never retryable. Evidence is
    *  captured BEFORE dismissing so the screenshot shows the gate itself. */
   private async emailRequiredOutcome(page: Page, firstName?: string): Promise<SendOutcome> {
-    const ev = await captureEvidence(page, 'email-required', {});
+    const ev = await this.capture(page, 'email-required', {});
     await find.dismissDialog(page).first().click().catch(() => {}); // leave no modal behind
     return {
       result: 'email_required',
@@ -296,23 +332,29 @@ export class LinkedInDriver implements BrowserDriver {
    * the pre-visit still treats it as connected (preserving the old behaviour exactly), the
    * post-submit confirmation refuses to.
    */
-  private async classifyRelationship(page: Page, url: string): Promise<Relationship> {
+  private async classifyRelationship(page: Page, url: string): Promise<RelationshipRead> {
     const name = await this.readFullName(page);
-    if (!name) return classifyRelationship({
-      nameRead: false, pendingForTarget: false, connectForTarget: false, removeConnection: false,
-    });
+    if (!name) {
+      const signals: RelationshipSignals = {
+        nameRead: false, pendingForTarget: false, connectForTarget: false, removeConnection: false,
+      };
+      return { relationship: classifyRelationship(signals), signals };
+    }
 
-    const read = async (overflowExpanded: boolean): Promise<Relationship> => classifyRelationship({
-      nameRead: true,
-      pendingForTarget: await this.pendingForTarget(page, name),
-      connectForTarget: await this.connectForTarget(page, url, name),
-      // Only trustworthy inside the overflow we just opened (see selectors).
-      removeConnection: overflowExpanded && (await this.removeConnectionVisible(page)),
-    });
+    const read = async (overflowExpanded: boolean): Promise<RelationshipRead> => {
+      const signals: RelationshipSignals = {
+        nameRead: true,
+        pendingForTarget: await this.pendingForTarget(page, name),
+        connectForTarget: await this.connectForTarget(page, url, name),
+        // Only trustworthy inside the overflow we just opened (see selectors).
+        removeConnection: overflowExpanded && (await this.removeConnectionVisible(page)),
+      };
+      return { relationship: classifyRelationship(signals), signals };
+    };
 
     const topCard = await read(false);
-    if (topCard !== 'unknown') return topCard;
-    if (!(await this.expandOverflow(page))) return 'unknown';
+    if (topCard.relationship !== 'unknown') return topCard;
+    if (!(await this.expandOverflow(page))) return topCard;
     return read(true);
   }
 
@@ -463,7 +505,7 @@ export class LinkedInDriver implements BrowserDriver {
       // to classify as connected, inverting this gate so a non-connection could be messaged.
       // 'unknown' still passes, as it did before, so a classic-layout connection that shows no
       // positive signal keeps working.
-      const relationship = await this.classifyRelationship(page, url);
+      const { relationship } = await this.classifyRelationship(page, url);
       if (!mayReceiveDirectMessage(relationship)) {
         return { result: 'not_connected', firstName, fullName, relationship };
       }
@@ -480,7 +522,7 @@ export class LinkedInDriver implements BrowserDriver {
       if (!(await box.isVisible().catch(() => false))) {
         const scan = await this.scanCheckpoint(page);
         if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
-        const ev = await captureEvidence(page, 'msg-composer-unavailable', {});
+        const ev = await this.capture(page, 'msg-composer-unavailable', {});
         return {
           result: 'unavailable', firstName, fullName,
           evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
@@ -581,7 +623,7 @@ export class LinkedInDriver implements BrowserDriver {
     await page.goto(URLS.messaging, { waitUntil: 'domcontentloaded' });
     await sleep(rand(3000, 5000));
     if ((await this.scanCheckpoint(page)).hit) {
-      await captureEvidence(page, 'checkpoint', { during: 'inbox read' });
+      await this.capture(page, 'checkpoint', { during: 'inbox read' });
       throw new Error('checkpoint detected during inbox read');
     }
     const { items, rounds, exhausted } = await collectWhileScrolling<InboxRow>({
@@ -663,7 +705,7 @@ export class LinkedInDriver implements BrowserDriver {
     await page.goto(URLS.sentInvitations, { waitUntil: 'domcontentloaded' });
     await sleep(rand(2000, 4000));
     if ((await this.scanCheckpoint(page)).hit) {
-      await captureEvidence(page, 'checkpoint', { during: 'invitations read' });
+      await this.capture(page, 'checkpoint', { during: 'invitations read' });
       throw new Error('checkpoint detected during invitations read');
     }
     await this.autoScroll(page);
@@ -684,7 +726,7 @@ export class LinkedInDriver implements BrowserDriver {
     await page.goto(URLS.connections, { waitUntil: 'domcontentloaded' });
     await sleep(rand(2000, 4000));
     if ((await this.scanCheckpoint(page)).hit) {
-      await captureEvidence(page, 'checkpoint', { during: 'roster sync' });
+      await this.capture(page, 'checkpoint', { during: 'roster sync' });
       throw new Error('checkpoint detected during roster sync');
     }
     await this.scrollConnections(page, 6);
@@ -970,7 +1012,7 @@ export class LinkedInDriver implements BrowserDriver {
       // was ever probed, so the structural signal is unknown. Both capture evidence so a real
       // one can be read from the incident instead of guessed at.
       if (await page.locator(PSEL.commentsDisabledText).first().count()) {
-        const ev = await captureEvidence(page, 'engage-comments-disabled', { signal: 'wording', postUrl });
+        const ev = await this.capture(page, 'engage-comments-disabled', { signal: 'wording', postUrl });
         log.info('engage', 'comments appear to be disabled (wording signal)', { postUrl });
         return {
           result: 'comments_disabled', ...urn(),
@@ -1001,7 +1043,7 @@ export class LinkedInDriver implements BrowserDriver {
           // comment control a statement about the post rather than about us. (PSEL.commentButton
           // carries its own language-independence — see its note.) Anything short of both
           // falls through to `unavailable` below, which counts toward the streak and halts.
-          const ev = await captureEvidence(page, 'engage-comments-disabled',
+          const ev = await this.capture(page, 'engage-comments-disabled',
             { signal: 'no comment control in a rendered action bar whose react trigger resolves', postUrl });
           log.info('engage', 'no comment affordance on a rendered action bar — treating as disabled',
             { postUrl });
@@ -1081,7 +1123,7 @@ export class LinkedInDriver implements BrowserDriver {
       const why = scan.hit
         ? `comment not confirmed and a checkpoint appeared at ${scan.url}`
         : `comment not confirmed (cleared=${seen.cleared}, newRowInThread=${seen.matched})`;
-      const ev = await captureEvidence(page, 'engage-comment-unverified', { error: why, postUrl });
+      const ev = await this.capture(page, 'engage-comment-unverified', { error: why, postUrl });
       log.warn('engage', 'comment could not be verified — parking it', { postUrl, why });
       return {
         result: 'unverified', error: why, ...urn(),
@@ -1091,7 +1133,7 @@ export class LinkedInDriver implements BrowserDriver {
       const message = (e as Error).message;
       if (submitted) {
         // The click landed; whatever broke afterwards, the comment may be published.
-        const ev = await captureEvidence(page, 'engage-comment-unverified', { error: message, postUrl });
+        const ev = await this.capture(page, 'engage-comment-unverified', { error: message, postUrl });
         log.warn('engage', 'comment threw after submit — parking it', { postUrl, error: message });
         return {
           result: 'unverified', error: message, ...urn(),
@@ -1139,7 +1181,7 @@ export class LinkedInDriver implements BrowserDriver {
   /** A checkpoint verdict for an engagement step. Same capture as checkpointOutcome; a
    *  separate method because the two result unions do not overlap. */
   private async engagementCheckpointOutcome(page: Page, scan: CheckpointScan): Promise<EngagementOutcome> {
-    const ev = await captureEvidence(page, 'checkpoint', { matched: scan.matched, via: scan.via, during: 'engagement' });
+    const ev = await this.capture(page, 'checkpoint', { matched: scan.matched, via: scan.via, during: 'engagement' });
     return {
       result: 'checkpoint',
       error: `checkpoint detected at ${scan.url}`,
@@ -1150,7 +1192,7 @@ export class LinkedInDriver implements BrowserDriver {
   /** A failed engagement step, snapshotted. Counts toward the failure streak, so it has to be
    *  diagnosable after the fact. */
   private async engagementErrorOutcome(page: Page, error: string): Promise<EngagementOutcome> {
-    const ev = await captureEvidence(page, 'engage-failed', { error });
+    const ev = await this.capture(page, 'engage-failed', { error });
     return { result: 'error', error, evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null } };
   }
 
@@ -1162,7 +1204,7 @@ export class LinkedInDriver implements BrowserDriver {
    * "our selectors rotted".
    */
   private async engagementUnavailable(page: Page, post: Locator, error: string): Promise<EngagementOutcome> {
-    const ev = await captureEvidence(page, 'engage-unavailable', {
+    const ev = await this.capture(page, 'engage-unavailable', {
       error,
       surface: 'classic',
       hasPostContainer: (await post.count()) > 0,
@@ -1403,7 +1445,7 @@ export class LinkedInDriver implements BrowserDriver {
       // The wording probe is unchanged and still provisional — no restricted post has ever
       // been observed on either surface.
       if (await page.locator(PSEL.commentsDisabledText).first().count()) {
-        const ev = await captureEvidence(page, 'engage-comments-disabled',
+        const ev = await this.capture(page, 'engage-comments-disabled',
           { signal: 'wording', postUrl, surface: 'react' });
         log.info('engage', 'comments appear to be disabled (wording signal)', { postUrl });
         return {
@@ -1428,7 +1470,7 @@ export class LinkedInDriver implements BrowserDriver {
           // never lives inside it) and would fire comments_disabled on every post. The
           // trigger resolving is what makes the missing comment control a statement about
           // the post rather than about our selectors.
-          const ev = await captureEvidence(page, 'engage-comments-disabled', {
+          const ev = await this.capture(page, 'engage-comments-disabled', {
             signal: 'no comment control on the post and no composer anywhere in the shell',
             postUrl, surface: 'react',
           });
@@ -1499,7 +1541,7 @@ export class LinkedInDriver implements BrowserDriver {
       const why = scan.hit
         ? `comment not confirmed and a checkpoint appeared at ${scan.url}`
         : `comment not confirmed (cleared=${seen.cleared}, newRowInThread=${seen.matched})`;
-      const ev = await captureEvidence(page, 'engage-comment-unverified',
+      const ev = await this.capture(page, 'engage-comment-unverified',
         { error: why, postUrl, surface: 'react' });
       log.warn('engage', 'comment could not be verified — parking it', { postUrl, why });
       return {
@@ -1509,7 +1551,7 @@ export class LinkedInDriver implements BrowserDriver {
     } catch (e) {
       const message = (e as Error).message;
       if (submitted) {
-        const ev = await captureEvidence(page, 'engage-comment-unverified',
+        const ev = await this.capture(page, 'engage-comment-unverified',
           { error: message, postUrl, surface: 'react' });
         log.warn('engage', 'comment threw after submit — parking it', { postUrl, error: message });
         return {
@@ -1561,7 +1603,7 @@ export class LinkedInDriver implements BrowserDriver {
     const scope = resolved?.scope ?? shell;
     const trigger = scope.locator(RSEL.reactTrigger).first();
     const shellId = await shell.getAttribute('id').catch(() => null);
-    const ev = await captureEvidence(page, 'engage-unavailable', {
+    const ev = await this.capture(page, 'engage-unavailable', {
       error,
       surface: 'react',
       shells: await page.locator(RSEL.detailShell).count(),

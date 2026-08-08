@@ -69,10 +69,10 @@ export class FakeDriver implements BrowserDriver {
     const note = message === null ? null : applyFirstName(message, firstName);
     this.sentLog.push({ url, message: note });
     const result = this.scripted.get(url) ?? 'sent';
-    // 'unconfirmed' carries evidence in the real driver too — the verdict line links the
-    // screenshot, so a fake that omitted it would let that path regress untested.
+    // 'unconfirmed' and 'already' carry evidence in the real driver too — the verdict line
+    // links the screenshot, so a fake that omitted it would let those paths regress untested.
     const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable'
-      || result === 'unconfirmed')
+      || result === 'unconfirmed' || result === 'already')
       ? this.evidence : undefined;
     return {
       result, firstName,
