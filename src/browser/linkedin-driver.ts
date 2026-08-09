@@ -99,11 +99,21 @@ export class LinkedInDriver implements BrowserDriver {
       // Don't re-send to someone with an invite already pending, and don't invite an existing
       // connection — LinkedIn STILL opens the custom-invite composer for connections, so
       // without this guard we'd "send", find no Pending on re-visit, and mis-record the row.
-      // skipsInvite deliberately also covers 'unknown', which is what the pre-2026-08-03 code
-      // treated as connected; keeping that keeps every classic-layout outcome unchanged.
-      const preVisit = await this.classifyRelationship(page, url);
+      let preVisit = await this.classifyRelationship(page, url);
+      if (preVisit.relationship === 'unknown') {
+        // One bounded settle, not a retry loop: classifyRelationship already expanded the
+        // overflow, so a slow top-card render is the only transient left worth waiting out.
+        await sleep(2000);
+        preVisit = await this.classifyRelationship(page, url);
+      }
       if (skipsInvite(preVisit.relationship)) {
         return this.alreadyOutcome(page, firstName, preVisit);
+      }
+      // A page that twice showed none of the signals is a page we could not READ — not a
+      // connection (skipping these as already_connected parked real prospects, 2026-08-07/08)
+      // and not a page to submit against either. Park it retryable, with evidence.
+      if (preVisit.relationship === 'unknown') {
+        return this.relationshipUnknownOutcome(page, firstName, preVisit);
       }
 
       // 2) Open the invite composer: direct custom-invite route first, then
@@ -281,6 +291,27 @@ export class LinkedInDriver implements BrowserDriver {
     };
   }
 
+  /**
+   * The profile rendered (its name was readable) but showed none of the three relationship
+   * signals — twice, with a settle between. Distinct from the 'already' skip on purpose:
+   * this is "we could not read the page", and recording it as "already connected" is what
+   * buried the 2026-08-07/08 false skips. Retryable at the sender, never a submit.
+   */
+  private async relationshipUnknownOutcome(
+    page: Page, firstName: string | undefined, read: RelationshipRead,
+  ): Promise<SendOutcome> {
+    const ev = await this.capture(page, 'relationship-unknown',
+      { relationship: read.relationship, ...read.signals });
+    return {
+      result: 'relationship_unknown',
+      error: "could not read the profile's relationship — check it before retrying",
+      firstName,
+      relationship: read.relationship,
+      signals: read.signals,
+      evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+    };
+  }
+
   /** True if LinkedIn's email-verification gate is showing (the invite cannot be sent). */
   private async emailRequired(page: Page): Promise<boolean> {
     if (await find.emailVerifyText(page).first().isVisible().catch(() => false)) return true;
@@ -400,6 +431,9 @@ export class LinkedInDriver implements BrowserDriver {
   /** Expand the profile's "More" overflow. Scoped to <main> so it cannot hit the global-nav
    *  "More"; same click-and-settle timing the old hasConnectAffordance used. */
   private async expandOverflow(page: Page): Promise<boolean> {
+    // Already open (the settle re-read after a first 'unknown' lands here): clicking More
+    // again would CLOSE it, and the collapsed-only locator below can't see it anyway.
+    if (await page.locator(SEL.overflowMenu).first().isVisible().catch(() => false)) return true;
     const more = find.moreButton(page.locator('main')).first();
     if (!(await more.isVisible().catch(() => false))) return false;
     await more.click().catch(() => {});

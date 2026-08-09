@@ -102,18 +102,21 @@ export function classifyRelationship(s: RelationshipSignals): Relationship {
 /**
  * PRE-VISIT policy: do not attempt an invite.
  *
- * 'unknown' is included DELIBERATELY, to preserve the pre-2026-08-03 behaviour exactly. On a
- * classic (non-Sales-Navigator) top card, an existing connection shows no Pending badge and
- * no Connect control, and the old code called that "connected" and skipped. Whether such a
- * profile also exposes "Remove connection" is unverified on that layout, so treating
- * 'unknown' as a skip keeps every classic outcome bit-for-bit identical rather than betting
- * on a signal we have only observed under Sales Navigator.
- *
- * This is the ONLY policy that trusts absence. See confirmsInviteLanded for why the
- * post-submit branch must not.
+ * 'unknown' was included here from 2026-08-03 to 2026-08-08, as a deliberate bet that
+ * preserving the old absence-means-connected reading would protect classic-layout
+ * connections from re-invites. The bet lost, measurably: roster cross-checks on two
+ * instances (2026-08-07/08) found most such skips were NOT connections — 9 of 10 on one,
+ * 8 of 18 on the other — because every transient read failure (slow top-card render, an
+ * overflow that would not expand, an unmatchable name) also lands on 'unknown' and became
+ * a permanent "already connected". No policy trusts absence any more:
+ *   - the driver re-reads once after a settle, then returns a retryable
+ *     relationship_unknown outcome WITHOUT attempting the invite;
+ *   - the sender's roster short-circuit skips genuine known connections before the
+ *     driver ever runs, which is what actually protects the classic layout now;
+ *   - and inviting an existing connection is a no-op on LinkedIn's side regardless.
  */
 export function skipsInvite(r: Relationship): boolean {
-  return r === 'pending' || r === 'connected' || r === 'unknown';
+  return r === 'pending' || r === 'connected';
 }
 
 /**

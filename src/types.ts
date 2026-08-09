@@ -275,7 +275,12 @@ export type SendResult =
   | 'email_required' | 'not_found' | 'weekly_limit' | 'not_connected'
   /** Submitted, but LinkedIn would not confirm it landed. Counts as a send (so the weekly
    *  cap cannot under-count) but needs a human — never a silent skip. */
-  | 'unconfirmed';
+  | 'unconfirmed'
+  /** The profile rendered but showed none of the relationship signals, twice. Not a skip
+   *  (that misread parked real prospects as already_connected, 2026-08-07/08) and not a
+   *  submit either — a page we could not read is not a page to submit against. Parked
+   *  retryable by the sender, with evidence. */
+  | 'relationship_unknown';
 
 /** What the browser saw when a send went wrong — captured for the operator. */
 export interface SendEvidence {

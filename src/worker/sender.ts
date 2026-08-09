@@ -345,6 +345,23 @@ async function attemptInvite(
       logVerdict(p, 'needs attention: invite submitted but not confirmed'
         + (outcome.evidence?.screenshot ? ` — screenshot: /incidents/${outcome.evidence.screenshot}` : ''));
       return { halted: false, contacted: true };
+    case 'relationship_unknown':
+      // The driver could not read the profile's relationship (twice, with a settle).
+      // Used to be a terminal already_connected skip — the bulk of the 2026-08-07/08
+      // false skips. Parked retryable with evidence; deliberately does NOT touch the
+      // failure streak (same reasoning as not_found: a run of unreadable imports must
+      // not halt the engine). Logged at WARN because a RUN of these means the top-card
+      // selectors have rotted again.
+      repos.profiles.setStatus(p.id, 'needs_attention', {
+        last_error: outcome.error ?? "could not read the profile's relationship — check it before retrying",
+      });
+      repos.events.recordEvent(p.id, 'skipped');
+      log.warn('sender', 'verdict', {
+        profile: p.id, url: p.profile_url,
+        verdict: 'needs attention: could not read the relationship'
+          + (outcome.evidence?.screenshot ? ` — screenshot: /incidents/${outcome.evidence.screenshot}` : ''),
+      });
+      return { halted: false, contacted: true };
     case 'email_required':
       // LinkedIn gates this member behind "enter their email to connect" — a
       // per-profile verdict that can never succeed on retry. Terminal skip; does

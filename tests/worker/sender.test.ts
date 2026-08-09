@@ -93,6 +93,26 @@ test('unconfirmed does not trip the failure streak — we reached LinkedIn and s
   expect(repos.profiles.byStatus('needs_attention')).toHaveLength(5);
 });
 
+test('relationship_unknown -> needs_attention (retryable), no send_log, no failure streak', async () => {
+  // The driver could not read the profile's relationship (twice). That used to be a
+  // terminal already_connected skip — the bulk of the 2026-08-07/08 false skips. It must
+  // park retryable, must not count as a send, and must not march toward a guardrail halt
+  // (a run of stale/unreadable profiles is a selector problem, not a LinkedIn block).
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'relationship_unknown');
+  driver.evidence = { pageUrl: 'https://www.linkedin.com/in/a', screenshot: 'unknown.png' };
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.last_error).toMatch(/could not read/i);
+  expect(row.skip_reason).toBeNull();
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+});
+
 test('email_required -> skipped with reason, terminal, no failure streak', async () => {
   const c = repos.cohorts.create('A', 'hi', true);
   const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);

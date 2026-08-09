@@ -49,7 +49,7 @@ describe('policies', () => {
     ['pending', true, true, false],
     ['connectable', false, false, false],
     ['connected', true, true, true],
-    ['unknown', true, false, true],
+    ['unknown', false, false, true],
     ['unreadable', false, false, false],
   ];
 
@@ -61,10 +61,13 @@ describe('policies', () => {
     });
   }
 
-  test('the pre-visit skip trusts absence but the post-submit confirmation does not', () => {
-    // The asymmetry IS the fix. Same signals, opposite readings, because reaching the
-    // post-submit branch proves the pre-visit already found them invitable.
-    expect(skipsInvite('unknown')).toBe(true);
+  test('unknown — the absence of every signal — no longer reads as connected anywhere', () => {
+    // The 2026-08-03 rework kept skipsInvite('unknown') true as a bet that classic-layout
+    // connections would otherwise be re-invited. The 2026-08-07/08 roster cross-checks
+    // showed the bet lost (9 of 10 / 8 of 18 such skips were not connections): every
+    // transient read failure became a terminal already_connected. An unreadable
+    // relationship is now a retryable relationship_unknown outcome, never a skip.
+    expect(skipsInvite('unknown')).toBe(false);
     expect(confirmsInviteLanded('unknown')).toBe(false);
   });
 });
@@ -79,6 +82,9 @@ describe('observed layouts', () => {
     // --- classic top card: Pending and Connect are primary, no overflow needed ----------
     { what: 'classic, invite pending (badge on top card)', s: signals({ pendingForTarget: true }), expect: 'pending' },
     { what: 'classic, invitable (Connect on top card)', s: signals({ connectForTarget: true }), expect: 'connectable' },
+    // NB since 2026-08-08 this no longer skips by itself — the sender's roster
+    // short-circuit is what protects a genuine classic-layout connection now, and
+    // inviting an existing connection is a no-op on LinkedIn's side regardless.
     { what: 'classic, connected (no badge, no Connect)', s: signals(), expect: 'unknown' },
 
     // --- Sales Navigator: the affordance is demoted into the "More" overflow -----------
@@ -91,10 +97,13 @@ describe('observed layouts', () => {
     test(c.what, () => expect(classifyRelationship(c.s)).toBe(c.expect));
   }
 
-  test('classic "connected" keeps its existing verdict via the legacy absence rule', () => {
+  test('classic "connected" (all-absent) stays DM-able but is no longer a terminal skip', () => {
+    // Pre-2026-08-08 this skipped via the legacy absence rule; the roster cross-check
+    // proved that rule wrong far more often than right. The DM gate keeps its old
+    // permissive reading (flagged separately — see the plan's out-of-scope note).
     const r = classifyRelationship(signals());
     expect(r).toBe('unknown');
-    expect(skipsInvite(r)).toBe(true);
+    expect(skipsInvite(r)).toBe(false);
     expect(mayReceiveDirectMessage(r)).toBe(true);
   });
 });

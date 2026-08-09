@@ -99,6 +99,25 @@ test("a neighbour badge does not confirm a submitted invite as sent", async () =
   expect(outcome.result).toBe('unconfirmed');
 }, 60_000);
 
+// Root cause 3.2: a page showing NO relationship signal used to be skipped as already
+// connected. It must now come back as relationship_unknown, with evidence, WITHOUT the
+// composer ever being attempted — a page we could not read is not a page to submit against.
+test('a signal-less page yields relationship_unknown and never opens the composer', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incidents-'));
+  const page = new FakeProfilePage({
+    url: 'https://www.linkedin.com/in/ghost-person/',
+    title: 'Ghost Person | LinkedIn',
+    elements: [],
+  });
+  const outcome = await driverFor(page, dir)
+    .sendConnectionRequest('https://www.linkedin.com/in/ghost-person', null, { firstName: 'Ghost' });
+  expect(outcome.result).toBe('relationship_unknown');
+  expect(outcome.relationship).toBe('unknown');
+  expect(outcome.evidence?.screenshot).toBeTruthy();
+  // No navigation to the custom-invite composer route: the invite was never attempted.
+  expect(page.gotoLog.some((u) => u.includes('custom-invite'))).toBe(false);
+}, 30_000);
+
 test('a connected pre-visit skip (via the expanded overflow) captures evidence too', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'incidents-'));
   const page = new FakeProfilePage({
