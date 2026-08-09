@@ -7,6 +7,7 @@
 // which opens a stable dialog with aria-labelled buttons.
 
 import type { Page, Locator } from 'playwright-core';
+import type { PendingBadge } from '../core/relationship.js';
 
 type Scope = Page | Locator;
 
@@ -61,20 +62,12 @@ export const find = {
   sendInvitation: (s: Scope): Locator => s.getByRole('button', { name: 'Send invitation' }),
   dismissDialog: (s: Scope): Locator => s.getByRole('button', { name: 'Dismiss' }),
 
-  // Pending state on the profile page (post-send confirmation / pre-send guard).
-  // Keyed on the rich aria-label ("Pending, click to withdraw invitation sent to
-  // <name>") rather than getByRole: this badge is NOT exposed as a button role, so
-  // getByRole('button') misses it. en-US is forced at launch, so matching the
-  // English "Pending" wording is safe.
-  pendingBadge: (s: Scope): Locator => s.locator('[aria-label*="Pending" i]'),
-  // Name-scoped Pending badge. The label carries the target ("Pending, click to withdraw
-  // invitation sent to Brian Palazini" — live-verified on a Sales Navigator account
-  // 2026-08-03, and the same shape the comment above records from the classic layout), so
-  // matching on it cannot be satisfied by a pending invite to someone in the right-rail
-  // recommendations, which the bare `pendingBadge` above can. Tried first; `pendingBadge`
-  // stays as the fallback so behaviour on any layout whose label omits the name is unchanged.
-  pendingBadgeForName: (s: Scope, name: string): Locator =>
-    s.locator(`[aria-label*="Pending" i][aria-label*="${name.replace(/["\\]/g, '')}"]`),
+  // NOTE: there is deliberately no bare `pendingBadge(s)` locator here any more. Reading
+  // "any visible [aria-label*=Pending]" page-wide is exactly how the 2026-08-07 false
+  // "already connected" skips happened — the operator's own outstanding invites render
+  // Pending badges on the recommendation cards of nearly every profile page (inside
+  // <main>, so scoping there does not help). Read badges with `readPendingBadges` below
+  // and attribute them to the target with core/relationship.ts' pendingBadgeMatchesTarget.
 
   // The one POSITIVE "this is an existing connection" signal. Only present in the expanded
   // "More" overflow, so callers must scope to SEL.overflowMenu after expanding — read
@@ -106,6 +99,42 @@ export const find = {
   // toggle. Live-verified to resolve to exactly one button on the profile top card.
   moreButton: (s: Scope): Locator => s.getByRole('button', { name: /^more$/i, expanded: false }),
 };
+
+/** The raw badge selector. Keyed on the rich aria-label ("Pending, click to withdraw
+ *  invitation sent to <name>") rather than getByRole: the badge is NOT exposed as a
+ *  button role. en-US is forced at launch, so the English wording is safe. Exported for
+ *  the preflight diagnostic only — production reads go through readPendingBadges. */
+export const PENDING_BADGE_SELECTOR = '[aria-label*="Pending" i]';
+
+/**
+ * Every VISIBLE Pending badge on the page, each with the fact that decides who it belongs
+ * to: the /in/<slug> of the nearest ancestor that links to a profile (a recommendation
+ * card always links its own person; the target's top card links the target — live-verified
+ * 2026-08-08, docs/superpowers/specs/2026-08-08-relationship-probe-findings.md). The
+ * DECISION of whether a badge matches the target lives in core/relationship.ts.
+ */
+export async function readPendingBadges(s: Scope): Promise<PendingBadge[]> {
+  const out: PendingBadge[] = [];
+  for (const badge of await s.locator(PENDING_BADGE_SELECTOR).all()) {
+    if (!(await badge.isVisible().catch(() => false))) continue;
+    const label = (await badge.getAttribute('aria-label').catch(() => null)) ?? '';
+    // Inline arrow on purpose: tsx' esbuild keepNames wraps named function expressions in
+    // a __name() helper that does not exist inside the page (see scripts/probe-pending.ts).
+    const cardSlug = await badge.evaluate((el: Element): string | null => {
+      let cur: Element | null = el;
+      while (cur && cur.tagName !== 'MAIN' && cur !== el.ownerDocument.body) {
+        const a = cur.querySelector('a[href*="/in/"]');
+        const href = a ? a.getAttribute('href') : null;
+        const m = href ? href.match(/\/in\/([^/?#]+)/) : null;
+        if (m) { try { return decodeURIComponent(m[1]!); } catch { return m[1]!; } }
+        cur = cur.parentElement;
+      }
+      return null;
+    }).catch(() => null);
+    out.push({ label, cardSlug });
+  }
+  return out;
+}
 
 export const URLS = {
   home: 'https://www.linkedin.com/feed/',

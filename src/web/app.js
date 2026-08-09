@@ -893,6 +893,7 @@ const DRILL_DATE = {
 /* Human labels for profiles.skip_reason; NULL (legacy rows) renders as a dash. */
 const SKIP_REASON_LABEL = {
   already_connected: 'already connected',
+  invite_pending: 'invite already pending',
   email_required: 'requires their email',
   not_found: 'profile no longer exists',
   unavailable: 'composer unavailable',

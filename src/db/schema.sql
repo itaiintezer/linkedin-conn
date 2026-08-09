@@ -19,8 +19,10 @@ CREATE TABLE IF NOT EXISTS profiles (
   status TEXT NOT NULL DEFAULT 'queued',
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
-  -- Why a skipped profile was skipped: already_connected | email_required |
-  -- unavailable | dismissed | not_found | not_connected. NULL for legacy rows.
+  -- Why a skipped profile was skipped: already_connected | invite_pending |
+  -- email_required | unavailable | dismissed | not_found | not_connected. NULL for
+  -- legacy rows. No backfill for invite_pending (added 2026-08-08): pre-split rows keep
+  -- already_connected rather than relabelling a verdict nobody re-observed.
   skip_reason TEXT,
   scheduled_for TEXT,
   sent_at TEXT,

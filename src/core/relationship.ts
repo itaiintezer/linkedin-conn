@@ -18,6 +18,8 @@
  *   connected   → "Remove connection" in the expanded overflow
  */
 
+import { canonicalName, nameTokens, tokensContained } from './name-match.js';
+
 export type Relationship =
   /** An invite of ours is outstanding. */
   | 'pending'
@@ -42,6 +44,48 @@ export interface RelationshipSignals {
   removeConnection: boolean;
 }
 
+/** One Pending badge as read off the page: its full aria-label, plus the /in/<slug> of
+ *  the nearest ancestor card that links to one (null when nothing claims it). */
+export interface PendingBadge { label: string; cardSlug: string | null }
+
+/** Slug equality that survives percent-encoding and case differences: stored profile URLs
+ *  can be percent-encoded (andr%c3%a9-…) while DOM hrefs carry the decoded form. */
+function sameSlug(a: string, b: string): boolean {
+  const norm = (s: string): string => {
+    try { return decodeURIComponent(s).toLowerCase(); } catch { return s.toLowerCase(); }
+  };
+  return norm(a) === norm(b);
+}
+
+/**
+ * Does this Pending badge belong to the TARGET profile? True only on a positive claim:
+ *  - the badge's card links to the target's slug (structural — covers labels with no name), or
+ *  - the label's "…invitation sent to <name>" tail canonically names the target, under the
+ *    reply-checker's rules (canonicalName + tokensContained), so post-nominals ("Thomas
+ *    Smith, CRISC"), parentheticals and zero-widths cannot break the match.
+ * False otherwise — including when the label names nobody and the card links nowhere.
+ *
+ * This replaces the page-wide fallback ("any visible badge counts"), which is how 2026-08-07's
+ * false skips happened: with dozens of invites outstanding, the operator's OWN badges render
+ * on the "More profiles for you" cards of nearly every profile page, and one of them
+ * satisfied the fallback. The name tail is extracted BEFORE canonicalName on purpose:
+ * canonicalizing the whole label can never token-match a bare name (tokensContained pins the
+ * first and last tokens), and substring containment is not identity ("Ann Lee" is inside
+ * "Mary-Ann Leeson").
+ */
+export function pendingBadgeMatchesTarget(
+  b: PendingBadge, targetName: string, targetSlug: string,
+): boolean {
+  if (b.cardSlug && targetSlug && sameSlug(b.cardSlug, targetSlug)) return true;
+  const target = canonicalName(targetName);
+  if (!target) return false; // name-match.ts hard rule: '' is not a name, it matches everything
+  const namedRaw = b.label.match(/sent to (.+)$/i)?.[1];
+  if (!namedRaw) return false;
+  const named = canonicalName(namedRaw);
+  if (!named) return false;
+  return named === target || tokensContained(nameTokens(named), nameTokens(target));
+}
+
 /**
  * Most specific signal wins. Pending outranks connectable because a withdrawn-but-cached
  * Connect anchor alongside a live Pending badge should read as pending, never as sendable —
@@ -58,18 +102,48 @@ export function classifyRelationship(s: RelationshipSignals): Relationship {
 /**
  * PRE-VISIT policy: do not attempt an invite.
  *
- * 'unknown' is included DELIBERATELY, to preserve the pre-2026-08-03 behaviour exactly. On a
- * classic (non-Sales-Navigator) top card, an existing connection shows no Pending badge and
- * no Connect control, and the old code called that "connected" and skipped. Whether such a
- * profile also exposes "Remove connection" is unverified on that layout, so treating
- * 'unknown' as a skip keeps every classic outcome bit-for-bit identical rather than betting
- * on a signal we have only observed under Sales Navigator.
- *
- * This is the ONLY policy that trusts absence. See confirmsInviteLanded for why the
- * post-submit branch must not.
+ * 'unknown' was included here from 2026-08-03 to 2026-08-08, as a deliberate bet that
+ * preserving the old absence-means-connected reading would protect classic-layout
+ * connections from re-invites. The bet lost, measurably: roster cross-checks on two
+ * instances (2026-08-07/08) found most such skips were NOT connections — 9 of 10 on one,
+ * 8 of 18 on the other — because every transient read failure (slow top-card render, an
+ * overflow that would not expand, an unmatchable name) also lands on 'unknown' and became
+ * a permanent "already connected". No policy trusts absence any more:
+ *   - the driver re-reads once after a settle, then returns a retryable
+ *     relationship_unknown outcome WITHOUT attempting the invite;
+ *   - the sender's roster short-circuit skips genuine known connections before the
+ *     driver ever runs, which is what actually protects the classic layout now;
+ *   - and inviting an existing connection is a no-op on LinkedIn's side regardless.
  */
 export function skipsInvite(r: Relationship): boolean {
-  return r === 'pending' || r === 'connected' || r === 'unknown';
+  return r === 'pending' || r === 'connected';
+}
+
+/** How recent the roster sync must be for the ABSENCE of a row to count as evidence.
+ *  The roster syncs on the daily acceptance pass, so 48h tolerates one missed sync (a
+ *  weekend pause, a transient halt) before disagreement stops being trustworthy. */
+export const ROSTER_FRESH_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * ROSTER TIE-BREAKER: is a DOM 'connected' verdict terminal? Only when the local
+ * connections roster agrees, or when it is too stale to disagree.
+ *
+ *  - connected + in roster           → true (both sources agree; staleness irrelevant —
+ *                                      a PRESENT row is positive evidence at any age)
+ *  - connected + fresh roster, no row → false: park it. The 2026-08-07 report's profiles
+ *                                      57 and 65 were logged "already connected" while
+ *                                      absent from a roster synced the same day.
+ *  - connected + stale roster, no row → true: an absent row proves nothing unsynced;
+ *                                      degrade to trusting the DOM read (the pre-fix
+ *                                      behaviour, and LinkedIn no-ops a re-invite anyway).
+ * Anything not 'connected' has nothing to confirm.
+ */
+export function confirmsExistingConnection(
+  r: Relationship, inRoster: boolean, rosterFresh: boolean,
+): boolean {
+  if (r !== 'connected') return false;
+  if (inRoster) return true;
+  return !rosterFresh;
 }
 
 /**

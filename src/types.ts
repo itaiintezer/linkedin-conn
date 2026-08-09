@@ -16,17 +16,20 @@ export type { Reaction };
 
 // Re-exported for the same reason as CampaignKind: SendOutcome carries one, so consumers of
 // this module need the name without reaching into core/.
-import type { Relationship } from './core/relationship.js';
-export type { Relationship };
+import type { Relationship, RelationshipSignals } from './core/relationship.js';
+export type { Relationship, RelationshipSignals };
 
 export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
   | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
 
-/** Why a skipped profile was skipped (terminal — the engine never retries these). */
+/** Why a skipped profile was skipped (terminal — the engine never retries these).
+ *  invite_pending split from already_connected 2026-08-08: an outstanding invite and an
+ *  existing connection were recorded, labelled and surfaced as one fact, which is part
+ *  of why the false-skip incident took a roster cross-check to diagnose. */
 export type SkipReason =
-  | 'already_connected' | 'email_required' | 'not_found' | 'unavailable' | 'dismissed'
-  | 'not_connected';
+  | 'already_connected' | 'invite_pending' | 'email_required' | 'not_found'
+  | 'unavailable' | 'dismissed' | 'not_connected';
 
 export type EventType = 'sent' | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed';
 
@@ -275,7 +278,12 @@ export type SendResult =
   | 'email_required' | 'not_found' | 'weekly_limit' | 'not_connected'
   /** Submitted, but LinkedIn would not confirm it landed. Counts as a send (so the weekly
    *  cap cannot under-count) but needs a human — never a silent skip. */
-  | 'unconfirmed';
+  | 'unconfirmed'
+  /** The profile rendered but showed none of the relationship signals, twice. Not a skip
+   *  (that misread parked real prospects as already_connected, 2026-08-07/08) and not a
+   *  submit either — a page we could not read is not a page to submit against. Parked
+   *  retryable by the sender, with evidence. */
+  | 'relationship_unknown';
 
 /** What the browser saw when a send went wrong — captured for the operator. */
 export interface SendEvidence {
@@ -294,6 +302,10 @@ export interface SendOutcome {
    *  Reported so a verdict can name the real reason — an 'already' that is a pending invite
    *  is not the same thing as an existing connection, and the log used to conflate them. */
   relationship?: Relationship;
+  /** The raw signal booleans behind `relationship`, so a skip verdict is checkable after
+   *  the fact — the 2026-08-07 false-skip investigation had 21 such verdicts and zero
+   *  evidence of what the page actually showed. */
+  signals?: RelationshipSignals;
   threadUrl?: string;
   error?: string;
   evidence?: SendEvidence;

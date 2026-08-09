@@ -36,6 +36,8 @@ export interface AppInternals {
   renderApifyKey: (settings: Record<string, unknown>) => void;
   /** The one id<->setting-key map the Settings form loads and submits through. */
   SETTINGS_FIELDS: { key: string; id: string }[];
+  /** Human labels for profiles.skip_reason — every reason the sender writes needs one. */
+  SKIP_REASON_LABEL: Record<string, string>;
   loadSettings: () => Promise<void>;
   initSettings: () => void;
   applyEnrichHaltUi: (status: Record<string, unknown>) => void;
@@ -97,7 +99,7 @@ export function loadApp(): AppInternals {
   const postsSrc = readFileSync(join(WEB_DIR, 'posts.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, loadSettings, initSettings, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
+    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, SKIP_REASON_LABEL, loadSettings, initSettings, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }
