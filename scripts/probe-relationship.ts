@@ -25,7 +25,7 @@ import { launchPersistentContext } from 'cloakbrowser';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { BROWSER_PROFILE_DIR } from '../src/config.js';
 import { canonicalName } from '../src/core/name-match.js';
-import { classifyRelationship } from '../src/core/relationship.js';
+import { classifyRelationship, pendingBadgeMatchesTarget } from '../src/core/relationship.js';
 
 const [arg, label = 'case'] = process.argv.slice(2);
 if (!arg) {
@@ -129,15 +129,12 @@ try {
   const expanded = await page.evaluate(collect);
   await page.screenshot({ path: `${OUT_DIR}/${stem}-2-expanded.png`, fullPage: false });
 
-  // Reproduce the verdict with the same pure classifier the driver calls. "For the
-  // target" here means the CURRENT driver semantics (any visible badge / any connect hit
-  // for this name or slug), so the probe shows what the driver would decide today.
+  // Reproduce the verdict with the same pure functions the driver calls, so the probe
+  // shows exactly what production would decide.
   const canonical = canonicalName(fullName);
   const badgeForTarget = (b: PendingBadgeSeen): boolean =>
-    b.visible && (
-      (!!b.label && canonicalName(b.label).includes(canonical) && canonical.length > 0)
-      || b.nearestCardSlug === slug
-    );
+    b.visible && pendingBadgeMatchesTarget(
+      { label: b.label ?? '', cardSlug: b.nearestCardSlug }, fullName, slug);
   const anyVisible = (xs: Array<{ visible: boolean }>) => xs.some((x) => x.visible);
   const signals = {
     nameRead,
@@ -150,6 +147,8 @@ try {
     removeConnection: expanded.overflowItems.some((i) => /remove connection/i.test(i.text) && i.visible),
   };
   const verdictScoped = classifyRelationship(signals);
+  // What the pre-2026-08-08 page-wide fallback would have said — kept so a re-probe can
+  // show the before/after on the same page.
   const verdictAsDriverToday = classifyRelationship({ ...signals, pendingForTarget: signals.pendingAnywhere });
 
   const report = {
