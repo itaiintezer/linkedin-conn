@@ -1,7 +1,7 @@
 import { test, expect, describe } from 'vitest';
 import {
   classifyRelationship, skipsInvite, confirmsInviteLanded, mayReceiveDirectMessage,
-  pendingBadgeMatchesTarget, type PendingBadge,
+  pendingBadgeMatchesTarget, confirmsExistingConnection, type PendingBadge,
   type Relationship, type RelationshipSignals,
 } from '../../src/core/relationship.js';
 
@@ -191,6 +191,32 @@ describe('pendingBadgeMatchesTarget', () => {
 
   test('an empty target slug never slug-matches', () => {
     expect(pendingBadgeMatchesTarget(badge('Pending', ''), 'Thomas Smith', '')).toBe(false);
+  });
+});
+
+/**
+ * The roster tie-breaker: a DOM 'connected' verdict is terminal only when the local
+ * connections roster agrees, or is too stale to disagree. The full matrix, because the
+ * 2026-08-07/08 investigations were decided by exactly this cross-check.
+ */
+describe('confirmsExistingConnection', () => {
+  const matrix: Array<[Relationship, boolean, boolean, boolean]> = [
+    // relationship, inRoster, rosterFresh → confirmed
+    ['connected', true, true, true],   // both sources agree
+    ['connected', true, false, true],  // roster stale but agreeing is still agreement
+    ['connected', false, true, false], // fresh roster disagrees → park it, don't skip
+    ['connected', false, false, true], // absent from a stale roster proves nothing
+  ];
+  for (const [r, inRoster, fresh, want] of matrix) {
+    test(`${r} inRoster=${inRoster} fresh=${fresh} → ${want}`, () => {
+      expect(confirmsExistingConnection(r, inRoster, fresh)).toBe(want);
+    });
+  }
+
+  test('only a connected verdict can be confirmed at all', () => {
+    for (const r of ['pending', 'connectable', 'unknown', 'unreadable'] as Relationship[]) {
+      expect(confirmsExistingConnection(r, true, true)).toBe(false);
+    }
   });
 });
 

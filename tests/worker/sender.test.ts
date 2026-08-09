@@ -93,6 +93,59 @@ test('unconfirmed does not trip the failure streak — we reached LinkedIn and s
   expect(repos.profiles.byStatus('needs_attention')).toHaveLength(5);
 });
 
+test('a fresh roster hit short-circuits the skip without ever calling the driver', async () => {
+  // Relay already KNOWS its connections (synced daily). Spending a LinkedIn page visit to
+  // discover what the local roster says is waste — and the driver's read is now the
+  // second opinion, not the only one.
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  repos.connections.upsert({ profile_url: 'https://www.linkedin.com/in/a' }, 'scrape', '2026-06-29T00:00:00.000Z');
+  repos.appState.setRosterSynced('2026-06-29T08:00:00.000Z'); // 2h before the run — fresh
+
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  expect(driver.sentLog).toHaveLength(0); // the driver was never invoked
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('skipped');
+  expect(row.skip_reason).toBe('already_connected');
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
+});
+
+test("a driver 'connected' verdict absent from a FRESH roster parks as needs_attention", async () => {
+  // Two sources disagreeing is a misread until proven otherwise: profiles 57 and 65 of
+  // the 2026-08-07 report were logged "already connected" while absent from a roster
+  // synced the same day.
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'already');
+  driver.relationship = 'connected';
+  repos.appState.setRosterSynced('2026-06-29T08:00:00.000Z'); // fresh, and no roster row
+
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.skip_reason).toBeNull();
+  expect(row.last_error).toMatch(/connections list/i);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
+});
+
+test("a driver 'connected' verdict with a STALE roster still skips terminally", async () => {
+  // An absent row proves nothing when the roster has not synced — degrade to trusting
+  // the DOM read, exactly today's behaviour.
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/a', 'already');
+  driver.relationship = 'connected';
+  repos.appState.setRosterSynced('2026-06-25T08:00:00.000Z'); // 4 days old
+
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('skipped');
+  expect(row.skip_reason).toBe('already_connected');
+});
+
 test('relationship_unknown -> needs_attention (retryable), no send_log, no failure streak', async () => {
   // The driver could not read the profile's relationship (twice). That used to be a
   // terminal already_connected skip — the bulk of the 2026-08-07/08 false skips. It must

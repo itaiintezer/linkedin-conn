@@ -4,6 +4,7 @@ import type {
   Engagement, EngagementOutcome, EngagementSkipReason,
 } from '../types.js';
 import { selectNoteSource } from '../core/message.js';
+import { confirmsExistingConnection, ROSTER_FRESH_MS } from '../core/relationship.js';
 import { windowStartIso, remainingCapacity, dayStartIso } from '../core/rate-limit.js';
 import { pickDue } from '../core/schedule.js';
 import { capsFor, engagementCaps } from '../core/caps.js';
@@ -38,6 +39,16 @@ const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTim
  */
 function rosterFirstName(repos: Repos, profileUrl: string): string | undefined {
   return repos.connections.findByUrl(profileUrl)?.first_name ?? undefined;
+}
+
+/** Fresh enough that the roster's word (presence or absence of a row) is evidence.
+ *  See ROSTER_FRESH_MS in core/relationship.ts for the 48h reasoning. */
+function rosterIsFresh(repos: Repos, clock: () => Date): boolean {
+  const synced = repos.appState.get().roster_synced_at;
+  if (!synced) return false;
+  // A negative age (sync stamped ahead of this clock) is still "recent", not stale.
+  const age = clock().getTime() - new Date(synced).getTime();
+  return Number.isFinite(age) && age <= ROSTER_FRESH_MS;
 }
 
 /** min + floor(rng() * (max - min + 1)), the repo's existing randomized-wait idiom
@@ -285,13 +296,26 @@ async function runInvitePass(
   return false;
 }
 
-/** One profile's invite attempt. Every branch calls driver.sendConnectionRequest at
- *  least once before returning (the note_quota retry included), so `contacted` is
- *  always true here — unlike messages, there is no early-return-before-contact path. */
+/** One profile's invite attempt. Every branch except the roster short-circuit calls
+ *  driver.sendConnectionRequest at least once before returning (the note_quota retry
+ *  included); the short-circuit is decided from the local DB alone, so it reports
+ *  `contacted: false` and consumes no inter-send pacing delay. */
 async function attemptInvite(
   repos: Repos, driver: BrowserDriver, p: Profile, clock: () => Date,
 ): Promise<AttemptResult> {
   const cohort = repos.cohorts.findById(p.cohort_id)!;
+
+  // Known connection? The roster is synced daily and is the same data that exposed the
+  // 2026-08-07/08 false skips. A fresh hit skips terminally WITHOUT spending a LinkedIn
+  // page visit — and makes the driver's DOM verdict a second opinion rather than the
+  // only one (see case 'already' below for the disagreeing direction).
+  if (rosterIsFresh(repos, clock) && repos.connections.findByUrl(p.profile_url)) {
+    repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'already_connected' });
+    repos.events.recordEvent(p.id, 'skipped');
+    logVerdict(p, 'skipped: already a connection (from your connections list)');
+    return { halted: false, contacted: false };
+  }
+
   repos.profiles.setStatus(p.id, 'sending', { attempts: p.attempts + 1 });
   log.debug('sender', 'attempting', { profile: p.id, url: p.profile_url });
 
@@ -321,7 +345,24 @@ async function attemptInvite(
       recordSuccess(repos); // reset the failure streak
       logVerdict(p, 'sent — invite pending');
       return { halted: false, contacted: true };
-    case 'already':
+    case 'already': {
+      // A DOM 'connected' the fresh roster disagrees with is a misread until a human or a
+      // later sync settles it: profiles 57 and 65 of the 2026-08-07 report were logged
+      // "already connected" while absent from a roster synced the same day. Park it.
+      if (outcome.relationship === 'connected'
+        && !confirmsExistingConnection('connected',
+          !!repos.connections.findByUrl(p.profile_url), rosterIsFresh(repos, clock))) {
+        repos.profiles.setStatus(p.id, 'needs_attention', {
+          last_error: 'page read as already connected, but they are not in your synced connections list — check before retrying',
+        });
+        repos.events.recordEvent(p.id, 'skipped');
+        log.warn('sender', 'verdict', {
+          profile: p.id, url: p.profile_url,
+          verdict: 'needs attention: read as connected but absent from the fresh roster'
+            + (outcome.evidence?.screenshot ? ` — screenshot: /incidents/${outcome.evidence.screenshot}` : ''),
+        });
+        return { halted: false, contacted: true };
+      }
       repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'already_connected' });
       repos.events.recordEvent(p.id, 'skipped');
       // Both cases are terminal skips and share skip_reason, but they are not the same fact.
@@ -332,6 +373,7 @@ async function attemptInvite(
         : 'skipped: already connected')
         + (outcome.evidence?.screenshot ? ` — screenshot: /incidents/${outcome.evidence.screenshot}` : ''));
       return { halted: false, contacted: true };
+    }
     case 'unconfirmed':
       // Submitted, unconfirmable. Recorded as a SEND in send_log even though the status is
       // needs_attention: the weekly cap counts send_log rows, and under-counting real invites

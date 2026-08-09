@@ -119,6 +119,33 @@ export function skipsInvite(r: Relationship): boolean {
   return r === 'pending' || r === 'connected';
 }
 
+/** How recent the roster sync must be for the ABSENCE of a row to count as evidence.
+ *  The roster syncs on the daily acceptance pass, so 48h tolerates one missed sync (a
+ *  weekend pause, a transient halt) before disagreement stops being trustworthy. */
+export const ROSTER_FRESH_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * ROSTER TIE-BREAKER: is a DOM 'connected' verdict terminal? Only when the local
+ * connections roster agrees, or when it is too stale to disagree.
+ *
+ *  - connected + in roster           → true (both sources agree; staleness irrelevant —
+ *                                      a PRESENT row is positive evidence at any age)
+ *  - connected + fresh roster, no row → false: park it. The 2026-08-07 report's profiles
+ *                                      57 and 65 were logged "already connected" while
+ *                                      absent from a roster synced the same day.
+ *  - connected + stale roster, no row → true: an absent row proves nothing unsynced;
+ *                                      degrade to trusting the DOM read (the pre-fix
+ *                                      behaviour, and LinkedIn no-ops a re-invite anyway).
+ * Anything not 'connected' has nothing to confirm.
+ */
+export function confirmsExistingConnection(
+  r: Relationship, inRoster: boolean, rosterFresh: boolean,
+): boolean {
+  if (r !== 'connected') return false;
+  if (inRoster) return true;
+  return !rosterFresh;
+}
+
 /**
  * POST-SUBMIT policy: did the invite we just submitted register?
  *
