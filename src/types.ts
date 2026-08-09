@@ -23,10 +23,13 @@ export type ProfileStatus =
   | 'queued' | 'scheduled' | 'sending' | 'sent'
   | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed' | 'needs_attention';
 
-/** Why a skipped profile was skipped (terminal — the engine never retries these). */
+/** Why a skipped profile was skipped (terminal — the engine never retries these).
+ *  invite_pending split from already_connected 2026-08-08: an outstanding invite and an
+ *  existing connection were recorded, labelled and surfaced as one fact, which is part
+ *  of why the false-skip incident took a roster cross-check to diagnose. */
 export type SkipReason =
-  | 'already_connected' | 'email_required' | 'not_found' | 'unavailable' | 'dismissed'
-  | 'not_connected';
+  | 'already_connected' | 'invite_pending' | 'email_required' | 'not_found'
+  | 'unavailable' | 'dismissed' | 'not_connected';
 
 export type EventType = 'sent' | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed';
 

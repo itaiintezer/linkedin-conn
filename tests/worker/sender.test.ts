@@ -50,10 +50,10 @@ test('already-connected -> skipped with reason, not counted as sent', async () =
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
 });
 
-test('a pending invite still skips, but the verdict says pending rather than connected', async () => {
-  // Same terminal skip and same skip_reason as an existing connection — only the verdict
-  // line distinguishes them. Conflating the two is what made the Sales Navigator misread
-  // (2026-08-03) look like a legitimate outcome in the log.
+test('a pending invite skips with its OWN reason, invite_pending', async () => {
+  // A pending invite and an existing connection are different facts; recording both as
+  // already_connected is what made the 2026-08-03 Sales Navigator misread — and the
+  // 2026-08-07 neighbour-badge misread — look like legitimate outcomes in the UI.
   const c = repos.cohorts.create('A', 'hi', true);
   const p = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
   driver.scripted.set('https://www.linkedin.com/in/a', 'already');
@@ -61,8 +61,25 @@ test('a pending invite still skips, but the verdict says pending rather than con
   await run(new Date('2026-06-29T10:00:00Z'));
   const row = repos.profiles.findById(p.id)!;
   expect(row.status).toBe('skipped');
-  expect(row.skip_reason).toBe('already_connected');
+  expect(row.skip_reason).toBe('invite_pending');
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
+});
+
+test('the two already-relationships produce distinct skip reasons', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const pend = seedScheduled('https://www.linkedin.com/in/pend', '2026-06-29T09:00:00.000Z', c.id);
+  const conn = seedScheduled('https://www.linkedin.com/in/conn', '2026-06-29T09:00:00.000Z', c.id);
+  driver.scripted.set('https://www.linkedin.com/in/pend', 'already');
+  driver.scripted.set('https://www.linkedin.com/in/conn', 'already');
+  // One FakeDriver relationship per run, so run the two profiles in separate passes.
+  driver.relationship = 'pending';
+  await run(new Date('2026-06-29T10:00:00Z'));
+  expect(repos.profiles.findById(pend.id)!.skip_reason).toBe('invite_pending');
+
+  repos.profiles.setScheduled(conn.id, '2026-06-29T09:00:00.000Z');
+  driver.relationship = 'connected'; // stale roster → the DOM verdict stands, terminally
+  await run(new Date('2026-06-29T11:00:00Z'));
+  expect(repos.profiles.findById(conn.id)!.skip_reason).toBe('already_connected');
 });
 
 test('unconfirmed -> needs_attention, but COUNTS toward the cap', async () => {

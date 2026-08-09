@@ -363,11 +363,14 @@ async function attemptInvite(
         });
         return { halted: false, contacted: true };
       }
-      repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'already_connected' });
+      // Distinct reasons for distinct facts: an outstanding invite is not an existing
+      // connection, and recording both as already_connected made the 2026-08-03 and
+      // 2026-08-07 misreads look like plausible verdicts instead of bugs.
+      repos.profiles.setStatus(p.id, 'skipped', {
+        last_error: null,
+        skip_reason: outcome.relationship === 'pending' ? 'invite_pending' : 'already_connected',
+      });
       repos.events.recordEvent(p.id, 'skipped');
-      // Both cases are terminal skips and share skip_reason, but they are not the same fact.
-      // The log said "already connected" for a pending invite too, which made the Sales
-      // Navigator misread (2026-08-03) read as a plausible verdict instead of a bug.
       logVerdict(p, (outcome.relationship === 'pending'
         ? 'skipped: an invite is already pending'
         : 'skipped: already connected')
