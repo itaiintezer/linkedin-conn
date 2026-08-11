@@ -11,6 +11,7 @@ import {
   RELEASE_BRANCH,
   backupFilename,
   backupsToPrune,
+  blockedReason,
   checkBranch,
   checkGitAvailable,
   checkGitRepo,
@@ -26,6 +27,9 @@ import {
   runUpdate,
   summarize,
 } from '../../scripts/update.mjs';
+// The banner text is the point of blockedReason, so the assertions go through the same two
+// functions the dashboard does rather than stopping at the string runUpdate returned.
+import { markFailed, newRequest, summarizeControl } from '../../scripts/control-file.mjs';
 
 describe('checkGitRepo', () => {
   test('passes inside a clone', () => {
@@ -178,6 +182,40 @@ describe('summarize', () => {
     const s = summarize([checkGitRepo(true), checkBranch(RELEASE_BRANCH), checkNotRunning('free')]);
     expect(s.ok).toBe(true);
     expect(s.exitCode).toBe(0);
+  });
+});
+
+describe('blockedReason', () => {
+  const branchFail = {
+    id: 'branch', label: 'Branch', severity: 'error',
+    message: 'this checkout is on `claude/wip`, not `main`.',
+    fix: 'Updates are published on `main`. Switch with `git checkout main` and run this again.',
+  };
+
+  test('gives the check, the problem AND the next action', () => {
+    expect(blockedReason([branchFail])).toBe(
+      'Branch: this checkout is on `claude/wip`, not `main`. Updates are published on `main`.'
+      + ' Switch with `git checkout main` and run this again.',
+    );
+  });
+
+  test('reports every failure, not just the first', () => {
+    const gitFail = { id: 'git', label: 'git', severity: 'error', message: 'not installed.', fix: 'Install git.' };
+    const reason = blockedReason([branchFail, gitFail]);
+    expect(reason).toContain('Branch:');
+    expect(reason).toContain('git: not installed. Install git.');
+  });
+
+  test('a failure with no fix still reads as a sentence', () => {
+    expect(blockedReason([{ label: 'Folder', message: 'this is not a git checkout.' }]))
+      .toBe('Folder: this is not a git checkout.');
+  });
+
+  test('falls back rather than producing an empty banner', () => {
+    // Reached only if something failed without being recorded — say the honest thing instead of
+    // rendering "The update did not finish." followed by nothing.
+    expect(blockedReason([])).toBe('the update did not complete');
+    expect(blockedReason(undefined)).toBe('the update did not complete');
   });
 });
 
@@ -469,5 +507,32 @@ describe('runUpdate against a disposable repo', () => {
     expect(r.diverged).toBe(true);
     // Nothing was destroyed: the commit is still there to be rescued.
     expect(gitIn(repo.root, ['log', '-1', '--format=%s'])).toBe('a local commit nobody else has');
+    // ...and the operator is told it is not theirs to fix, rather than just "did not finish".
+    expect(r.error).toMatch(/history no longer matches/);
+  }, 60_000);
+
+  /**
+   * The failure that actually happened on the author's machine: the checkout sat on a feature
+   * branch, the update correctly refused, and the dashboard said only "The update did not
+   * finish." The reason existed — in a log file on a machine with no console. This asserts the
+   * whole chain instead, from the refusal to the sentence the operator reads.
+   */
+  test('a wrong-branch refusal reaches the dashboard naming the branch and the fix', async () => {
+    gitIn(repo.root, ['checkout', '-b', 'claude/service-install-fixes']);
+    publishCommit(repo, { subject: 'feat: something new' });
+
+    const r = await runUpdate(cfgFor(repo), { out: quiet });
+    expect(r.ok).toBe(false);
+    expect(r.blocked).toBe(true);
+
+    const { state, message } = summarizeControl(
+      markFailed(newRequest('update'), r.error, '2026-08-11T00:00:00.000Z'),
+    );
+
+    expect(state).toBe('failed');
+    expect(message).toContain('claude/service-install-fixes');
+    expect(message).toContain('git checkout main');
+    // The old generic fallback must be gone, not merely accompanied.
+    expect(message).not.toContain('the update did not complete');
   }, 60_000);
 });

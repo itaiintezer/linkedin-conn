@@ -59,10 +59,15 @@ npm run service:install
 ```
 
 That registers a **per-user LaunchAgent** (macOS) or a **logon-triggered Scheduled Task**
-(Windows) that runs `node scripts/supervisor.mjs` in this folder. Open
-<http://localhost:4400>; there is no terminal to keep open, and the dashboard's **Restart** and
-**Update** buttons work from then on. `npm run service:status` / `service:uninstall` /
-`service:doctor` are the other three verbs.
+(Windows) running `node scripts/supervisor.mjs` in this folder, **and starts it immediately**
+(unless a copy is already running, which it says). Open <http://localhost:4400>; there is no
+terminal to keep open, and the dashboard's **Restart** and **Update** buttons work from then on.
+
+`npm run service:status` / `service:uninstall` / `service:doctor` are the other three verbs.
+**Run `service:doctor` first whenever anything is wrong**: it checks the registration, verifies
+`node`/`npm`/`git` at the absolute paths baked in at install time, says whether the running copy
+is supervised, and prints the tail of `data/service.out.log` — which, because the login launch is
+windowless by design, is the only place a start-up failure is recorded.
 
 Or run it in the foreground, which is the dev path:
 
@@ -170,9 +175,19 @@ database (`data/`) and browser profile (`.linkedin-profile/`) next to its own fi
 | Path | What it is | In git? |
 |---|---|---|
 | `data/app.db` | Queue, cohorts, roster, settings, Apify key | no |
-| `data/backups/` | Pre-update database copies (newest 5) | no |
+| `data/backups/app.db.*` | Pre-update database copies (newest 5) | no |
+| `data/backups/discarded-*.patch` | Local edits an update discarded, in case they mattered | no |
 | `data/incidents/` | Screenshots of pages that tripped a checkpoint | no |
+| `data/relay.log` | The run log. Named for the product's old name, kept so existing installs keep their history | no |
+| `data/control.json` | The supervisor↔app handover: what was asked for and what happened. The only state that survives a restart | no |
+| `data/supervisor.lock` | The pid holding the single-instance lock. A stale one (power cut) is taken over automatically | no |
+| `data/service.out.log` | Everything the login-launched supervisor printed. **The only diagnostic when it starts hidden** — there is no console to read | no |
+| `data/start-hidden.vbs` | Windows only: the generated windowless launcher the Scheduled Task runs | no |
 | `.linkedin-profile/` | Your logged-in browser session | no |
+
+Neither `git reset --hard` nor `git clean` during an update can reach any of these — `data/` and
+`.linkedin-profile/` are gitignored, and the clean also passes them as explicit excludes so this
+does not depend on `.gitignore` staying correct.
 
 ## First run
 
@@ -551,7 +566,8 @@ Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 | **Connect LinkedIn** hangs for minutes on first click | The browser wasn't downloaded at install time. Run `npm run install-browser`. |
 | `npm start` says **The Machine is already running (process N)** | The supervisor's single-instance lock. It's the login-launched copy — use <http://localhost:4400>. `data/supervisor.lock` holds the pid; a stale one from a power cut is taken over automatically. |
 | `npm start` warns that port 4400 is in use | Another copy is already running — use it, or start on another port (see platform notes). |
-| `npm start` fails to launch the browser, or the window never appears | A previous run was killed instead of `Ctrl+C`, leaving an orphaned browser holding `.linkedin-profile`. Quit any leftover Chromium windows (Task Manager / Activity Monitor: `chrome`/`Chromium`), then start again. |
+| The LinkedIn browser never appears | A previous run was force-killed while the browser was open, leaving it holding `.linkedin-profile`. Quit any leftover Chromium (Task Manager / Activity Monitor: `chrome`/`Chromium` — check the command line for `linkedin-profile` so you don't close your own browser), then hit **Restart** on the dashboard. |
+| It starts hidden at login and something is wrong, but there's no console to read | That's what `data/service.out.log` is for; `npm run service:doctor` prints its tail. Send that plus `data/relay.log` when asking for help. |
 | Dashboard's **Restart**/**Update** buttons are disabled | The app was started directly (`npm run start:app`, or a `tsx` dev session) so there's no supervisor to bring it back — exiting would just stop it. Start via `npm start` or the installed service. |
 | Nothing starts at login | `npm run service:doctor`. Most often the absolute `node`/`npm`/`git` paths baked in at install time have moved (an nvm or Homebrew upgrade); re-run `npm run service:install` to re-record them. |
 | It starts but **updating** fails from the service | Same cause, narrower: a LaunchAgent gets a minimal `PATH`, so `git`/`npm` weren't found. `service:doctor` reports each of the three by absolute path. |
