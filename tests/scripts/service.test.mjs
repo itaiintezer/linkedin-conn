@@ -160,6 +160,19 @@ describe('renderHiddenShim', () => {
     expect(shim).toContain('supervisor.mjs');
   });
 
+  test('redirects output to service.out.log — otherwise a hidden failure is invisible', () => {
+    // Found in real-world testing: nothing ever wrote to service.out.log on Windows. With no
+    // console and no redirect, a service that fails to start gives the operator nothing but
+    // "the dashboard will not load", and service:doctor cannot say why. WScript.Shell.Run
+    // cannot redirect, hence the cmd /c wrapper.
+    const winShim = renderHiddenShim(WIN_PATHS);
+    expect(winShim).toContain('cmd /c');
+    expect(winShim).toContain('service.out.log');
+    expect(winShim).toContain('2>&1');
+    // Appended, not truncated: the previous run's failure is usually the interesting one.
+    expect(winShim).toMatch(/>>\s*""/);
+  });
+
   test('sets the working directory', () => {
     expect(shim).toContain('sh.CurrentDirectory = "/Users/rep/linkedin-conn"');
   });
@@ -211,6 +224,17 @@ describe('renderScheduledTask', () => {
 
   test('carries the shared task name', () => {
     expect(xml).toContain(TASK_NAME);
+  });
+});
+
+describe('resolvePaths knows where the lock lives', () => {
+  test('exposes dataDir, so the installer can ask whether a copy is already running', () => {
+    // Found in real-world testing: registering a LOGON-triggered Scheduled Task does not run it,
+    // unlike `launchctl bootstrap` on a RunAtLoad agent. The installer used to print "it is
+    // starting now" either way, so on Windows nothing happened until the next login — which
+    // reads exactly like a broken install. It now runs the task, unless a copy holds the lock.
+    expect(PATHS.dataDir).toBe('/Users/rep/linkedin-conn/data');
+    expect(WIN_PATHS.dataDir).toBe('C:\\Users\\rep\\machine\\data');
   });
 });
 

@@ -100,12 +100,27 @@ if (!status) {
 const lock = lockPath(join(ROOT, 'data'));
 ok('Single-instance lock', existsSync(lock) ? `held (${lock})` : 'free');
 
+// 6. The service's own output. When it starts hidden at login there is no console, so this file
+//    is the ONLY place a start-up failure is recorded — worth putting in front of whoever is
+//    running this, rather than making them know the path.
+const outLog = join(ROOT, 'data', 'service.out.log');
+if (existsSync(outLog)) {
+  const tail = readFileSync(outLog, 'utf8').split('\n').filter((l) => l.trim()).slice(-6);
+  // Attached to the result rather than printed here: every check is collected first and the
+  // report is rendered at the end, so printing now would put the tail above the header.
+  results.push({ severity: 'ok', label: 'Service log', msg: `${outLog} (last ${tail.length} line${tail.length === 1 ? '' : 's'})`, extra: tail });
+} else {
+  warn('Service log', 'not written yet',
+    'Normal until it has started at login at least once. If the dashboard will not load and this file is still missing, the login task never ran.');
+}
+
 // ---------------------------------------------------------------------------
 
 const mark = { ok: '  ok  ', warn: ' warn ', error: ' FAIL ' };
 console.log('\nThe Machine — service check\n');
 for (const r of results) {
   console.log(`[${mark[r.severity]}] ${r.label}: ${r.msg}`);
+  for (const line of r.extra ?? []) console.log(`           | ${line}`);
   if (r.fix) console.log(`           → ${r.fix}`);
 }
 const failed = results.filter((r) => r.severity === 'error');

@@ -78,6 +78,20 @@ export function lockPath(dataDir) {
   return join(dataDir, 'supervisor.lock');
 }
 
+/**
+ * The pid currently holding the lock, or null when it is free or stale. Read-only counterpart to
+ * acquireLock, so the service installer can ask "is a copy already running?" without duplicating
+ * the staleness rule.
+ */
+export function lockHolder(dataDir, { isAlive = defaultIsAlive } = {}) {
+  try {
+    const pid = Number(String(readFileSync(lockPath(dataDir), 'utf8')).trim());
+    return Number.isInteger(pid) && isAlive(pid) ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
 export function acquireLock(dataDir, { pid = process.pid, isAlive = defaultIsAlive } = {}) {
   mkdirSync(dataDir, { recursive: true });
   const path = lockPath(dataDir);
