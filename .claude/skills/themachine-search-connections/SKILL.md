@@ -1,18 +1,19 @@
 ---
-name: relay-search-connections
-description: Search the user's enriched LinkedIn connection list in their self-hosted Relay instance, and pull the full profile of one connection. Use when the user asks who they know matching some criteria ("who do I know in Seattle doing security", "find CISOs in my network", "do I know anyone at Stripe", "who in my network has a CISSP", "what do we know about <person>") or wants to look someone up among their connections. Read-only.
+name: themachine-search-connections
+description: Search the user's enriched LinkedIn connection list in their self-hosted The Machine instance, and pull the full profile of one connection. Use when the user asks who they know matching some criteria ("who do I know in Seattle doing security", "find CISOs in my network", "do I know anyone at Stripe", "who in my network has a CISSP", "what do we know about <person>") or wants to look someone up among their connections. Read-only.
 ---
 
-# Search Relay connections
+# Search The Machine connections
 
-Relay keeps a roster of the user's LinkedIn connections, enriched with each person's
+The Machine keeps a roster of the user's LinkedIn connections, enriched with each person's
 headline, location, current role, full work history and skills. This skill queries it.
 
 Read-only: nothing here sends a message or queues outreach. To act on results, hand them to
-`relay-add-profiles`.
+`themachine-add-profiles`.
 
 ## Base URL
-Default `http://localhost:4400`; use `RELAY_URL` if set. Relay must be running.
+Default `http://localhost:4400`; use `THEMACHINE_URL` if set (`RELAY_URL` is still honoured as
+a fallback under the old name). The Machine must be running.
 
 ## The query model
 
@@ -90,7 +91,7 @@ person isn't in the roster.
 
 ## Steps
 
-1. `BASE = ${RELAY_URL:-http://localhost:4400}`.
+1. `BASE = ${THEMACHINE_URL:-${RELAY_URL:-http://localhost:4400}}`.
 2. Turn the user's description into keyword groups (see above). Prefer more keywords over
    fewer — recall costs nothing here, and `exclude_any` cleans up the noise.
 3. Run:
@@ -105,7 +106,8 @@ person isn't in the roster.
 
 ## Errors
 
-- Connection refused → Relay isn't running (`npm start` in its folder), or `RELAY_URL` is wrong.
+- Connection refused → The Machine isn't running (it normally starts at login; `npm start` in
+  its folder if not), or `THEMACHINE_URL` is wrong.
 - Empty results with a large `coverage.pending` → enrichment is still running. Tell the user
   to check back, don't conclude the network has nobody.
 - Empty results with `coverage.enriched: 0` → the roster was never enriched. Point them at

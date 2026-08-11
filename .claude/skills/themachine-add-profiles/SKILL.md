@@ -1,15 +1,16 @@
 ---
-name: relay-add-profiles
-description: Append LinkedIn profile URLs to the self-hosted Relay outreach queue via its local API. Use when the user wants to add one or more LinkedIn profiles (paste URLs, "add these to Relay", "queue these people", "send connection requests to…", "DM these connections") to their running Relay instance. Supports an optional cohort name, campaign kind (connection request vs direct message) and message template.
+name: themachine-add-profiles
+description: Append LinkedIn profile URLs to the self-hosted The Machine outreach queue via its local API. Use when the user wants to add one or more LinkedIn profiles (paste URLs, "add these to The Machine", "queue these people", "send connection requests to…", "DM these connections") to their running The Machine instance. Supports an optional cohort name, campaign kind (connection request vs direct message) and message template.
 ---
 
-# Add profiles to Relay
+# Add profiles to The Machine
 
-Relay runs locally and exposes an HTTP API. This skill POSTs LinkedIn profile URLs to it.
+The Machine runs locally and exposes an HTTP API. This skill POSTs LinkedIn profile URLs to it.
 
 ## Base URL
-Default `http://localhost:4400`. If `RELAY_URL` is set in the environment, use that instead.
-Relay must be running (`npm start` in its folder) for these calls to succeed.
+Default `http://localhost:4400`. If `THEMACHINE_URL` is set in the environment, use that
+instead; `RELAY_URL` is still honoured as a fallback for installs that set it under the old name.
+The Machine must be running for these calls to succeed — it normally starts itself at login.
 
 ## Decide which endpoint
 - **Exactly one** profile URL → `POST /api/profiles`
@@ -17,7 +18,7 @@ Relay must be running (`npm start` in its folder) for these calls to succeed.
 - **Two or more** URLs → `POST /api/lists`
   body: `{ "text": "<all urls, newline-separated>", "cohort": "<optional>", "kind": "<optional>", "message_template": "<optional template>" }`
 
-`{firstName}` in a message/template is substituted by Relay at send time. Omit the
+`{firstName}` in a message/template is substituted by The Machine at send time. Omit the
 message entirely to send bare requests (no note).
 
 ## Campaign kind
@@ -37,7 +38,7 @@ has a template. Invites may go note-less.
 ## Steps
 1. Collect the LinkedIn profile URL(s) from the user. Validate each looks like
    `https://www.linkedin.com/in/<slug>`.
-2. Determine `BASE = ${RELAY_URL:-http://localhost:4400}`.
+2. Determine `BASE = ${THEMACHINE_URL:-${RELAY_URL:-http://localhost:4400}}`.
 3. Decide the `kind` (see above). If it isn't obvious from the request — the user said
    "message these people" vs "connect with these people", or named a cohort you can check
    with `curl -sS "$BASE/api/cohorts"` — ask rather than defaulting.
@@ -58,8 +59,9 @@ has a template. Invites may go note-less.
    returns the created `{ id, profile_url, kind }`.
 
 ## Errors
-- Connection refused / cannot reach `$BASE` → Relay isn't running. Tell the user to start
-  it (`npm start` in the Relay folder) or check `RELAY_URL`.
+- Connection refused / cannot reach `$BASE` → The Machine isn't running. Tell the user to
+  open the dashboard at `$BASE`; if that fails too it did not start at login, and the fix is
+  `npm start` in its folder. Also check `THEMACHINE_URL`.
 - `400 invalid linkedin profile url` → the URL wasn't a recognizable `/in/<slug>` link.
 - `409 cohort "X" is a message cohort` (or `… is a invite cohort`) → the `kind` doesn't match
   the cohort that already exists. Retry with the matching `kind`, or use a different cohort

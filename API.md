@@ -1177,6 +1177,31 @@ every row carries a `source` discriminator as well.
   `engage_comment_daily_cap` (10). Values are stored as given — pass numbers, not numeric
   strings.
 - `GET /api/logs?tail=N`, `GET /api/logs/download` — run log.
+
+### Lifecycle: restart & update
+
+The app does not restart or update itself — it writes a request to `data/control.json`, drains
+the browser lock, and exits with a code `scripts/supervisor.mjs` acts on (`42` restart, `43`
+update). **There is no Stop endpoint**, deliberately: with a login-launched service, "stopped"
+means "until the next login", and nothing would be left to serve the request that undoes it.
+`POST /api/pause` is the reversible equivalent.
+
+- `POST /api/update`, `POST /api/restart` — `202` with `{ ok, action, requested_at }`, then the
+  process exits after any in-flight browser work finishes (up to 5 minutes). **Keep
+  `requested_at`**: it is how you tell your own request's outcome from a leftover one.
+  `409` if a request is already in flight, or if the app was started without a supervisor (in
+  which case exiting would simply stop it). Both routes pause sending first, and it stays paused
+  after the restart so an operator sees the dashboard before anything goes out.
+- `GET /api/update/status` — `{ state, message, action, changes[], requested_at, finished_at,
+  supervised }` where `state` is `idle` | `busy` | `done` | `failed`. Backed by
+  `data/control.json`, so this is readable **across the restart** — that is the whole point of
+  it. `message` is a plain-language sentence intended for the operator; relay it as-is.
+  **While waiting, a connection failure is expected**, not an error: it is the window in which
+  the process is gone. Poll, ignore transport failures, and only accept a result whose
+  `requested_at` matches yours.
+- `GET /api/update/check` — `{ available, changes[], checked_at, error? }`. Runs
+  `git fetch` + `git log HEAD..origin/main`. Being offline yields `available: 0` with an
+  `error`, never a throw — do not surface that as a problem.
 - `POST /api/guardrail/acknowledge` — re-check a halt; resumes if logged in and no
   checkpoint on the current page, otherwise re-trips with a `detail` saying which URL
   and pattern is still blocking.

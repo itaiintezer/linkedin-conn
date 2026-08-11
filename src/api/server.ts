@@ -1,9 +1,12 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
-import { INCIDENTS_DIR } from '../config.js';
+import { DATA_DIR, INCIDENTS_DIR, ROOT } from '../config.js';
+import { isPending, newRequest, readControl, summarizeControl, writeControl } from '../../scripts/control-file.mjs';
+import { DRAIN_TIMEOUT_MS, EXIT_RESTART, EXIT_UPDATE, drainBrowserLock } from '../core/lifecycle.js';
+import { checkForUpdates } from '../core/update-check.js';
 import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
 import type {
@@ -116,10 +119,28 @@ export function buildServer(
     /** Injected so tests never reach the network. Used only to expand a lnkd.in shortlink
      *  on the engagement enqueue path; production falls through to globalThis.fetch. */
     fetchImpl?: typeof fetch;
+    /** Where control.json lives. Overridden by tests so they never touch the real data dir. */
+    dataDir?: string;
+    /**
+     * How the process ends. Production passes the graceful shutdown from src/index.ts; tests
+     * pass a spy, which is the seam that lets /api/update be tested without killing vitest.
+     */
+    requestExit?: (code: number) => void;
+    /** Whether a supervisor is watching. Without one, restart/update must refuse. */
+    supervised?: boolean;
+    /** Injected so tests never shell out to git or reach the network. */
+    updateCheck?: () => Promise<unknown>;
+    /** Shortened by tests so a drain assertion does not wait five minutes. */
+    drainTimeoutMs?: number;
   } = {},
 ): FastifyInstance {
   const app = Fastify({ logger: false });
   const incidentsDir = opts.incidentsDir ?? INCIDENTS_DIR;
+  const dataDir = opts.dataDir ?? DATA_DIR;
+  const supervised = opts.supervised ?? process.env.THEMACHINE_SUPERVISED === '1';
+  const requestExit = opts.requestExit ?? ((code: number) => process.exit(code));
+  const drainTimeoutMs = opts.drainTimeoutMs ?? DRAIN_TIMEOUT_MS;
+  const updateCheck = opts.updateCheck ?? (() => checkForUpdates(ROOT));
   // Forwarded into every /api/run-now sender call — production leaves this empty so
   // runSenderOnce falls back to the real timer-based sleep; tests inject a no-op so a
   // multi-profile run-now batch never performs a real 20-90s wait, regardless of batch size.
@@ -1393,6 +1414,83 @@ export function buildServer(
     repos.settings.update(patch as any);
     return publicSettings(repos.settings.get());
   });
+
+  // -------------------------------------------------------------------------
+  // Lifecycle: Restart and Update.
+  //
+  // Neither is done by this process. It writes a request to data/control.json, replies
+  // immediately, drains the browser lock, and exits with a code scripts/supervisor.mjs knows how
+  // to read (42 restart, 43 update). See src/core/lifecycle.ts for why the drain matters.
+  //
+  // There is deliberately no Stop: with a login-launched service, "stopped" means "until the
+  // next login", and there would be no server left to serve the button that undoes it. Pause
+  // already covers what an operator actually wants.
+  // -------------------------------------------------------------------------
+  const requestLifecycleChange = async (
+    action: 'update' | 'restart',
+    reply: FastifyReply,
+  ): Promise<unknown> => {
+    if (!supervised) {
+      // Exiting would simply kill it with nothing to bring it back — the opposite of what the
+      // button promises. Refuse rather than strand the operator.
+      return reply.code(409).send({
+        error: 'The Machine was started by hand, so it cannot restart itself. Close it and start it the normal way first.',
+      });
+    }
+    const existing = readControl(dataDir);
+    if (isPending(existing)) {
+      return reply.code(409).send({
+        error: existing?.action === 'update'
+          ? 'An update is already in progress. Give it a minute and refresh.'
+          : 'A restart is already in progress. Give it a moment and refresh.',
+      });
+    }
+
+    // Paused first, so that if anything below goes wrong the engines are already quiet rather
+    // than mid-send. Resume happens in the normal way after the restart.
+    repos.settings.update({
+      paused: 1,
+      pause_reason: action === 'update' ? 'Updating The Machine' : 'Restarting The Machine',
+    });
+    const requestedAt = new Date().toISOString();
+    writeControl(dataDir, newRequest(action, requestedAt));
+    logger.info('api', `${action} requested`);
+
+    // requested_at goes back to the caller so the dashboard can tell ITS request apart from a
+    // leftover one. Without it, a poll that lands on the restarted server would read the
+    // previous update's "done" and report success for something that never ran.
+    void reply.code(202).send({ ok: true, action, requested_at: requestedAt });
+
+    // After the response is on the wire: let in-flight browser work finish, then hand over.
+    setImmediate(() => {
+      void (async () => {
+        const drained = await drainBrowserLock(browserLock, drainTimeoutMs);
+        if (!drained) logger.warn('api', 'exiting with browser work still in flight', { action });
+        else logger.info('api', 'browser idle, handing over to the supervisor', { action });
+        requestExit(action === 'update' ? EXIT_UPDATE : EXIT_RESTART);
+      })();
+    });
+    return reply;
+  };
+
+  app.post('/api/update', async (_req, reply) => requestLifecycleChange('update', reply));
+  app.post('/api/restart', async (_req, reply) => requestLifecycleChange('restart', reply));
+
+  /** What happened to the last request — the only thing that survives the restart. */
+  app.get('/api/update/status', async () => {
+    const control = readControl(dataDir);
+    return {
+      ...summarizeControl(control),
+      action: control?.action ?? null,
+      changes: control?.changes ?? [],
+      requested_at: control?.requested_at ?? null,
+      finished_at: control?.finished_at ?? null,
+      supervised,
+    };
+  });
+
+  /** Is there anything to install? Keeps the dashboard silent when there is not. */
+  app.get('/api/update/check', async () => updateCheck());
 
   app.post('/api/pause', async () => { defaultLog.info('api', 'pause'); repos.settings.update({ paused: 1, pause_reason: 'Manual pause' }); return { ok: true }; });
   app.post('/api/resume', async () => {

@@ -1317,8 +1317,8 @@ async function runBelt(btn, state) {
     // the only honest thing to report is that we do not know.
     verdict = {
       label: 'No response',
-      title: 'Could not reach Relay — this batch may or may not have started',
-      say: `No response from Relay for ${name}. The batch may or may not have started.`,
+      title: 'Could not reach The Machine — this batch may or may not have started',
+      say: `No response from The Machine for ${name}. The batch may or may not have started.`,
     };
   }
 
@@ -3187,6 +3187,201 @@ function initEvents() {
 }
 
 /* ---------- boot ---------- */
+/* ---------- maintenance: restart & update ----------
+ *
+ * The one screen here that expects the server to vanish underneath it.
+ *
+ * Neither button does the work: the app writes a request, exits with a code, and
+ * scripts/supervisor.mjs updates and restarts it. So between the click and the answer there is
+ * a stretch — up to several minutes if a send has to finish first — where every request fails.
+ * A refused connection in that window is PROGRESS, not a fault, and showing an error there
+ * would be both wrong and alarming.
+ *
+ * The outcome is read from /api/update/status, which is backed by data/control.json — the only
+ * state that survives the restart. `requested_at` is matched against our own request so a poll
+ * that lands on the restarted server cannot mistake a previous update's "done" for ours.
+ */
+
+/* Long enough for a five-minute browser drain plus an `npm install`. If it expires the message
+   says we lost track rather than claiming a failure — the update may well have worked. */
+const MAINT_DEADLINE_MS = 10 * 60_000;
+const MAINT_POLL_MS = 2000;
+/* Re-checking asks git to reach the network, so this is deliberately rare. */
+const UPDATE_CHECK_MS = 30 * 60_000;
+
+/* What the last check found: null = not asked yet. */
+let updateAvailability = null;
+let maintWaiting = false;
+
+function maintBanner(state, title, detail = '') {
+  const el = $('#maintBanner');
+  if (state === null) { el.hidden = true; return; }
+  el.className = 'maint-banner' + (state === 'busy' ? ' is-busy' : state === 'done' ? ' is-done' : state === 'failed' ? ' is-failed' : '');
+  el.hidden = false;
+  $('#maintTitle').textContent = title;
+  $('#maintDetail').textContent = detail;
+}
+
+function renderAvailability(a) {
+  updateAvailability = a;
+  const pill = $('#updatePill');
+  const btn = $('#updateBtn');
+  const list = $('#maintChanges');
+  const n = a && Number(a.available) > 0 ? Number(a.available) : 0;
+
+  pill.hidden = n === 0;
+  if (n > 0) $('#updatePillText').textContent = n === 1 ? '1 update available' : `${n} updates available`;
+
+  list.hidden = n === 0;
+  list.innerHTML = '';
+  if (n > 0) {
+    for (const change of a.changes || []) {
+      const li = document.createElement('li');
+      li.textContent = change;
+      list.appendChild(li);
+    }
+  }
+
+  if (n > 0) {
+    btn.textContent = n === 1 ? 'Install 1 update' : `Install ${n} updates`;
+    btn.classList.add('btn-green');
+    $('#maintStatusLine').textContent = n === 1
+      ? 'There is 1 new change ready to install:'
+      : `There are ${n} new changes ready to install:`;
+  } else {
+    btn.textContent = 'Check for updates';
+    $('#maintStatusLine').textContent = a && a.error
+      // Being offline is not a fault worth alarming anyone about — say what we know.
+      ? 'Could not reach the internet to check. Your Machine is fine; try again later.'
+      : 'You are on the newest version.';
+  }
+}
+
+/**
+ * Waits out a restart or an update.
+ *
+ * `requestedAt` identifies OUR request. Failures to connect are counted, not surfaced.
+ */
+async function awaitComeback(action, requestedAt) {
+  maintWaiting = true;
+  const verb = action === 'update' ? 'Updating' : 'Restarting';
+  const started = Date.now();
+  maintBanner('busy', `${verb} The Machine…`, 'Waiting for anything mid-send to finish first.');
+  $('#updateBtn').disabled = true;
+  $('#restartBtn').disabled = true;
+
+  try {
+    for (;;) {
+      if (Date.now() - started > MAINT_DEADLINE_MS) {
+        maintBanner('failed', 'Lost track of that one.',
+          'It may still have worked. Reload this page in a minute; if the page will not load at all, ask for help.');
+        return;
+      }
+      if (Date.now() - started > 90_000) {
+        maintBanner('busy', `${verb} The Machine…`, 'Still going. A large update can take a few minutes.');
+      }
+      await new Promise((r) => setTimeout(r, MAINT_POLL_MS));
+
+      let status = null;
+      try {
+        status = await api('/api/update/status');
+      } catch (_) {
+        // Expected: this is the server going away and coming back. Keep waiting.
+        continue;
+      }
+      // A 'done' from an earlier request is not ours.
+      if (status.requested_at !== requestedAt) continue;
+      if (status.state === 'busy') continue;
+
+      if (status.state === 'failed') {
+        maintBanner('failed', action === 'update' ? 'The update did not finish.' : 'The restart had a problem.', status.message || '');
+      } else {
+        maintBanner('done', status.message || 'Done.', 'The Machine is running again. Sending stays paused until you resume it.');
+      }
+      void refreshUpdateCheck();
+      tick();
+      refreshLogin();
+      return;
+    }
+  } finally {
+    maintWaiting = false;
+    $('#updateBtn').disabled = false;
+    $('#restartBtn').disabled = false;
+  }
+}
+
+async function refreshUpdateCheck() {
+  try {
+    renderAvailability(await api('/api/update/check'));
+  } catch (_) {
+    renderAvailability({ available: 0, changes: [], error: 'unreachable' });
+  }
+}
+
+/** Reflects a restart or update started from somewhere else, or one left mid-flight. */
+async function refreshMaintStatus() {
+  if (maintWaiting) return;
+  let status;
+  try {
+    status = await api('/api/update/status');
+  } catch (_) {
+    return;
+  }
+  if (!status.supervised) {
+    // Started by hand, so neither button can work. Say why rather than let them fail.
+    $('#restartBtn').disabled = true;
+    $('#updateBtn').disabled = true;
+    $('#maintVersionLine').textContent =
+      'The Machine was started by hand this time, so it cannot restart itself from here.';
+    return;
+  }
+  if (status.state === 'busy' && status.requested_at) void awaitComeback(status.action || 'restart', status.requested_at);
+}
+
+function initMaintenance() {
+  const start = async (action, confirmText) => {
+    if (!window.confirm(confirmText)) return;
+    try {
+      const res = await api(`/api/${action}`, { method: 'POST' });
+      await awaitComeback(action, res.requested_at);
+    } catch (e) {
+      maintBanner('failed', 'Could not start that.', e.message);
+    }
+  };
+
+  $('#restartBtn').addEventListener('click', () => {
+    void start('restart', 'Restart The Machine? It will be unavailable for a minute or two. Anything mid-send finishes first.');
+  });
+
+  $('#updateBtn').addEventListener('click', async () => {
+    // Two steps on purpose: the first click only looks. Nobody should be able to restart The
+    // Machine by clicking a button whose label they did not read.
+    if (!updateAvailability || Number(updateAvailability.available) === 0) {
+      $('#updateBtn').disabled = true;
+      $('#maintStatusLine').textContent = 'Checking…';
+      await refreshUpdateCheck();
+      $('#updateBtn').disabled = false;
+      return;
+    }
+    const n = Number(updateAvailability.available);
+    void start('update', `Install ${n} new change${n === 1 ? '' : 's'}? The Machine will close and start again — a minute or two. Your queue and contacts are not affected.`);
+  });
+
+  $('#updatePill').addEventListener('click', () => {
+    switchTab('settings');
+    // Guarded: getting to the right screen is the point, and scrolling is a nicety. Not every
+    // environment implements scrollIntoView, and it must not be able to break the navigation.
+    const target = $('#maintStatusLine');
+    if (target && typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
+
+  void refreshUpdateCheck();
+  void refreshMaintStatus();
+  setInterval(refreshUpdateCheck, UPDATE_CHECK_MS);
+}
+
 function tick() { refreshStatus(); refreshQueue(); refreshEngagementUpNext(); }
 
 function init() {
@@ -3208,6 +3403,7 @@ function init() {
   initAttention();
   initEvents();
   initLogViewer();
+  initMaintenance();
   initWizard();
 
   refreshLogin();

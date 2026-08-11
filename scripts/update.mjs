@@ -1,28 +1,57 @@
 /**
- * One-command update for The Machine:  npm run update
+ * One-command update for The Machine:  npm run update  (also run by scripts/supervisor.mjs
+ * when the dashboard's Update button asks for it).
  *
- * Pulls the newest code and reinstalls dependencies, having first refused to run in any
- * situation where doing so could lose data or leave a half-updated install. The refusals are
- * the point of this script — the four commands it wraps are easy, but running them in the
- * wrong order, or while the app is live, is not.
+ * Pulls the newest code and reinstalls dependencies. It used to REFUSE whenever the folder had
+ * been edited; it now discards those edits instead. The reasoning changed with the audience:
+ * the operators are sales reps who never intentionally edit anything, so a local change is
+ * always an accident (a stray file, an editor that reformatted on open), and refusing left them
+ * stuck at a git error with no way forward. The repo is the single source of truth for code —
+ * and `.gitignore` covers `data/`, `*.db*` and `.linkedin-profile/`, so neither `git reset
+ * --hard` nor `git clean -fd` can reach the queue, the roster or the LinkedIn login.
+ *
+ * Discarded work is still recoverable: it goes to data/backups/discarded-<ts>.patch first.
  *
  * Deliberately plain ESM JavaScript with ZERO dependencies and no TypeScript, matching
  * scripts/preflight.mjs: an update may be the thing that repairs a broken node_modules, so
  * this file must run before `npm install` has fetched anything.
  *
  * The pure checks are exported and unit-tested in tests/scripts/update.test.mjs; the probes
- * and the runner below are the impure half.
+ * and the runner below are the impure half. Paths come from resolveConfig() rather than from
+ * import.meta.url so a test can point the whole script at a disposable repo — nothing here may
+ * ever touch the real data/app.db.
  */
 import { execFileSync, execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const DATA_DIR = join(ROOT, 'data');
-const DB_PATH = join(DATA_DIR, 'app.db');
-const BACKUP_DIR = join(DATA_DIR, 'backups');
-const PORT = Number(process.env.PORT ?? 4400);
+const SCRIPT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Where this run operates. Defaults to the checkout this file lives in, which is what `npm run
+ * update` wants; `--root=`/`--data-dir=` (or THEMACHINE_ROOT/THEMACHINE_DATA_DIR) are how the
+ * supervisor and the tests aim it somewhere else.
+ */
+export function resolveConfig({ argv = [], env = {} } = {}) {
+  const flag = (name) => {
+    const hit = argv.find((a) => a.startsWith(`--${name}=`));
+    return hit ? hit.slice(name.length + 3) : undefined;
+  };
+  const root = flag('root') ?? env.THEMACHINE_ROOT ?? SCRIPT_ROOT;
+  const dataDir = flag('data-dir') ?? env.THEMACHINE_DATA_DIR ?? join(root, 'data');
+  return {
+    root,
+    dataDir,
+    dbPath: join(dataDir, 'app.db'),
+    backupDir: join(dataDir, 'backups'),
+    port: Number(env.PORT ?? 4400),
+    // The supervisor has already stopped the app before calling us, so the "is it running"
+    // check is noise there — and its advice ("use the dashboard") would be absurd, since the
+    // dashboard is what asked for this update.
+    supervised: env.THEMACHINE_SUPERVISED_UPDATE === '1',
+  };
+}
 
 /** The branch colleagues track. A clone lands here; anything else is a maintainer mid-work. */
 export const RELEASE_BRANCH = 'main';
@@ -32,6 +61,12 @@ export const KEEP_BACKUPS = 5;
 
 /** Lines of changelog to print before collapsing the rest into a count. */
 export const LOG_CAP = 20;
+
+/**
+ * Never deleted by the clean, whatever .gitignore happens to say. Everything an operator would
+ * lose forever: the queue and roster database, and the logged-in browser profile.
+ */
+export const PROTECTED = ['data', '.linkedin-profile'];
 
 const BACKUP_PREFIX = 'app.db.';
 
@@ -70,13 +105,13 @@ export function checkGitAvailable(version) {
  * the port). Only 'ours' blocks: an unrelated service on 4400 has no bearing on updating,
  * and telling someone to shut down a program that isn't The Machine would be wrong.
  */
-export function checkNotRunning(state, port = PORT) {
+export function checkNotRunning(state, port = 4400) {
   if (state === 'ours') {
     return fail(
       'running',
       'The Machine',
       `still running on port ${port}.`,
-      'Click the terminal window running `npm start` and press Ctrl+C, wait for it to come back to a prompt, then run this again. Do not close the window instead — that can leave the LinkedIn browser running and block the next start.',
+      `Use the Update button on the dashboard (http://localhost:${port} → Settings) — it stops The Machine, updates it and starts it again for you. This terminal command cannot: reinstalling while the app is live leaves files locked and the install half-finished.`,
     );
   }
   if (state === 'foreign') {
@@ -86,29 +121,36 @@ export function checkNotRunning(state, port = PORT) {
 }
 
 /**
- * `porcelain` is the raw output of `git status --porcelain`.
- *
- * EDITS to tracked files are refused rather than stashed: `git pull` into local edits is how
- * you get a merge conflict, which is the one failure a non-technical operator has no way out of.
- *
- * UNTRACKED files ('??') only warn. A pull cannot collide with a file git is not tracking
- * unless the incoming commit creates that very path, and git refuses that case loudly by
- * itself. Blocking on them was worse than useless: a colleague's Mac dropped a `.DS_Store` in
- * the folder, which stopped the update dead — and NEITHER remedy suggested below (`git checkout
- * -- .`, `git stash`) removes an untracked file, so the advice looped him back to the same
- * error while he was waiting on a fix (2026-08-03). `.DS_Store` is also gitignored now; this
- * check still has to be right for whatever the next stray file turns out to be.
+ * `porcelain` is the raw output of `git status --porcelain`. Splits it into the tracked edits
+ * and the untracked strays, so the caller can both report and discard them.
  */
-export function checkCleanTree(porcelain) {
+export function parseLocalChanges(porcelain) {
   // Strip the two-column status code and its separator rather than slicing a fixed width:
   // an unstaged edit is " M path", so any caller that trimmed the output would leave the
   // first line one character short and silently report "ackage.json".
   const strip = (l) => l.replace(/^\s*[A-Z?!ADMRCU]{1,2}\s+/, '').trim();
   const lines = String(porcelain ?? '').split('\n').filter((l) => l.trim());
   const isUntracked = (l) => l.trimStart().startsWith('??');
-  const edited = lines.filter((l) => !isUntracked(l)).map(strip).filter(Boolean);
-  const untracked = lines.filter(isUntracked).map(strip).filter(Boolean);
+  return {
+    edited: lines.filter((l) => !isUntracked(l)).map(strip).filter(Boolean),
+    untracked: lines.filter(isUntracked).map(strip).filter(Boolean),
+  };
+}
 
+/**
+ * Reports local changes. NEVER an error — this used to be the gate that blocked the update, and
+ * it is now only the sentence that tells the operator what got put back.
+ *
+ * The history is worth keeping in view. Blocking on untracked files was worse than useless: a
+ * colleague's Mac dropped a `.DS_Store` in the folder, which stopped the update dead — and
+ * neither remedy the old message suggested (`git checkout -- .`, `git stash`) removes an
+ * untracked file, so the advice looped him back to the same error while he waited on a fix
+ * (2026-08-03). Blocking on tracked edits had the same shape of problem one step later: the
+ * operator was handed a git command and told to run it in a terminal, which is precisely what
+ * this audience cannot do. Both are now handled by resetWorkingTree() instead of explained.
+ */
+export function describeLocalChanges(porcelain) {
+  const { edited, untracked } = parseLocalChanges(porcelain);
   if (edited.length === 0 && untracked.length === 0) return ok('clean', 'Local changes', 'none');
 
   const listOf = (files) => {
@@ -116,18 +158,18 @@ export function checkCleanTree(porcelain) {
     const more = files.length - shown.length;
     return shown.map((f) => `  · ${f}`).join('\n') + (more > 0 ? `\n  · …and ${more} more` : '');
   };
-  // Reported either way, so the operator still sees them — just never as a reason to stop.
-  const note = untracked.length === 0 ? ''
-    : `\n${untracked.length} file${untracked.length === 1 ? '' : 's'} git is not tracking`
-      + ` (${untracked.length === 1 ? 'this does' : 'these do'} NOT block the update):\n${listOf(untracked)}`;
-
-  if (edited.length === 0) return warn('clean', 'Local changes', `none that block the update.${note}`);
-
-  return fail(
+  const parts = [];
+  if (edited.length > 0) {
+    parts.push(`${edited.length} edited file${edited.length === 1 ? '' : 's'}:\n${listOf(edited)}`);
+  }
+  if (untracked.length > 0) {
+    parts.push(`${untracked.length} file${untracked.length === 1 ? '' : 's'} git is not tracking:\n${listOf(untracked)}`);
+  }
+  return warn(
     'clean',
     'Local changes',
-    `${edited.length} file${edited.length === 1 ? '' : 's'} in this folder ${edited.length === 1 ? 'has' : 'have'} been edited:\n${listOf(edited)}${note}`,
-    'Updating would try to merge those edits and could stop halfway. Undo them with `git checkout -- .`, or save them with `git stash`, then run this again. Your queue and login are not in git and are never affected.',
+    `${parts.join('\n')}\nThese will be put back the way the published version has them.`,
+    'Nothing you care about is affected — your queue, contacts, settings and LinkedIn login are not stored in git. A copy of the discarded changes is saved under data/backups/ just in case.',
   );
 }
 
@@ -206,7 +248,8 @@ function checkpointWal(dbPath) {
  * Copy the database aside before anything else runs. Returns a human-readable note, or null
  * when there is no database yet (a fresh clone, where there is nothing to protect).
  */
-function backupDatabase(now) {
+function backupDatabase(cfg, now) {
+  const { dbPath: DB_PATH, backupDir: BACKUP_DIR } = cfg;
   if (!fs.existsSync(DB_PATH)) return null;
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
@@ -238,12 +281,72 @@ function backupDatabase(now) {
 }
 
 // ---------------------------------------------------------------------------
+// Putting the folder back
+// ---------------------------------------------------------------------------
+
+/** Sortable and Windows-legal, same reasoning as backupFilename. */
+export function discardedPatchFilename(date) {
+  return `discarded-${date.toISOString().slice(0, 19).replace(/:/g, '-')}.patch`;
+}
+
+/**
+ * Save whatever we are about to destroy, then destroy it.
+ *
+ * `reset --hard` rather than `checkout -- .`: the latter restores the worktree FROM THE INDEX,
+ * so anything already `git add`ed survives it and still gets merged by the pull — which is the
+ * merge conflict we are trying to make impossible.
+ *
+ * `clean -fd` and never `-fdx`: without `-x`, git skips ignored paths, which is exactly the
+ * line we want. `data/`, `*.db*` and `.linkedin-profile/` are ignored, so the queue, the roster
+ * and the logged-in browser profile are all out of reach. Adding `-x` would delete every one of
+ * them, along with node_modules.
+ *
+ * PROTECTED is belt-and-braces on top of that. Relying on .gitignore alone makes an operator's
+ * login and queue only as safe as a file anyone can edit — drop one line from .gitignore and
+ * this function starts deleting the things it exists to protect. A test deliberately breaks
+ * .gitignore to prove these excludes still hold.
+ *
+ * Returns a description of what was discarded, or null when the folder was already clean.
+ */
+function resetWorkingTree(cfg, now) {
+  const porcelain = probePorcelain(cfg.root);
+  const { edited, untracked } = parseLocalChanges(porcelain);
+  if (edited.length === 0 && untracked.length === 0) return null;
+
+  let saved = null;
+  if (edited.length > 0) {
+    // Only tracked edits can be expressed as a patch; the untracked list is recorded as names.
+    try {
+      const diff = gitRaw(cfg.root, ['diff', 'HEAD']);
+      fs.mkdirSync(cfg.backupDir, { recursive: true });
+      const name = discardedPatchFilename(now);
+      const header = untracked.length > 0
+        ? `# Untracked files also removed (contents not captured):\n${untracked.map((f) => `#   ${f}`).join('\n')}\n\n`
+        : '';
+      fs.writeFileSync(join(cfg.backupDir, name), header + diff);
+      saved = `data/backups/${name}`;
+    } catch {
+      /* Failing to save the patch must not stop the update — the repo is the source of truth. */
+    }
+  }
+
+  git(cfg.root, ['reset', '--hard', 'HEAD']);
+  git(cfg.root, ['clean', '-fd', ...PROTECTED.flatMap((p) => ['-e', p])]);
+
+  const counts = [
+    edited.length > 0 ? `${edited.length} edited file${edited.length === 1 ? '' : 's'}` : null,
+    untracked.length > 0 ? `${untracked.length} stray file${untracked.length === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(' and ');
+  return `Put the folder back the way the published version has it (${counts})${saved ? `; a copy of the changes is in ${saved}` : ''}.`;
+}
+
+// ---------------------------------------------------------------------------
 // Probes — the impure half.
 // ---------------------------------------------------------------------------
 
-function gitRaw(args) {
+function gitRaw(root, args) {
   return execFileSync('git', args, {
-    cwd: ROOT,
+    cwd: root,
     encoding: 'utf8',
     timeout: 120_000,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -254,42 +357,42 @@ function gitRaw(args) {
  * Trimmed — convenient for the single-value queries (branch name, sha, version). Anything
  * whose leading whitespace is significant, i.e. porcelain status, must use gitRaw.
  */
-function git(args) {
-  return gitRaw(args).trim();
+function git(root, args) {
+  return gitRaw(root, args).trim();
 }
 
-function probeGitVersion() {
+function probeGitVersion(root) {
   try {
-    return git(['--version']) || null;
+    return git(root, ['--version']) || null;
   } catch {
     return null;
   }
 }
 
-function probeGitRepo() {
-  return fs.existsSync(join(ROOT, '.git'));
+function probeGitRepo(root) {
+  return fs.existsSync(join(root, '.git'));
 }
 
-function probeBranch() {
+function probeBranch(root) {
   try {
-    const b = git(['rev-parse', '--abbrev-ref', 'HEAD']);
+    const b = git(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
     return b === 'HEAD' ? null : b; // detached
   } catch {
     return null;
   }
 }
 
-function probePorcelain() {
+function probePorcelain(root) {
   try {
-    return gitRaw(['status', '--porcelain']);
+    return gitRaw(root, ['status', '--porcelain']);
   } catch {
     return '';
   }
 }
 
-function probeHead() {
+function probeHead(root) {
   try {
-    return git(['rev-parse', 'HEAD']);
+    return git(root, ['rev-parse', 'HEAD']);
   } catch {
     return null;
   }
@@ -349,79 +452,124 @@ export function fastForwardFailureMessage(stderr) {
 // Runner
 // ---------------------------------------------------------------------------
 
-export async function runPreconditions() {
+export async function runPreconditions(cfg) {
   const results = [];
-  const isRepo = probeGitRepo();
+  const isRepo = probeGitRepo(cfg.root);
   results.push(checkGitRepo(isRepo));
 
-  const version = probeGitVersion();
+  const version = probeGitVersion(cfg.root);
   results.push(checkGitAvailable(version));
 
-  results.push(checkNotRunning(await probeServer(PORT), PORT));
+  // Skipped under the supervisor, which has already stopped the app — see resolveConfig.
+  if (!cfg.supervised) results.push(checkNotRunning(await probeServer(cfg.port), cfg.port));
 
   // Both need a working git in a real checkout; skip rather than emit a confusing second
   // failure that is really just the first one restated.
   if (isRepo && version) {
-    results.push(checkBranch(probeBranch()));
-    results.push(checkCleanTree(probePorcelain()));
+    results.push(checkBranch(probeBranch(cfg.root)));
+    results.push(describeLocalChanges(probePorcelain(cfg.root)));
   }
   return results;
 }
 
-async function main() {
-  console.log('\nThe Machine — update\n');
-
-  const results = await runPreconditions();
+/**
+ * The whole update, as a function so the supervisor can call it in-process and tests can point
+ * it at a disposable repo. Returns { ok, unchanged, log } rather than exiting, so the only
+ * process.exit in this file stays in main().
+ */
+export async function runUpdate(cfg, { now = new Date(), out = console } = {}) {
+  const results = await runPreconditions(cfg);
   const { ok: passed, exitCode } = summarize(results);
-  console.log(formatResults(results));
-  console.log('');
-  if (!passed) {
-    console.error('Cannot update yet — fix the FAIL lines above and try again.');
-    console.error('Nothing has been changed. Non-technical walkthrough: RUNBOOK.md\n');
-    process.exit(exitCode);
-  }
+  out.log(formatResults(results));
+  out.log('');
+  if (!passed) return { ok: false, exitCode, blocked: true };
 
-  const before = probeHead();
+  const before = probeHead(cfg.root);
 
-  const backup = backupDatabase(new Date());
-  console.log(backup ? `Backed up your database to ${backup}` : 'No database yet — nothing to back up.');
+  const backup = backupDatabase(cfg, now);
+  out.log(backup ? `Backed up your database to ${backup}` : 'No database yet — nothing to back up.');
 
-  console.log('\nFetching the newest version…');
+  // Before the pull, so the pull always runs against a folder that matches its own history.
+  const reset = resetWorkingTree(cfg, now);
+  if (reset) out.log(reset);
+
+  out.log('\nFetching the newest version…');
   try {
-    git(['pull', '--ff-only']);
+    git(cfg.root, ['pull', '--ff-only']);
   } catch (e) {
-    console.error(`\n${fastForwardFailureMessage(e?.stderr)}\n`);
-    process.exit(1);
+    out.error(`\n${fastForwardFailureMessage(e?.stderr)}\n`);
+    return { ok: false, exitCode: 1, diverged: true };
   }
 
-  const after = probeHead();
-  const unchanged = before && after && before === after;
-
-  if (unchanged) {
-    console.log('Already up to date — no new changes.\n');
-    console.log('Start it with:  npm start\n');
-    return;
+  const after = probeHead(cfg.root);
+  if (before && after && before === after) {
+    out.log('Already up to date — no new changes.\n');
+    return { ok: true, unchanged: true, from: before, to: after, log: '' };
   }
 
-  console.log('Installing dependencies…\n');
+  out.log('Installing dependencies…\n');
   try {
     // execSync, not execFileSync: on Windows npm is a .cmd shim that Node refuses to
     // execFile without a shell. A fixed literal command has no injection surface.
-    execSync('npm install', { cwd: ROOT, stdio: 'inherit' });
+    // --no-audit --no-fund: neither is actionable by a sales rep, and both add pages of output
+    // to a screen they are meant to read for a yes/no answer.
+    execSync('npm install --no-audit --no-fund', { cwd: cfg.root, stdio: 'inherit' });
   } catch {
-    console.error('\n`npm install` failed. The new code is in place but its dependencies are not.');
-    console.error('Fix whatever npm reported above, then run `npm install` again by hand.\n');
-    process.exit(1);
+    out.error('\n`npm install` failed. The new code is in place but its dependencies are not.');
+    out.error('Fix whatever npm reported above, then run `npm install` again by hand.\n');
+    return { ok: false, exitCode: 1, from: before, to: after, installFailed: true };
   }
 
   let log = '';
   try {
-    log = git(['log', '--oneline', `${before}..${after}`]);
+    log = git(cfg.root, ['log', '--oneline', `${before}..${after}`]);
   } catch {
     /* the update worked; not being able to list it is cosmetic */
   }
-  console.log(`\nUpdated.\n\n${describeUpdates(log)}\n`);
-  console.log('Start it with:  npm start\n');
+  out.log(`\nUpdated.\n\n${describeUpdates(log)}\n`);
+  return { ok: true, unchanged: false, from: before, to: after, log };
+}
+
+/**
+ * Put a known-good version back, for when the one we just installed will not start.
+ *
+ * Deliberately a plain `reset --hard <sha>` and NOT a detached checkout. Detaching would make
+ * the branch check refuse every future update, which permanently wedges the install and needs a
+ * maintainer — whereas moving the branch back means the operator is running working code and the
+ * next real fix still arrives through the normal Update button. The cost is that clicking Update
+ * again re-installs the same broken version, which the control file's failure message says
+ * plainly.
+ */
+export async function rollbackTo(cfg, sha) {
+  if (!sha) return false;
+  try {
+    git(cfg.root, ['reset', '--hard', sha]);
+  } catch {
+    return false;
+  }
+  try {
+    execSync('npm install --no-audit --no-fund', { cwd: cfg.root, stdio: 'inherit' });
+  } catch {
+    // The code is back; its dependencies may be a mix. Still better than a version that cannot
+    // start at all, and the next update will reinstall.
+    return true;
+  }
+  return true;
+}
+
+async function main() {
+  console.log('\nThe Machine — update\n');
+  const cfg = resolveConfig({ argv: process.argv.slice(2), env: process.env });
+  const result = await runUpdate(cfg);
+
+  if (!result.ok) {
+    if (result.blocked) {
+      console.error('Cannot update yet — fix the FAIL lines above and try again.');
+      console.error('Nothing has been changed. Non-technical walkthrough: RUNBOOK.md\n');
+    }
+    process.exit(result.exitCode ?? 1);
+  }
+  if (!cfg.supervised) console.log('Start it with:  npm start\n');
 }
 
 /**

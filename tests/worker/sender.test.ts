@@ -111,7 +111,7 @@ test('unconfirmed does not trip the failure streak — we reached LinkedIn and s
 });
 
 test('a fresh roster hit short-circuits the skip without ever calling the driver', async () => {
-  // Relay already KNOWS its connections (synced daily). Spending a LinkedIn page visit to
+  // The Machine already KNOWS its connections (synced daily). Spending a LinkedIn page visit to
   // discover what the local roster says is waste — and the driver's read is now the
   // second opinion, not the only one.
   const c = repos.cohorts.create('A', 'hi', true);

@@ -229,6 +229,83 @@ body > *:not(.atmosphere) { position: relative; z-index: 1; }
   #enrichHaltRetry { width: 100%; justify-content: center; }
 }
 
+/* ---------- maintenance: restart & update ----------
+   Structurally the two banners above, but SLATE rather than amber or red. Nothing is wrong
+   during an update — the operator asked for this and it is proceeding — and borrowing an
+   alert colour for a progress message would teach them to ignore the colours that matter.
+   It turns emerald on success and red only on genuine failure. */
+.maint-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 13px 34px 13px 30px;
+  background: linear-gradient(90deg, var(--slate-bg) 0%, #f4f6f8 100%);
+  border-bottom: 1px solid #d5dce3;
+  border-left: 4px solid var(--slate);
+  color: #3d4b58; font-size: 14.5px;
+  box-shadow: var(--shadow-sm);
+}
+.maint-banner-icon {
+  display: grid; place-items: center; flex: none;
+  width: 30px; height: 30px; border-radius: 9px;
+  color: #fff; background: linear-gradient(150deg, #6b7b8b 0%, var(--slate) 100%);
+  box-shadow: 0 4px 12px -4px rgba(81,96,110,0.45), inset 0 1px 0 rgba(255,255,255,0.25);
+}
+/* Spins only while work is in flight — a spinner left turning after the fact reads as stuck. */
+.maint-banner.is-busy .maint-banner-icon svg { animation: maint-spin 1.1s linear infinite; }
+@keyframes maint-spin { to { transform: rotate(360deg); } }
+.maint-banner-body { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 9px; flex: 1; min-width: 0; line-height: 1.45; }
+.maint-banner-body strong { color: #2f3c47; font-weight: 700; letter-spacing: 0.1px; }
+
+.maint-banner.is-done {
+  background: linear-gradient(90deg, var(--green-bg) 0%, #eef8f2 100%);
+  border-bottom-color: var(--brand-100); border-left-color: var(--brand);
+  color: var(--brand-ink);
+}
+.maint-banner.is-done .maint-banner-icon { background: linear-gradient(150deg, #12b077 0%, var(--brand-600) 100%); }
+.maint-banner.is-done .maint-banner-body strong { color: var(--brand-ink); }
+
+.maint-banner.is-failed {
+  background: linear-gradient(90deg, var(--red-bg) 0%, #fdf1ef 100%);
+  border-bottom-color: #f1b6ae; border-left-color: var(--red);
+  color: #8e2424;
+}
+.maint-banner.is-failed .maint-banner-icon { background: linear-gradient(150deg, #e05a5a 0%, var(--red) 100%); }
+.maint-banner.is-failed .maint-banner-body strong { color: #7c1f1f; }
+
+@media (max-width: 720px) {
+  .maint-banner { flex-wrap: wrap; padding: 13px 20px; }
+}
+
+/* The topbar pill. Emerald, because an available update is good news, and quiet enough to
+   ignore — it is an offer, not an alert. */
+.update-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px 5px 9px; margin-right: 4px;
+  font: inherit; font-size: 12.5px; font-weight: 600; letter-spacing: 0.1px;
+  color: var(--brand-700); background: var(--brand-50);
+  border: 1px solid var(--brand-100); border-radius: 999px;
+  cursor: pointer; transition: background .15s, border-color .15s, transform .15s;
+}
+.update-pill:hover { background: var(--brand-100); border-color: var(--brand); transform: translateY(-1px); }
+.update-pill:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.update-pill-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  background: var(--brand); box-shadow: 0 0 0 3px var(--brand-glow);
+}
+
+.maint-block { margin-top: 4px; }
+.maint-note { margin: 0; font-size: 14px; color: var(--ink-2); }
+.maint-changes {
+  margin: 12px 0 0; padding: 12px 16px; list-style: none;
+  background: var(--panel-2); border: 1px solid var(--line-soft); border-radius: 10px;
+  font-size: 13.5px; color: var(--ink-2); display: grid; gap: 6px;
+}
+.maint-changes li { padding-left: 14px; position: relative; overflow-wrap: anywhere; }
+.maint-changes li::before {
+  content: ''; position: absolute; left: 0; top: 7px;
+  width: 5px; height: 5px; border-radius: 50%; background: var(--brand-100);
+}
+.maint-fineprint { margin: 14px 0 0; font-size: 13px; color: var(--ink-3); line-height: 1.5; max-width: 68ch; }
+
 .guardrail-icon {
   display: grid; place-items: center; flex: none;
   width: 30px; height: 30px; border-radius: 9px;

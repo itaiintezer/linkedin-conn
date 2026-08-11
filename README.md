@@ -52,15 +52,43 @@ npm install
    takes a few minutes. Leave it running; it prints progress and finishes with
    `[browser] ready: …`.
 
-Then start it:
+Then make it start at login — the way a non-technical operator should run it:
+
+```bash
+npm run service:install
+```
+
+That registers a **per-user LaunchAgent** (macOS) or a **logon-triggered Scheduled Task**
+(Windows) that runs `node scripts/supervisor.mjs` in this folder. Open
+<http://localhost:4400>; there is no terminal to keep open, and the dashboard's **Restart** and
+**Update** buttons work from then on. `npm run service:status` / `service:uninstall` /
+`service:doctor` are the other three verbs.
+
+Or run it in the foreground, which is the dev path:
 
 ```bash
 npm start
 ```
 
-Open <http://localhost:4400>. Leave the terminal open — that process *is* the engine.
-**Stop it with `Ctrl+C`**, not by closing the terminal window: `Ctrl+C` shuts the browser
-down cleanly, while killing the window can orphan the browser and block the next start.
+`npm start` runs the **supervisor**, not the app — see [Architecture](#the-supervisor). `Ctrl+C`
+stops it cleanly; don't close the terminal window instead, as killing it can orphan the browser
+and block the next start.
+
+### The supervisor
+
+The app never manages its own lifecycle. `scripts/supervisor.mjs` spawns it, waits, and reads
+the exit code: `0` stop, `42` restart, `43` update, anything else crash (backoff and respawn).
+That is what makes the dashboard's Restart/Update buttons possible — a process cannot respawn
+itself, and `npm install` cannot rewrite `node_modules` while tsx and esbuild hold their
+binaries open. It also means the OS only has to know one thing ("run this at login"), so restart
+policy, the single-instance lock, updating and rollback behave identically on both platforms.
+
+**Why not a real Windows service?** Session 0 has no interactive desktop, and The Machine drives
+a *visible* Chromium a human must be able to click (LinkedIn login, checkpoints). A service's
+selling point — running with nobody logged in — is useless here for the same reason. A
+logon-triggered per-user task is the mechanism that matches the app's actual lifetime. The
+two-line `wscript.exe` shim exists because `node.exe` is a console-subsystem binary and Node
+ships no `nodew.exe`; a visible console is also a window an operator can close.
 
 ### Checking prerequisites on their own
 
@@ -97,33 +125,41 @@ Two environment variables opt out, for CI and offline machines:
 
 ## Updating
 
+**Normally: the dashboard.** Settings → Maintenance → Update, or the pill in the top bar when
+something is available. The app pauses, waits for any in-flight browser work, writes
+`data/control.json` and exits `43`; the supervisor runs the update and starts it again. The
+dashboard polls `/api/update/status` — which is backed by that file, the only state that survives
+the restart — and reports the outcome. A refused connection during the gap is expected and
+rendered as progress.
+
+**From a terminal**, with the app stopped:
+
 ```bash
 npm run update
 ```
 
-Run it from The Machine's folder, with the app **stopped** (`Ctrl+C` first). It:
+It:
 
-1. Refuses if The Machine is still running, if git is missing, if this folder wasn't cloned,
-   if you're not on `main`, or if you have local edits that a pull would try to merge. Each
-   refusal says what to do, and nothing has been changed when it stops.
+1. Refuses if The Machine is still running (reinstalling under a live app leaves files locked),
+   if git is missing, if this folder wasn't cloned, or if you're not on `main`.
 2. Copies `data/app.db` to `data/backups/app.db.<timestamp>`, keeping the newest 5.
-3. `git pull --ff-only`, then `npm install` to pick up any new dependencies.
-4. Prints what changed. Then start it again with `npm start`.
+3. **Discards local changes rather than refusing.** `git diff HEAD` is saved to
+   `data/backups/discarded-<timestamp>.patch`, then `git reset --hard HEAD` and
+   `git clean -fd -e data -e .linkedin-profile`. `reset` not `checkout -- .`, because staged
+   changes survive the latter and would still be merged; `clean` without `-x` so ignored paths
+   are skipped, plus explicit excludes so the operator's queue and login don't depend on
+   `.gitignore` staying correct.
+4. `git pull --ff-only`, then `npm install`. Diverged local **commits** still refuse — that's the
+   one thing not recoverable from the remote.
 
-**Your data is never at risk from an update.** The queue, the connection roster, your
-settings, your Apify key and your LinkedIn login live in `data/` and `.linkedin-profile/` —
-neither is tracked by git, so a pull cannot touch either. Schema changes are applied
-automatically on the next boot.
+**Your data is never at risk from an update.** The queue, the connection roster, your settings,
+your Apify key and your LinkedIn login live in `data/` and `.linkedin-profile/` — neither is
+tracked by git. Schema changes are applied automatically on the next boot.
 
-By hand, if you'd rather — stop the app first, and note that you're taking the backup on
-yourself:
-
-```bash
-cp data/app.db data/app.db.bak   # PowerShell: copy data\app.db data\app.db.bak
-git pull --ff-only
-npm install
-npm start
-```
+**Rollback is automatic.** If the newly installed version fails to start three times in a row,
+the supervisor resets to the previous sha, reinstalls, and records the failure in
+`data/control.json` so the dashboard says so. It stays on `main` deliberately: detaching HEAD
+would make the branch check refuse every future update and permanently wedge the install.
 
 ## Where things live
 
@@ -513,10 +549,14 @@ Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 | `[ FAIL ] Platform: win32-arm64 is not supported` | Windows on ARM has no stealth-browser build. Use an x64 Windows machine or a Mac. |
 | Install seems to hang after "added N packages" | That's the one-time browser download. Give it a few minutes. |
 | **Connect LinkedIn** hangs for minutes on first click | The browser wasn't downloaded at install time. Run `npm run install-browser`. |
+| `npm start` says **The Machine is already running (process N)** | The supervisor's single-instance lock. It's the login-launched copy — use <http://localhost:4400>. `data/supervisor.lock` holds the pid; a stale one from a power cut is taken over automatically. |
 | `npm start` warns that port 4400 is in use | Another copy is already running — use it, or start on another port (see platform notes). |
 | `npm start` fails to launch the browser, or the window never appears | A previous run was killed instead of `Ctrl+C`, leaving an orphaned browser holding `.linkedin-profile`. Quit any leftover Chromium windows (Task Manager / Activity Monitor: `chrome`/`Chromium`), then start again. |
-| `npm run update` says **The Machine: still running on port 4400** | Press `Ctrl+C` in the terminal running `npm start` and wait for the prompt, then retry. Don't close the window instead — that orphans the browser. |
-| `npm run update` says **Local changes** and lists files | Something in the folder was edited. `git checkout -- .` discards those edits (your queue and login aren't in git, so they're unaffected), or `git stash` keeps them for later. |
+| Dashboard's **Restart**/**Update** buttons are disabled | The app was started directly (`npm run start:app`, or a `tsx` dev session) so there's no supervisor to bring it back — exiting would just stop it. Start via `npm start` or the installed service. |
+| Nothing starts at login | `npm run service:doctor`. Most often the absolute `node`/`npm`/`git` paths baked in at install time have moved (an nvm or Homebrew upgrade); re-run `npm run service:install` to re-record them. |
+| It starts but **updating** fails from the service | Same cause, narrower: a LaunchAgent gets a minimal `PATH`, so `git`/`npm` weren't found. `service:doctor` reports each of the three by absolute path. |
+| `npm run update` says **The Machine: still running on port 4400** | Use the dashboard's Update button instead — it stops, updates and restarts for you. The terminal command can't: reinstalling under a live app leaves files locked. |
+| `npm run update` says **Local changes** and lists files | Informational now, not a refusal. Those files are reset to the published version and the diff is saved to `data/backups/discarded-<timestamp>.patch`. |
 | `npm run update` says **git refused to fast-forward** | This copy has commits the published version doesn't. Nothing was changed. Easiest fix: clone fresh into a new folder and copy your old `data/` across. |
 | `npm run update` says **this folder was not cloned with git** | You have a zip copy. Clone the repo, then copy your old `data/` folder into the new one. |
 | A message sits in **Needs attention** saying `interrupted mid-send` | The app stopped (crash, Task Manager, antivirus) while that DM was mid-flight, and nothing in the queue records whether it actually went out — the name, thread link and send log are all written from an outcome that never arrived. Open that conversation on LinkedIn: if the message is there, dismiss the row; if not, retry it. Invites in the same situation recover automatically, because a duplicate invite is harmless and a duplicate DM isn't. |
