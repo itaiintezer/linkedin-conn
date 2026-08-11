@@ -29,6 +29,8 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, posix, win32 } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { lockHolder } from './supervisor.mjs';
+
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SCRIPT_DIR, '..');
 
@@ -70,6 +72,7 @@ export function resolvePaths({
     git,
     platform,
     supervisor: P.join(root, 'scripts', 'supervisor.mjs'),
+    dataDir: P.join(root, 'data'),
     logOut: P.join(root, 'data', 'service.out.log'),
     pathSep: platform === 'win32' ? ';' : ':',
     // Deduplicated: a plist PATH is whatever we say it is, so say it once.
@@ -137,7 +140,11 @@ ${args.map((a) => `    <string>${xmlEscape(a)}</string>`).join('\n')}
  * See the header for why this exists rather than pointing the task at node.exe directly.
  */
 export function renderHiddenShim(paths) {
-  const cmd = `"${paths.node}" "${paths.supervisor}"`;
+  // Routed through `cmd /c` purely to get the redirection. WScript.Shell.Run cannot redirect,
+  // and without it a hidden Windows service that fails to start leaves NO diagnostic anywhere:
+  // no console to read, and the operator sees only "the dashboard will not load". The macOS
+  // plist gets this from StandardOutPath; this is the equivalent.
+  const cmd = `cmd /c ""${paths.node}" "${paths.supervisor}" >> "${paths.logOut}" 2>&1"`;
   const vb = (s) => String(s).replace(/"/g, '""');
   // The PATH is set here rather than in the task XML because Task Scheduler's format has no
   // way to declare environment variables. Without this, Windows has the same latent bug as a
@@ -227,8 +234,13 @@ const mac = {
     writeFileSync(target, renderLaunchAgent(paths));
     // bootout first so a re-install replaces cleanly rather than erroring as already loaded.
     run('launchctl', ['bootout', `gui/${process.getuid?.() ?? ''}/${SERVICE_LABEL}`], { check: false });
+    const alreadyRunning = lockHolder(paths.dataDir) !== null;
+    // bootstrap loads the agent AND, with RunAtLoad, starts it — so on macOS the install really
+    // does bring it up, unless a copy is already holding the lock.
     const res = run('launchctl', ['bootstrap', `gui/${process.getuid?.() ?? ''}`, target]);
-    return res.ok ? { ok: true, where: target } : { ok: false, where: target, error: res.out };
+    return res.ok
+      ? { ok: true, where: target, started: !alreadyRunning, alreadyRunning }
+      : { ok: false, where: target, error: res.out };
   },
   uninstall() {
     const target = plistPath();
@@ -258,7 +270,16 @@ const win = {
     run('schtasks', ['/Delete', '/TN', TASK_NAME, '/F'], { check: false });
     const res = run('schtasks', ['/Create', '/TN', TASK_NAME, '/XML', xmlFile]);
     rmSync(xmlFile, { force: true });
-    return res.ok ? { ok: true, where: `Scheduled Task "${TASK_NAME}"` } : { ok: false, where: TASK_NAME, error: res.out };
+    if (!res.ok) return { ok: false, where: TASK_NAME, error: res.out };
+
+    // Registering a LOGON-triggered task does not run it — unlike `launchctl bootstrap`, which
+    // starts a RunAtLoad agent immediately. Without this the installer would report "it is
+    // starting now" and nothing would happen until the operator next logged in, which reads
+    // exactly like a broken install. Skipped when a copy already holds the lock, so the first
+    // thing in the service log is not a refusal.
+    const alreadyRunning = lockHolder(paths.dataDir) !== null;
+    const started = alreadyRunning ? false : run('schtasks', ['/Run', '/TN', TASK_NAME], { check: false }).ok;
+    return { ok: true, where: `Scheduled Task "${TASK_NAME}"`, started, alreadyRunning };
   },
   uninstall(paths) {
     run('schtasks', ['/Delete', '/TN', TASK_NAME, '/F'], { check: false });
@@ -330,11 +351,21 @@ async function main() {
     process.exit(1);
   }
 
+  const url = `http://localhost:${process.env.PORT ?? 4400}`;
   console.log('\nDone. The Machine will start by itself every time you log in.');
   console.log(`  Registered:  ${r.where}`);
-  console.log(`  Dashboard:   http://localhost:${process.env.PORT ?? 4400}`);
-  console.log('\nIt is starting now. Give it a few seconds, then open the dashboard link above');
-  console.log('and bookmark it — that page is how you use and control The Machine.\n');
+  console.log(`  Dashboard:   ${url}`);
+  if (r.alreadyRunning) {
+    console.log('\nIt is already running, so nothing changed just now — open the dashboard link');
+    console.log('above and bookmark it. Starting at login takes effect from your next login on.\n');
+  } else if (r.started) {
+    console.log('\nIt is starting now. Give it a few seconds, then open the dashboard link above');
+    console.log('and bookmark it — that page is how you use and control The Machine.\n');
+  } else {
+    // Registered but we could not bring it up. Say so rather than imply it is coming.
+    console.log('\nIt is registered but could NOT be started just now. Log out and back in, or run');
+    console.log('`npm start`, then check with `npm run service:doctor`.\n');
+  }
 }
 
 const invoked = process.argv[1] ?? '';

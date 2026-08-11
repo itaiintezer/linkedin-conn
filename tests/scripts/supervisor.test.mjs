@@ -20,6 +20,7 @@ import {
   acquireLock,
   backoffMs,
   decideNextAction,
+  lockHolder,
   lockPath,
   resolveConfig,
   runSupervisor,
@@ -89,6 +90,26 @@ describe('acquireLock', () => {
     const lock = acquireLock(repo.dataDir, { pid: 111, isAlive: () => true });
     lock.release();
     expect(existsSync(lockPath(repo.dataDir))).toBe(false);
+  });
+});
+
+describe('lockHolder', () => {
+  let repo;
+  beforeEach(() => { repo = makeTempRepo(); });
+  afterEach(() => { repo?.cleanup(); });
+
+  test('reports the live pid, so the service installer can tell if a copy is up', () => {
+    acquireLock(repo.dataDir, { pid: 4242, isAlive: () => true });
+    expect(lockHolder(repo.dataDir, { isAlive: () => true })).toBe(4242);
+  });
+
+  test('a stale lock reads as free, using the same rule acquireLock uses', () => {
+    acquireLock(repo.dataDir, { pid: 4242, isAlive: () => true });
+    expect(lockHolder(repo.dataDir, { isAlive: () => false })).toBeNull();
+  });
+
+  test('no lock file at all is free, not an error', () => {
+    expect(lockHolder(repo.dataDir, { isAlive: () => true })).toBeNull();
   });
 });
 
