@@ -41,10 +41,11 @@ machine (Windows on ARM won't work), or any Mac from the last several years.
    ```
    npm run service:install
    ```
-   From now on it starts by itself every time you turn your computer on and log in. No
-   terminal, no black window.
-6. Open your browser to **http://localhost:4400** and **bookmark it**. That page is how you
-   use and control The Machine.
+   Two things happen: it starts **right now**, and it will start by itself every time you turn
+   your computer on and log in. No terminal, no black window. (If it says it's *already*
+   running, that's fine — it means it was already going.)
+6. Give it a few seconds, then open your browser to **http://localhost:4400** and **bookmark
+   it**. That page is how you use and control The Machine.
 
 You can close the terminal window. Nothing depends on it any more.
 
@@ -52,8 +53,9 @@ You can close the terminal window. Nothing depends on it any more.
 reversible from the same button; it's the one you want in almost every situation.
 
 > If `npm run service:install` doesn't work on your machine, you can still run `npm start` in
-> the terminal instead and leave that window open. Everything else works the same, except the
-> **Restart** and **Update** buttons, which need the automatic start to be set up.
+> the terminal and leave that window open. Everything works the same, Restart and Update
+> included — the only differences are that closing that window stops The Machine, and it won't
+> come back on its own when you next log in.
 
 If anything above fails, run `npm run preflight` — it lists every requirement with a
 one-line fix for whatever is wrong.
@@ -248,11 +250,28 @@ from someone you hadn't. Treat **Replied** as a floor, and your LinkedIn inbox a
 - **The LinkedIn browser window won't open** → an old browser is still holding the login
   profile. Close any leftover Chromium windows (Windows: Task Manager → end `chrome`; Mac:
   Activity Monitor → quit `Chromium`), then use **Restart** on the dashboard.
+- **Something's wrong and you want to try the simplest thing first** → **Restart**, in
+  Settings → Maintenance. It's the equivalent of turning it off and on again, it finishes any
+  send in progress first, and it can't lose anything.
 - **Stop sending** → the **Pause** button on the dashboard. It's reversible from the same
   button, and it's what you want in almost every case.
 - **Stop it completely** → `npm run service:uninstall`, then restart your computer. Worth
   saying plainly: there is deliberately no Stop button, because a stopped Machine can't serve
   the page with the button that would start it again.
+
+### Asking for help
+
+Because The Machine starts up invisibly, there's no window with an error message in it. Two
+files hold everything needed to work out what happened — send **both**:
+
+1. Run this and copy the whole output:
+   ```
+   npm run service:doctor
+   ```
+2. From the dashboard: **Settings → Download** (next to the run log).
+
+The first says whether it's set up and running correctly; the second is what it's been doing.
+Neither contains your LinkedIn password.
 
 ## 10. Your connection list
 Separate from campaigns, The Machine keeps a list of everyone you're actually connected to,
