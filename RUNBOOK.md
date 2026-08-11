@@ -37,15 +37,23 @@ machine (Windows on ARM won't work), or any Mac from the last several years.
    missing (wrong Node version, no npm, unsupported computer). Then it downloads the
    browser The Machine drives — **about 1 GB, a few minutes, once ever**. It's not stuck;
    wait for it to finish.
-5. Run:
+5. Run this once, and never think about starting The Machine again:
    ```
-   npm start
+   npm run service:install
    ```
-6. Open your browser to **http://localhost:4400**.
+   From now on it starts by itself every time you turn your computer on and log in. No
+   terminal, no black window.
+6. Open your browser to **http://localhost:4400** and **bookmark it**. That page is how you
+   use and control The Machine.
 
-Leave the terminal window open — that's the engine. To stop sending, click into that
-window and press **Ctrl+C**. Don't just close the window: that can leave the hidden
-LinkedIn browser running and block the next start.
+You can close the terminal window. Nothing depends on it any more.
+
+**To stop sending**, use the **Pause** button on the dashboard — not the terminal. Pause is
+reversible from the same button; it's the one you want in almost every situation.
+
+> If `npm run service:install` doesn't work on your machine, you can still run `npm start` in
+> the terminal instead and leave that window open. Everything else works the same, except the
+> **Restart** and **Update** buttons, which need the automatic start to be set up.
 
 If anything above fails, run `npm run preflight` — it lists every requirement with a
 one-line fix for whatever is wrong.
@@ -233,16 +241,18 @@ from someone you hadn't. Treat **Replied** as a floor, and your LinkedIn inbox a
 - **`npm install` stopped with a `[ FAIL ]` line** → it tells you exactly what to fix
   (almost always: Node is older than 22.13 — install the LTS from https://nodejs.org and
   open a *new* terminal). Run `npm run preflight` to re-check.
-- **"port 4400 is in use" when starting** → The Machine is already running in another
-  terminal window; use that one at http://localhost:4400.
-- **The LinkedIn browser window won't open** → a previous run was closed without Ctrl+C
-  and the old browser is still holding the login profile. Close any leftover Chromium
-  windows (Windows: Task Manager → end `chrome`; Mac: Activity Monitor → quit
-  `Chromium`), then `npm start` again.
-- **Stop everything** → click the terminal running `npm start` and press **Ctrl+C**. Wait
-  for it to return to a prompt. Only then close the window.
-- **`npm run update` refused to run** → that's it working as intended; it stops before
-  changing anything. The `FAIL` line says what to fix — see §13.
+- **"The Machine is already running"** → it is, and that's fine — it starts itself at login.
+  Open http://localhost:4400 and use it. Only one copy can run at a time.
+- **The dashboard page won't load at all** → it didn't start. Run `npm run service:doctor`,
+  which checks the setup and prints what's wrong in plain language.
+- **The LinkedIn browser window won't open** → an old browser is still holding the login
+  profile. Close any leftover Chromium windows (Windows: Task Manager → end `chrome`; Mac:
+  Activity Monitor → quit `Chromium`), then use **Restart** on the dashboard.
+- **Stop sending** → the **Pause** button on the dashboard. It's reversible from the same
+  button, and it's what you want in almost every case.
+- **Stop it completely** → `npm run service:uninstall`, then restart your computer. Worth
+  saying plainly: there is deliberately no Stop button, because a stopped Machine can't serve
+  the page with the button that would start it again.
 
 ## 10. Your connection list
 Separate from campaigns, The Machine keeps a list of everyone you're actually connected to,
@@ -305,8 +315,9 @@ its layout, after anyone touches the engagement selectors, and before trusting t
 with a queue.
 
 **Stop The Machine first.** The LinkedIn browser profile only opens in one place at a time.
-Press **Ctrl+C** in the terminal running `npm start` and wait for the prompt. The script
-refuses to start while the app is answering on port 4400, and it never kills anything for you.
+Run `npm run service:uninstall` and restart your computer, or ask whoever maintains The Machine
+to stop it for you. The script refuses to start while the app is answering on port 4400, and it
+never kills anything for you.
 
 **1. Dry run — the safe one. Always start here.**
 
@@ -418,36 +429,48 @@ runs a check immediately, and it's how you tell The Machine "I've fixed it, try 
 pressing it clears the halt regardless of whether the next check succeeds.
 
 ## 13. Getting a newer version
-When The Machine is improved, you get the improvements by running one command. You do **not**
-download anything again, reinstall Node, or log in to LinkedIn again.
+No terminal. It's a button.
 
-1. **Stop it.** Click the terminal window running The Machine and press **Ctrl+C**. Wait for
-   it to come back to a prompt.
-2. Run:
-   ```
-   npm run update
-   ```
-3. Start it again:
-   ```
-   npm start
-   ```
+**How you'll know.** When there's something new, a green **"N updates available"** pill appears
+in the top-right of the dashboard, next to the LinkedIn status light. If there's no pill,
+there's nothing to install. The Machine checks quietly on its own.
+
+1. Click the pill (or go to **Settings → Maintenance**).
+2. You'll see a list of what's new. Click **Install N updates**.
+3. Confirm. That's it — walk away.
+
+The Machine closes itself, installs the update and starts itself again. It takes a minute or
+two. The page will say **"Updating The Machine…"** and then tell you when it's done. **The page
+going blank or failing to load during this is normal** — it's the part where The Machine isn't
+running yet. Don't reload repeatedly and don't click anything; it comes back on its own.
+
+**Anything mid-send finishes first.** If The Machine is in the middle of sending a connection
+request when you click Update, it waits for that request to complete before closing. This
+matters: interrupting it half-way is how someone would end up getting the same invitation twice.
 
 **Nothing you've built up is lost.** Your queue, your cohorts, your connection list, your
 settings, your Apify key and your LinkedIn login are all stored outside the part that gets
-updated. An update cannot touch them. Before it changes anything, it also copies your
-database to `data/backups/`, keeping the five most recent copies.
+updated. An update cannot touch them. It also copies your database to `data/backups/` first,
+keeping the five most recent copies.
 
-**If it refuses, read the line marked `FAIL`.** It stops *before* changing anything and tells
-you what to do. The three you might see:
+**Sending stays paused after an update.** That's deliberate — you get to look at the dashboard
+before anything goes out. Click **Resume** when you're ready.
 
-- **"still running on port 4400"** — you skipped step 1. Press Ctrl+C in the other terminal
-  window and try again. Don't close the window instead: that can leave the hidden LinkedIn
-  browser running and block the next start.
-- **"N files in this folder have been edited"** — something changed files in the folder. If
-  you didn't do it deliberately, run `git checkout -- .` to put them back, then try again.
-  This does not touch your queue or your login.
-- **"git refused to fast-forward"** — rare, and it means this copy has drifted from the
-  published one. Nothing was changed and The Machine still works. Ask whoever maintains it.
+**If something goes wrong:**
 
-**How do I know there's a new version?** Whoever maintains The Machine will tell you. Running
-`npm run update` when there's nothing new is harmless — it says "Already up to date" and stops.
+- **"The update did not finish"** — The Machine is still running the version it had before, and
+  it still works. Nothing was lost. Try again later, or tell whoever maintains it.
+- **If the new version won't start at all**, The Machine notices after a few tries and puts the
+  previous version back by itself. You may see it disappear and come back; that's the recovery
+  working.
+- **"Lost track of that one"** — the update may well have worked. Wait a minute and reload the
+  page. If the page won't load at all after a few minutes, ask for help.
+
+**The Restart button**, next to Update, is the thing to try if The Machine seems stuck — the
+LinkedIn browser won't open, or sending has quietly stopped. Same behaviour: it finishes any
+send in progress, closes, and comes back within a minute or two.
+
+> **Editing files in the folder.** If you (or an editor, or your Mac's Finder) changed anything
+> inside The Machine's folder, an update simply puts it back the way the published version has
+> it. It won't stop and ask. A copy of whatever was discarded is kept in `data/backups/` in case
+> it mattered.

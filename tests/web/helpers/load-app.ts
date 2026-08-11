@@ -52,6 +52,13 @@ export interface AppInternals {
   /** Wires the Settings → Docs section's lazy load. */
   initDocs: () => void;
   refreshQueue: () => Promise<void>;
+  /* ---- maintenance (Restart / Update). See the block above tick() in app.js. ---- */
+  initMaintenance: () => void;
+  renderAvailability: (a: Record<string, unknown> | null) => void;
+  refreshUpdateCheck: () => Promise<void>;
+  refreshMaintStatus: () => Promise<void>;
+  /** Waits out a restart, treating a refused connection as progress rather than a fault. */
+  awaitComeback: (action: string, requestedAt: string) => Promise<void>;
   evRenderDetail: (detail: Record<string, unknown>) => void;
   evLoadList: () => Promise<void>;
   evOpen: (id: number, quiet?: boolean) => Promise<void>;
@@ -99,7 +106,7 @@ export function loadApp(): AppInternals {
   const postsSrc = readFileSync(join(WEB_DIR, 'posts.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, SKIP_REASON_LABEL, loadSettings, initSettings, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
+    `${src}\n${postsSrc}\nreturn { renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, SKIP_REASON_LABEL, loadSettings, initSettings, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initMaintenance, renderAvailability, refreshUpdateCheck, refreshMaintStatus, awaitComeback, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }

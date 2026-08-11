@@ -7,7 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A local, paced LinkedIn outreach engine — connection requests, direct messages, event invites,
 post engagements, and a searchable enriched connection roster. One Node process: Fastify API +
 scheduler + a real stealth browser, all state in local SQLite. Repo is `linkedin-conn`; the
-product is **The Machine** in the docs and **Relay** in the skills and log. Same thing.
+product is **The Machine** everywhere it is named. (It used to be called **Relay** in the skills
+and the log — the log file is still `data/relay.log`, deliberately, so existing installs keep
+their history.)
 
 Docs: [API.md](API.md) (endpoints), [README.md](README.md) (technical operator),
 [RUNBOOK.md](RUNBOOK.md) (non-technical operator). Per-feature design specs and plans are dated
@@ -22,15 +24,16 @@ non-technical (see RUNBOOK.md for the vocabulary they use). They will ask in pla
 they mean *do it against the live instance*, now.
 
 **Do not explore the codebase to answer these. Read [API.md](API.md) and call the API.**
-Base URL `http://localhost:4400` (`PORT` overrides; the skills also honour `RELAY_URL`).
+Base URL `http://localhost:4400` (`PORT` overrides; the skills also honour `THEMACHINE_URL`,
+falling back to the older `RELAY_URL`).
 API.md opens with a "For agents: the two you need" section — start there.
 
 Prefer the bundled skills over hand-rolled requests:
 
 | They want to… | Use |
 |---|---|
-| Queue profiles for invites or DMs | skill `relay-add-profiles` |
-| Find people in their network | skill `relay-search-connections` |
+| Queue profiles for invites or DMs | skill `themachine-add-profiles` |
+| Find people in their network | skill `themachine-search-connections` |
 | Anything else | [API.md](API.md) — engagements, events, status, pause/resume, settings |
 
 How to behave with a non-technical operator:
@@ -52,10 +55,13 @@ How to behave with a non-technical operator:
 ## Commands
 
 ```bash
-npm start          # server + scheduler on :4400
-npm test           # vitest run
-npm run typecheck  # tsc --noEmit
-npm run preflight  # verify Node >= 22.13, platform, browser install
+npm start            # the SUPERVISOR, which spawns the app (server + scheduler on :4400)
+npm run start:app    # the app alone — no supervisor, so Restart/Update are disabled
+npm test             # vitest run
+npm run typecheck    # tsc --noEmit
+npm run preflight    # verify Node >= 22.13, platform, browser install
+npm run service:install    # start at login (LaunchAgent / Scheduled Task); …:status, …:uninstall
+npm run service:doctor     # the per-machine checks the suite cannot make
 ```
 
 Single test: `npx vitest run tests/worker/sender.test.ts`, or `-t "<name>"`. Node **>= 22.13** is
@@ -64,6 +70,11 @@ suite — read the comment there before changing it.
 
 ## Code layout
 
+`scripts/supervisor.mjs` (**the only thing ever launched** — spawns the app and reads its exit
+code: 0 stop, 42 restart, 43 update, else crash-and-backoff; this is why Restart/Update can exist
+at all, since a process cannot respawn itself and `npm install` cannot rewrite `node_modules`
+under a live tsx) · `scripts/update.mjs` + `scripts/service.mjs` + `scripts/control-file.mjs`
+(zero-dep ESM, must run on a bare Node; `control-file.d.mts` is how `src/` imports the last one) ·
 `src/api/server.ts` (all routes + static `src/web/` dashboard, no build step) ·
 `src/worker/` (all the doing — **start at `orchestrator.ts`**, it's the map) ·
 `src/browser/` (Playwright; **every DOM selector lives in `*-selectors.ts`** — that's what to fix
@@ -75,3 +86,12 @@ work; tick handlers must never throw; acceptance/reply detection is upgrade-only
 downgrades or infers from absence; a cohort's `kind` (`invite`/`message`) is fixed at creation and
 mismatched writes are rejected; the guardrail latches on a checkpoint and halts both engines;
 crash recovery runs at startup, not on a timer. `orchestrator.ts` documents each in place.
+
+Two more that span the supervisor boundary: an update **must** drain the browser mutex before
+exiting (dying between "clicked Connect" and "recorded the send" gets someone invited twice —
+`src/core/lifecycle.ts`), and `git clean` during an update runs without `-x` **and** with explicit
+`-e data -e .linkedin-profile`, so the operator's queue and login never depend on `.gitignore`
+staying correct.
+
+- **Never force-kill the server.** Only one process can hold `.linkedin-profile`. Use the
+  dashboard's Restart, `POST /api/pause`, or `Ctrl+C` in a foreground `npm start`.

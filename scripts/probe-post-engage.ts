@@ -14,7 +14,7 @@
  * Full HTML dumps go to data/incidents/<stamp>-post-engage/ (gitignored); stdout gets a
  * sectioned, truncated view.
  *
- * Run with the Relay app STOPPED — `.linkedin-profile` is single-instance.
+ * Run with The Machine STOPPED — `.linkedin-profile` is single-instance.
  *   npx tsx scripts/probe-post-engage.ts <postUrl> [--like] [--comment "text"]
  */
 import { mkdirSync, writeFileSync } from 'node:fs';

@@ -9,7 +9,7 @@
  * real `LinkedInDriver`, calls the real methods, and prints each `EngagementOutcome`
  * verbatim before interpreting it.
  *
- * Run with the Relay app STOPPED — `.linkedin-profile` is single-instance, and a second
+ * Run with The Machine STOPPED — `.linkedin-profile` is single-instance, and a second
  * Chromium cannot attach to it. The script refuses to start if the server answers on its
  * port, and says so plainly if the launch fails for that reason anyway.
  *
@@ -51,7 +51,7 @@ const USAGE = `usage: npx tsx scripts/verify-post-engage.ts <postUrl> [--dry] [-
   --reaction <name>  one of: ${REACTIONS.join(', ')}   (default: ${DEFAULT_REACTION})
   --comment "<text>" post a comment after the reaction. IRREVERSIBLE and public.
 
-Run with the Relay app stopped: .linkedin-profile is single-instance.`;
+Run with The Machine stopped: .linkedin-profile is single-instance.`;
 
 function die(message: string): never {
   console.error(message);
@@ -126,7 +126,7 @@ console.log(`urn (url)  : ${post.urn}   [best-effort — the page's own data-urn
 
 // ------------------------------------------------------ safety 1: is the server running?
 /**
- * The Relay server holds `.linkedin-profile` open, and a second Chromium cannot attach to
+ * The Machine holds `.linkedin-profile` open, and a second Chromium cannot attach to
  * it. `isProfileInUse` (worker/orchestrator.ts) is the codebase's precedent, but it
  * classifies a launch error AFTER the fact — there is no pre-flight probe to reuse. So this
  * asks the only question that can be asked before launching: is anything answering on the
@@ -137,7 +137,7 @@ console.log(`urn (url)  : ${post.urn}   [best-effort — the page's own data-urn
  * refuses, because the cost of a false "all clear" is a confusing browser failure and the
  * cost of a false alarm is one command to stop the server. Nothing is ever killed.
  */
-async function relayServerCheck(): Promise<string | null> {
+async function machineServerCheck(): Promise<string | null> {
   const url = `http://127.0.0.1:${PORT}/api/status`;
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
@@ -150,10 +150,10 @@ async function relayServerCheck(): Promise<string | null> {
   }
 }
 
-const serverUp = await relayServerCheck();
+const serverUp = await machineServerCheck();
 if (serverUp !== null) {
   die(`REFUSING TO RUN: ${serverUp}\n\n`
-    + 'The Relay server holds the LinkedIn browser profile open and it is single-instance,\n'
+    + 'The Machine holds the LinkedIn browser profile open and it is single-instance,\n'
     + 'so this script cannot open its own window while the app is running.\n'
     + 'Stop the app (Ctrl+C in the terminal running `npm start`, and wait for the prompt),\n'
     + 'then run this again. Do not force-kill it — that orphans the browser and blocks the\n'
@@ -488,7 +488,7 @@ try {
     page = await session.page();
   } catch (e) {
     if (isProfileInUse(e)) {
-      throw new Error('the LinkedIn browser profile is already in use — stop the Relay app (or close the'
+      throw new Error('the LinkedIn browser profile is already in use — stop The Machine (or close the'
         + ' leftover Chromium window) and run this again. Nothing was done.');
     }
     throw e;

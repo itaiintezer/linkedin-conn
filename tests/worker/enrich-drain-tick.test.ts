@@ -75,7 +75,7 @@ test('does nothing at all when the queue is empty — the steady state must be f
   expect(f.built).toEqual([]); // no client constructed, so not a single network call
 });
 
-test('respects Pause — a paused Relay does not spend money on its own', async () => {
+test('respects Pause — a paused instance does not spend money on its own', async () => {
   repos.settings.update({ apify_api_key: 'k', paused: 1 });
   seedPending(2);
   const f = fakeFactory();
@@ -163,7 +163,7 @@ test('picks up the token currently in settings, so re-keying takes effect next t
 });
 
 test('start() sweeps TTL-stale rows immediately, not six hours later', () => {
-  // A Relay restarted more often than the 6h interval would otherwise never sweep at all.
+  // An instance restarted more often than the 6h interval would otherwise never sweep at all.
   repos.settings.update({ apify_api_key: 'k', enrich_ttl_days: 30 });
   seedPending(1);
   const row = repos.connections.findByUrl('https://www.linkedin.com/in/p0')!;

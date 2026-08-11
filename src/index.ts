@@ -5,8 +5,9 @@ import { LinkedInDriver } from './browser/linkedin-driver.js';
 import { Orchestrator } from './worker/orchestrator.js';
 import { buildServer } from './api/server.js';
 import { Mutex } from './core/mutex.js';
-import { DB_PATH, PORT } from './config.js';
+import { DATA_DIR, DB_PATH, PORT } from './config.js';
 import { log } from './core/log.js';
+import { EXIT_STOP, reconcileControlOnBoot } from './core/lifecycle.js';
 
 // Last-resort safety net: a stray rejection/exception (e.g. a browser launch failing in a
 // background task) must be logged, not crash the whole server. The real handling lives at
@@ -34,12 +35,37 @@ const repaired = repos.connections.backfillFirstNames(
 );
 if (repaired > 0) log.info('roster', 'repaired first names', { repaired });
 
+// A request left mid-flight has nobody to finish it now — say so rather than let the dashboard
+// sit on "Updating…" forever. See src/core/lifecycle.ts.
+const supervised = process.env.THEMACHINE_SUPERVISED === '1';
+if (reconcileControlOnBoot(DATA_DIR, { supervised }) === 'abandoned') {
+  log.warn('app', 'found an unfinished update request at startup', { supervised });
+}
+
 const driver = new LinkedInDriver();
 // One lock shared between the scheduler and the API so the periodic sender, the acceptance
 // reader, the reply reader and the manual "run now" trigger never drive the browser at once.
 const browserLock = new Mutex();
 const orchestrator = new Orchestrator(repos, driver, browserLock);
-const app = buildServer(repos, driver, browserLock);
+
+/**
+ * How the process ends. `code` is the supervisor's protocol (0 stop, 42 restart, 43 update) —
+ * the shutdown itself is identical either way, because closing the browser cleanly matters just
+ * as much when we are about to be restarted: `.linkedin-profile` is single-instance, so a dirty
+ * exit would block the very start we are asking for.
+ */
+const shutdown = async (code: number = EXIT_STOP): Promise<void> => {
+  log.info('app', 'shutting down', { code });
+  orchestrator.stop();
+  await driver.close();
+  await app.close();
+  process.exit(code);
+};
+
+const app = buildServer(repos, driver, browserLock, log, {
+  supervised,
+  requestExit: (code) => { void shutdown(code); },
+});
 
 orchestrator.start();
 app
@@ -53,12 +79,5 @@ app
     process.exit(1);
   });
 
-const shutdown = async (): Promise<void> => {
-  log.info('app', 'shutting down');
-  orchestrator.stop();
-  await driver.close();
-  await app.close();
-  process.exit(0);
-};
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => { void shutdown(EXIT_STOP); });
+process.on('SIGTERM', () => { void shutdown(EXIT_STOP); });

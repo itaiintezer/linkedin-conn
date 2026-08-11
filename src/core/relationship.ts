@@ -165,7 +165,7 @@ export function confirmsInviteLanded(r: Relationship): boolean {
  * DIRECT-MESSAGE policy: may we message them? Fail-safe — never InMail a non-connection.
  *
  * 'pending' is the fix: under Sales Navigator a pending invite classified as connected, so
- * the gate inverted and Relay could DM someone who is not a connection. On a classic layout
+ * the gate inverted and The Machine could DM someone who is not a connection. On a classic layout
  * a pending profile shows its badge on the top card and was already blocked, so this
  * tightening changes nothing there.
  *

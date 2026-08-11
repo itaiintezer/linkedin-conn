@@ -55,8 +55,8 @@ test('the brand lockup returns to the dashboard and unlights every tab', () => {
 test('docs load when the Settings section is opened, once, and not before', async () => {
   app.initDocs();
   const calls = stubFetchRoutes({
-    '/api/docs/api': { body: { slug: 'api', markdown: '# Relay API' } },
-    '/api/docs': { body: [{ slug: 'api', title: 'Relay API' }] },
+    '/api/docs/api': { body: { slug: 'api', markdown: '# The Machine API' } },
+    '/api/docs': { body: [{ slug: 'api', title: 'The Machine API' }] },
   });
 
   // markdown.js is its own script tag, so the harness never loads it (see loadApp).
@@ -71,7 +71,7 @@ test('docs load when the Settings section is opened, once, and not before', asyn
   block.dispatchEvent(new Event('toggle'));
   // Wait on the rendered document, not the nav: it settles last, so the fetch count below
   // is taken after the whole load rather than midway through it.
-  await vi.waitFor(() => expect(byId('docsContent').innerHTML).toContain('Relay API'));
+  await vi.waitFor(() => expect(byId('docsContent').innerHTML).toContain('The Machine API'));
   expect(byId('docsNav').children).toHaveLength(1);
 
   // Collapse and reopen: the nav is already built, so re-fetching it would only reset the

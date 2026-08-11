@@ -369,7 +369,7 @@ export class Orchestrator {
     // Roster discovery of newly-added connections — same cadence, same slot-gate reasoning.
     this.timers.push(setInterval(() => { void this.runRosterSyncTick(); }, 30 * 60 * 1000));
     // Enrichment staleness sweep. Six-hourly is plenty for a 180-day TTL. Also run once now:
-    // on the interval alone, a Relay restarted more often than every 6 hours would never
+    // on the interval alone, an instance restarted more often than every 6 hours would never
     // sweep at all.
     this.runEnrichRefreshTick();
     this.timers.push(setInterval(() => this.runEnrichRefreshTick(), 6 * 60 * 60 * 1000));
