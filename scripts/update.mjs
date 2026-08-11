@@ -189,6 +189,23 @@ export function summarize(results) {
   return { ok: errors.length === 0, exitCode: errors.length === 0 ? 0 : 1, errors };
 }
 
+/**
+ * Why a blocked update was blocked, in a sentence an operator can act on.
+ *
+ * This is what reaches data/control.json, and therefore the dashboard banner. It exists because
+ * the reason used to live ONLY in the terminal output above: the supervisor had nothing specific
+ * to record, so it fell back to "the update did not complete" — a restatement of the headline,
+ * not a reason. On a machine that starts at login there is no console to read the real one in, so
+ * an operator saw the button appear to do nothing. `fix` is included deliberately: the whole
+ * value here is the next action, not the diagnosis.
+ */
+export function blockedReason(errors) {
+  if (!Array.isArray(errors) || errors.length === 0) return 'the update did not complete';
+  return errors
+    .map((e) => [`${e.label}: ${e.message}`, e.fix].filter(Boolean).join(' '))
+    .join(' ');
+}
+
 export function formatResults(results) {
   const mark = { ok: '  ok  ', warn: ' warn ', error: ' FAIL ' };
   return results
@@ -479,10 +496,10 @@ export async function runPreconditions(cfg) {
  */
 export async function runUpdate(cfg, { now = new Date(), out = console } = {}) {
   const results = await runPreconditions(cfg);
-  const { ok: passed, exitCode } = summarize(results);
+  const { ok: passed, exitCode, errors } = summarize(results);
   out.log(formatResults(results));
   out.log('');
-  if (!passed) return { ok: false, exitCode, blocked: true };
+  if (!passed) return { ok: false, exitCode, blocked: true, error: blockedReason(errors) };
 
   const before = probeHead(cfg.root);
 
@@ -498,7 +515,15 @@ export async function runUpdate(cfg, { now = new Date(), out = console } = {}) {
     git(cfg.root, ['pull', '--ff-only']);
   } catch (e) {
     out.error(`\n${fastForwardFailureMessage(e?.stderr)}\n`);
-    return { ok: false, exitCode: 1, diverged: true };
+    return {
+      ok: false,
+      exitCode: 1,
+      diverged: true,
+      // Short on purpose: the terminal gets the full explanation above, the banner gets the one
+      // line that tells an operator this is not something they can fix themselves.
+      error: "This folder's history no longer matches the published version, so no new code was"
+        + ' installed. Ask whoever maintains The Machine to look at it.',
+    };
   }
 
   const after = probeHead(cfg.root);
@@ -517,7 +542,18 @@ export async function runUpdate(cfg, { now = new Date(), out = console } = {}) {
   } catch {
     out.error('\n`npm install` failed. The new code is in place but its dependencies are not.');
     out.error('Fix whatever npm reported above, then run `npm install` again by hand.\n');
-    return { ok: false, exitCode: 1, from: before, to: after, installFailed: true };
+    // Deliberately silent about WHICH version is running: the new code is on disk but its
+    // dependencies are not, and the supervisor's rollback decides the rest. Claiming either
+    // version here would be a guess, and a wrong one is worse than none.
+    return {
+      ok: false,
+      exitCode: 1,
+      from: before,
+      to: after,
+      installFailed: true,
+      error: "Installing the new version's parts failed part-way. Try the update again — if it"
+        + ' keeps failing, ask whoever maintains The Machine.',
+    };
   }
 
   let log = '';
