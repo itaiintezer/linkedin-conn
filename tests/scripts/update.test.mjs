@@ -153,20 +153,35 @@ describe('describeLocalChanges', () => {
 
 describe('checkBranch', () => {
   test('passes on the release branch', () => {
-    expect(checkBranch(RELEASE_BRANCH).severity).toBe('ok');
+    expect(checkBranch(RELEASE_BRANCH, 0).severity).toBe('ok');
   });
 
-  test('another branch is refused by name', () => {
-    const r = checkBranch('feat/something');
+  test('a stray branch with nothing of its own is a warn — runUpdate heals it', () => {
+    const r = checkBranch('claude/some-merged-fix', 0);
+    expect(r.severity).toBe('warn');
+    expect(r.message).toContain('claude/some-merged-fix');
+    expect(r.message).toContain(RELEASE_BRANCH);
+  });
+
+  test('a branch carrying unpublished commits is refused by name', () => {
+    const r = checkBranch('feat/something', 2);
     expect(r.severity).toBe('error');
     expect(r.message).toContain('feat/something');
     expect(r.fix).toContain(`git checkout ${RELEASE_BRANCH}`);
   });
 
+  test('an unknowable ahead-count refuses rather than guessing it safe', () => {
+    expect(checkBranch('feat/something', null).severity).toBe('error');
+  });
+
   test('a detached HEAD is described, not printed as an empty name', () => {
-    const r = checkBranch(null);
+    const r = checkBranch(null, 1);
     expect(r.severity).toBe('error');
     expect(r.message).toContain('detached');
+  });
+
+  test('a detached HEAD with nothing of its own heals like a stray branch', () => {
+    expect(checkBranch(null, 0).severity).toBe('warn');
   });
 });
 
@@ -512,25 +527,59 @@ describe('runUpdate against a disposable repo', () => {
   }, 60_000);
 
   /**
-   * The failure that actually happened on the author's machine: the checkout sat on a feature
-   * branch, the update correctly refused, and the dashboard said only "The update did not
-   * finish." The reason existed — in a log file on a machine with no console. This asserts the
-   * whole chain instead, from the refusal to the sentence the operator reads.
+   * The failure that actually happened on the author's machine, twice: an agent branched to
+   * open a PR and never switched back, and the next Update refused — with a `git checkout`
+   * instruction as the fix, on a machine whose operator does not know what a terminal is.
+   * A branch with no commits of its own loses nothing by being left, so Update heals it.
    */
-  test('a wrong-branch refusal reaches the dashboard naming the branch and the fix', async () => {
-    gitIn(repo.root, ['checkout', '-b', 'claude/service-install-fixes']);
+  test('a stray branch with nothing of its own is healed: back on main, update applied', async () => {
+    gitIn(repo.root, ['checkout', '-b', 'claude/some-merged-fix']);
+    publishCommit(repo, { subject: 'feat: something new', extraFile: 'brand-new.txt' });
+
+    const r = await runUpdate(cfgFor(repo), { out: quiet });
+
+    expect(r.ok).toBe(true);
+    expect(gitIn(repo.root, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('main');
+    expect(existsSync(join(repo.root, 'brand-new.txt'))).toBe(true);
+    expect(r.log).toContain('feat: something new');
+  }, 60_000);
+
+  test('a detached checkout with nothing of its own heals the same way', async () => {
+    gitIn(repo.root, ['checkout', '--detach']);
     publishCommit(repo, { subject: 'feat: something new' });
 
     const r = await runUpdate(cfgFor(repo), { out: quiet });
+
+    expect(r.ok).toBe(true);
+    expect(gitIn(repo.root, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('main');
+  }, 60_000);
+
+  /**
+   * Healing must stop exactly where it would abandon work: a branch whose commits the
+   * published version lacks is a maintainer mid-something, and the dashboard names the
+   * branch rather than falling back to "the update did not finish".
+   */
+  test('a branch carrying its own commits still refuses, untouched, and the dashboard says why', async () => {
+    gitIn(repo.root, ['checkout', '-b', 'claude/work-in-progress']);
+    writeFileSync(join(repo.root, 'tracked.txt'), 'unfinished maintainer work\n');
+    gitIn(repo.root, ['add', '-A']);
+    gitIn(repo.root, ['commit', '-m', 'wip: not published anywhere']);
+    publishCommit(repo, { subject: 'feat: something new' });
+
+    const r = await runUpdate(cfgFor(repo), { out: quiet });
+
     expect(r.ok).toBe(false);
     expect(r.blocked).toBe(true);
+    // Nothing was healed away: still on the branch, the commit still at its tip.
+    expect(gitIn(repo.root, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('claude/work-in-progress');
+    expect(gitIn(repo.root, ['log', '-1', '--format=%s'])).toBe('wip: not published anywhere');
 
     const { state, message } = summarizeControl(
       markFailed(newRequest('update'), r.error, '2026-08-11T00:00:00.000Z'),
     );
 
     expect(state).toBe('failed');
-    expect(message).toContain('claude/service-install-fixes');
+    expect(message).toContain('claude/work-in-progress');
     expect(message).toContain('git checkout main');
     // The old generic fallback must be gone, not merely accompanied.
     expect(message).not.toContain('the update did not complete');
