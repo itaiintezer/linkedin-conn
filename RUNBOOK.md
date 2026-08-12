@@ -278,10 +278,16 @@ Separate from campaigns, The Machine keeps a list of everyone you're actually co
 and can make it searchable.
 
 **Getting it in.** Go to **Settings → Connections**. Either paste your LinkedIn
-`Connections.csv` export (LinkedIn: *Settings & Privacy → Get a copy of your data →
-Connections* — they email you a file) or paste a plain list of profile URLs. Re-importing the
-same file later is safe: it updates people rather than duplicating them. From then on, the
-twice-daily read of your connections page adds anyone new automatically.
+`Connections.csv` export or paste a plain list of profile URLs. Re-importing the same file
+later is safe: it updates people rather than duplicating them. From then on, the twice-daily
+read of your connections page adds anyone new automatically.
+
+**Asking LinkedIn for that export** — do this on a computer, not your phone, and do it a day
+before you need it. On LinkedIn: *Settings & Privacy → Data privacy → Get a copy of your
+data*, choose the larger archive (the one whose description mentions connections), then
+*Request archive* and confirm your password. LinkedIn emails you a download link in **about
+24 hours**. Unzip what arrives and the file you want is `Connections.csv`. Nothing else about
+The Machine has to wait on it — set everything up now, import the file when it lands.
 
 **Making it searchable.** The list starts with just names, companies and job titles from the
 export. To search by *location* or by someone's full history, The Machine has to look each

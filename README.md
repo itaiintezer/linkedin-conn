@@ -389,10 +389,12 @@ network becomes searchable.
 
 Three things fill it:
 
-1. **Your `Connections.csv` export** — in LinkedIn: Settings & Privacy → Get a copy of your
-   data → Connections. Import it under **Settings → Connections**, or during first-run
-   setup (optional there — you can always do it later). It gives name, company, position
-   and the date you connected.
+1. **Your `Connections.csv` export** — in LinkedIn, on a desktop browser: Settings & Privacy
+   → Data privacy → Get a copy of your data → the larger archive that includes connections.
+   LinkedIn used to offer a Connections-only file that arrived in minutes; it no longer does,
+   so this is a **~24 hour** wait — request it before you start and import it the next day.
+   Import it under **Settings → Connections**, or during first-run setup (optional there —
+   you can always do it later). It gives name, company, position and the date you connected.
 2. **A bare list of profile URLs** — same box, same button; the format is detected.
 3. **Automatic discovery** — twice a day (`roster_sync_per_day`) The Machine reads your
    connections page and adds anyone new. This read is free of the weekly cap.
