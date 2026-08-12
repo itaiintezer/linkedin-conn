@@ -84,11 +84,16 @@ export const find = {
   emailVerifyInput: (s: Scope): Locator => s.locator('div[role="dialog"] input[type="email"]'),
 
   // Fallback path (used only when the direct custom-invite route shows no composer).
-  // The Connect control has two shapes, so we match it two ways:
+  // The Connect control has three shapes, so we match it three ways:
   //  - top card: a button/anchor with aria-label "Invite <Name> to connect" — match by
   //    NAME, scoped to <main> so it can't grab a "people also viewed" person.
-  //  - under "More": an <a href=...custom-invite...vanityName=<slug>> with NO aria-label
-  //    — match by the target's own slug in the href.
+  //  - under "More" (older surface): an <a href=...custom-invite...vanityName=<slug>>
+  //    with NO aria-label — match by the target's own slug in the href.
+  //  - under "More" (React UI, observed 2026-08-11): a role="menuitem" custom-invite
+  //    anchor whose inner div DOES carry the "Invite <Name> to connect" aria-label, in a
+  //    popover portal OUTSIDE <main> — match by NAME scoped to SEL.overflowMenu. Beware
+  //    the href here carries the profile's CURRENT vanity slug, which differs from the
+  //    queued one after a rename (the /in/<old-slug> URL redirects).
   connectByName: (s: Scope, name: string): Locator =>
     s.locator(`[aria-label*="${name.replace(/["\\]/g, '')}"][aria-label*="to connect"]`),
   connectByHref: (s: Scope, slug: string): Locator =>

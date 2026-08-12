@@ -134,6 +134,40 @@ test('a connected pre-visit skip (via the expanded overflow) captures evidence t
   expect(outcome.evidence?.screenshot).toBeTruthy();
 }, 20_000);
 
+// The stuck profiles of 2026-08-11 (three relationship_unknown parks, data/incidents):
+// a creator-mode top card (Message/Follow/More — no primary Connect) whose "More"
+// overflow the React UI renders as a popover portal OUTSIDE <main>, on a profile whose
+// vanity slug was RENAMED (the queued /in/<slug> redirects to a new one). The main-scoped
+// name match missed the portal and the queued-slug href match missed the renamed anchor,
+// so a plainly visible Connect classified 'unknown'. It must classify connectable and
+// proceed to the composer — with the LIVE slug, since the queued one is stale.
+test('Connect inside the portaled overflow of a renamed-slug profile is found', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'incidents-'));
+  const page = new FakeProfilePage({
+    url: 'https://www.linkedin.com/in/brian-curtis-/',
+    title: 'Brian Curtis | LinkedIn',
+    hasMoreButton: true,
+    redirects: {
+      'https://www.linkedin.com/in/brian-curtis-a093212a': 'https://www.linkedin.com/in/brian-curtis-/',
+    },
+    overflowOnExpand: [{
+      tag: 'a',
+      attrs: {
+        role: 'menuitem',
+        'aria-label': 'Invite Brian Curtis to connect',
+        href: '/preload/custom-invite/?vanityName=brian-curtis-',
+      },
+    }],
+  });
+  const outcome = await driverFor(page, dir)
+    .sendConnectionRequest('https://www.linkedin.com/in/brian-curtis-a093212a', null, { firstName: 'Brian' });
+  expect(outcome.result).not.toBe('relationship_unknown');
+  // The fake page has no composer, so a correctly-classified profile lands here — the
+  // point is that the invite was ATTEMPTED, via the live (renamed) slug.
+  expect(outcome.result).toBe('unavailable');
+  expect(page.gotoLog).toContain('https://www.linkedin.com/preload/custom-invite/?vanityName=brian-curtis-');
+}, 60_000);
+
 test('FakeDriver returns the scripted connection cards', async () => {
   const d = new FakeDriver();
   d.connectionCards = [
