@@ -381,6 +381,24 @@ describe('runUpdate against a disposable repo', () => {
     expect(existsSync(join(repo.root, 'brand-new.txt'))).toBe(true);
   }, 60_000);
 
+  /**
+   * One PR merged with GitHub's button reached the dashboard as "There are 2 new changes ready
+   * to install", listing the fix and the merge commit above it. A merge commit contributes no
+   * content, and its subject ("Merge pull request #31 from itaiintezer/claude/…") is the line
+   * that means least to an operator who has never seen a branch name.
+   */
+  test('a merge commit is not counted or listed as a change of its own', async () => {
+    publishCommit(repo, { subject: 'feat: something new', viaMergeCommit: true });
+
+    const r = await runUpdate(cfgFor(repo), { out: quiet });
+
+    expect(r.ok).toBe(true);
+    expect(r.log).toContain('feat: something new');
+    expect(r.log).not.toContain('Merge pull request');
+    // The count the operator reads, through the same function the dashboard uses.
+    expect(describeUpdates(r.log)).toContain('1 new change:');
+  }, 60_000);
+
   test('nothing to pull is reported as unchanged, not as a failure', async () => {
     const r = await runUpdate(cfgFor(repo), { out: quiet });
     expect(r.ok).toBe(true);
