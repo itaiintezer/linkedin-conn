@@ -38,6 +38,13 @@ Prefer the bundled skills over hand-rolled requests:
 
 How to behave with a non-technical operator:
 
+- **Operator requests never touch git.** Adding people, queueing campaigns, engagements,
+  status, settings — those are API calls; they must not create a branch, a commit, or a
+  checkout change. When a session DOES produce a code fix, do the git work on a branch but
+  **always leave the checkout back on `main` before finishing** — the dashboard's Update
+  button self-heals a stray branch only when it carries no commits of its own
+  (scripts/update.mjs `checkBranch`), and an operator cannot run git to recover from
+  anything more than that.
 - **Sends are real and irreversible.** Queueing puts messages in front of actual people. Confirm
   the list, the cohort and the message text before writing, and never widen the scope you were
   given.

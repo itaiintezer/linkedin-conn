@@ -12,6 +12,11 @@
  *
  * Discarded work is still recoverable: it goes to data/backups/discarded-<ts>.patch first.
  *
+ * The same reasoning covers a checkout left on the wrong branch (an agent that branched for a
+ * PR and never switched back): when the branch has no commits of its own, the update puts the
+ * folder back on the release branch and continues. Only a branch carrying unpublished commits
+ * — a maintainer mid-work — still refuses.
+ *
  * Deliberately plain ESM JavaScript with ZERO dependencies and no TypeScript, matching
  * scripts/preflight.mjs: an update may be the thing that repairs a broken node_modules, so
  * this file must run before `npm install` has fetched anything.
@@ -173,14 +178,29 @@ export function describeLocalChanges(porcelain) {
   );
 }
 
-export function checkBranch(branch) {
+/**
+ * `aheadOfRelease` is how many commits HEAD carries that the published branch does not
+ * (null = could not tell). Zero means switching back to the release branch loses nothing —
+ * the checkout was merely LEFT somewhere, e.g. by an agent that branched for a PR and never
+ * switched back — so the update heals it (runUpdate performs the checkout) instead of
+ * refusing with a git instruction the operator audience cannot execute. Anything else is a
+ * maintainer's work in progress, which healing would silently abandon: still a refusal.
+ */
+export function checkBranch(branch, aheadOfRelease) {
   if (branch === RELEASE_BRANCH) return ok('branch', 'Branch', branch);
   const where = branch ? `\`${branch}\`` : 'a detached commit';
+  if (aheadOfRelease === 0) {
+    return warn(
+      'branch',
+      'Branch',
+      `this checkout was left on ${where}, which has no changes of its own — it will be put back on \`${RELEASE_BRANCH}\`.`,
+    );
+  }
   return fail(
     'branch',
     'Branch',
-    `this checkout is on ${where}, not \`${RELEASE_BRANCH}\`.`,
-    `Updates are published on \`${RELEASE_BRANCH}\`. Switch with \`git checkout ${RELEASE_BRANCH}\` and run this again.`,
+    `this checkout is on ${where}, not \`${RELEASE_BRANCH}\`, and it carries commits the published version does not.`,
+    `This looks like a maintainer's work in progress — updating would abandon it. Push or merge that work, or switch back with \`git checkout ${RELEASE_BRANCH}\`, then run this again.`,
   );
 }
 
@@ -407,6 +427,31 @@ function probePorcelain(root) {
   }
 }
 
+/**
+ * How many commits HEAD has that the published branch does not — the fact checkBranch needs
+ * to tell a strayed checkout (heal it) from abandoned work (refuse). Fetches first so a
+ * branch already merged upstream counts as safe even though this clone has not pulled since;
+ * offline, it falls back to wherever origin/<release> was last seen, which can only be
+ * pessimistic (report commits as unpublished), never destructive. `null` = could not tell,
+ * which checkBranch treats as a refusal rather than a guess.
+ */
+function probeAheadOfRelease(root) {
+  try {
+    gitRaw(root, ['fetch', '--quiet', 'origin', RELEASE_BRANCH]);
+  } catch {
+    /* offline is fine — see above */
+  }
+  for (const ref of [`origin/${RELEASE_BRANCH}`, RELEASE_BRANCH]) {
+    try {
+      const n = Number(git(root, ['rev-list', '--count', `${ref}..HEAD`]));
+      if (Number.isInteger(n)) return n;
+    } catch {
+      /* ref unknown — try the next */
+    }
+  }
+  return null;
+}
+
 function probeHead(root) {
   try {
     return git(root, ['rev-parse', 'HEAD']);
@@ -483,7 +528,9 @@ export async function runPreconditions(cfg) {
   // Both need a working git in a real checkout; skip rather than emit a confusing second
   // failure that is really just the first one restated.
   if (isRepo && version) {
-    results.push(checkBranch(probeBranch(cfg.root)));
+    const branch = probeBranch(cfg.root);
+    // The ahead-count probe fetches, so it is only paid on the stray-branch path.
+    results.push(checkBranch(branch, branch === RELEASE_BRANCH ? 0 : probeAheadOfRelease(cfg.root)));
     results.push(describeLocalChanges(probePorcelain(cfg.root)));
   }
   return results;
@@ -509,6 +556,25 @@ export async function runUpdate(cfg, { now = new Date(), out = console } = {}) {
   // Before the pull, so the pull always runs against a folder that matches its own history.
   const reset = resetWorkingTree(cfg, now);
   if (reset) out.log(reset);
+
+  // A checkout left on another branch (or a detached commit) with nothing of its own is put
+  // back on the release branch rather than explained — the operator audience cannot run git.
+  // Preconditions only let a stray checkout through when it carries no commits the published
+  // version lacks (checkBranch), and the reset above just cleaned the tree, so the switch
+  // can neither collide nor lose anything.
+  if (probeBranch(cfg.root) !== RELEASE_BRANCH) {
+    try {
+      git(cfg.root, ['checkout', RELEASE_BRANCH]);
+      out.log(`Put this install back on \`${RELEASE_BRANCH}\`.`);
+    } catch (e) {
+      out.error(`\nCould not switch back to \`${RELEASE_BRANCH}\`:\n${String(e?.stderr ?? e).trim()}\n`);
+      return {
+        ok: false,
+        exitCode: 1,
+        error: `This folder was left on the wrong branch and could not be put back on \`${RELEASE_BRANCH}\`, so no new code was installed. Ask whoever maintains The Machine to look at it.`,
+      };
+    }
+  }
 
   out.log('\nFetching the newest version…');
   try {
