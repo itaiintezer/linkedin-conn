@@ -117,8 +117,12 @@ export class LinkedInDriver implements BrowserDriver {
       }
 
       // 2) Open the invite composer: direct custom-invite route first, then
-      //    fall back to clicking the Connect control on the profile UI.
-      await page.goto(customInviteUrl(slug), { waitUntil: 'domcontentloaded' });
+      //    fall back to clicking the Connect control on the profile UI. The address bar
+      //    carries the profile's CURRENT vanity slug (a renamed one redirects there in
+      //    step 1), which is the name the custom-invite route expects — the queued slug
+      //    may be stale.
+      const liveSlug = profileSlug(page.url()) ?? slug;
+      await page.goto(customInviteUrl(liveSlug), { waitUntil: 'domcontentloaded' });
       await sleep(rand(2000, 4000));
       if (!(await this.composerVisible(page))) {
         await this.openComposerViaProfile(page, url);
@@ -414,8 +418,12 @@ export class LinkedInDriver implements BrowserDriver {
    */
   private async pendingForTarget(page: Page, url: string, name: string): Promise<boolean> {
     const slug = profileSlug(url) ?? '';
+    // A renamed vanity slug (the queued /in/<slug> redirected here) makes the DOM's card
+    // links carry the NEW slug; accept the address bar's slug for attribution too.
+    const liveSlug = profileSlug(page.url()) ?? '';
     const badges = await readPendingBadges(page).catch(() => []);
-    return badges.some((b) => pendingBadgeMatchesTarget(b, name, slug));
+    return badges.some((b) => pendingBadgeMatchesTarget(b, name, slug)
+      || (liveSlug !== slug && pendingBadgeMatchesTarget(b, name, liveSlug)));
   }
 
   /** A Connect/Invite control for THIS person: top card by name, or a custom-invite anchor
@@ -425,6 +433,19 @@ export class LinkedInDriver implements BrowserDriver {
     const main = page.locator('main');
     if (await find.connectByName(main, name).first().isVisible().catch(() => false)) return true;
     if (slug && (await find.connectByHref(page, slug).first().isVisible().catch(() => false))) return true;
+    // The React UI renders the expanded "More" overflow as a popover portal OUTSIDE
+    // <main> (position:fixed, appended after </main> — 2026-08-11 relationship-unknown
+    // incidents), so the main-scoped read above cannot see its Connect item. Inside the
+    // target's own menu a name-labelled Connect is unambiguous — recommendation cards
+    // render their Connect controls elsewhere.
+    const menus = page.locator(SEL.overflowMenu);
+    if (await find.connectByName(menus, name).first().isVisible().catch(() => false)) return true;
+    // A renamed vanity slug defeats the queued-slug href match (LinkedIn redirects
+    // /in/<old> to the new profile, whose anchors carry the new name): the address bar
+    // holds the slug the DOM actually uses, and it can only be the target's.
+    const liveSlug = profileSlug(page.url());
+    if (liveSlug && liveSlug !== slug
+      && (await find.connectByHref(page, liveSlug).first().isVisible().catch(() => false))) return true;
     return false;
   }
 
@@ -492,6 +513,15 @@ export class LinkedInDriver implements BrowserDriver {
     const main = page.locator('main');
     const byName = name ? find.connectByName(main, name).first() : null;
     const byHref = find.connectByHref(page, slug).first();
+    // A renamed vanity slug (the queued /in/<slug> redirected here) invalidates byHref;
+    // the address bar carries the slug the DOM anchors actually use.
+    const liveSlug = profileSlug(page.url());
+    const byLiveHref = liveSlug && liveSlug !== slug
+      ? find.connectByHref(page, liveSlug).first() : null;
+    // The React UI portals the expanded overflow OUTSIDE <main>, so the name-matched
+    // Connect item there needs its own scope (main-scoped byName cannot reach it).
+    const byMenuName = name
+      ? find.connectByName(page.locator(SEL.overflowMenu), name).first() : null;
 
     const clickIfVisible = async (loc: typeof byHref | null): Promise<boolean> => {
       if (!loc) return false;
@@ -504,6 +534,7 @@ export class LinkedInDriver implements BrowserDriver {
     // a) Connect in the top card, then b) a direct custom-invite anchor for this target.
     if (await clickIfVisible(byName)) return;
     if (await clickIfVisible(byHref)) return;
+    if (await clickIfVisible(byLiveHref)) return;
 
     // c) Connect tucked under the "More" overflow (scoped to <main> to avoid the
     //    global-nav "More").
@@ -512,6 +543,8 @@ export class LinkedInDriver implements BrowserDriver {
       await more.click().catch(() => {});
       await sleep(rand(800, 1600));
       if (await clickIfVisible(byHref)) return;
+      if (await clickIfVisible(byLiveHref)) return;
+      if (await clickIfVisible(byMenuName)) return;
       await clickIfVisible(byName);
     }
   }

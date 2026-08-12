@@ -39,6 +39,9 @@ export interface FakeProfilePageSpec {
   overflowOnExpand?: FakeElementSpec[];
   /** Adds a collapsed More button to <main>. */
   hasMoreButton?: boolean;
+  /** goto(url) lands on redirects[url] when present — models LinkedIn's vanity-rename
+   *  redirect (/in/<old-slug> → /in/<new-slug>). */
+  redirects?: Record<string, string>;
 }
 
 function el(spec: FakeElementSpec): FakeElement {
@@ -206,7 +209,10 @@ export class FakeProfilePage {
   async title(): Promise<string> { return this.spec.title; }
   async content(): Promise<string> { return `<html><body>fake ${this.spec.title}</body></html>`; }
   async screenshot(): Promise<Buffer> { return Buffer.from('fake-png'); }
-  async goto(url: string): Promise<void> { this.gotoLog.push(url); this.currentUrl = url; }
+  async goto(url: string): Promise<void> {
+    this.gotoLog.push(url);
+    this.currentUrl = this.spec.redirects?.[url] ?? url;
+  }
 
   locator(selector: string): FakeLocator {
     if (selector === 'main') {
