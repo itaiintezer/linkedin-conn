@@ -117,14 +117,25 @@ export function makeTempRepo({ version = 'v1' } = {}) {
 /**
  * Publishes a new commit to the "remote" the install pulls from, as the maintainer would.
  * Bumps the fake app's VERSION so a test can prove the new code is what came back up.
+ *
+ * `viaMergeCommit` publishes it the way GitHub's "Create a merge commit" button does — on a
+ * branch, merged back with --no-ff — so the pulled range carries the work AND a merge commit.
+ * That is the shape that made one PR read as "2 new changes" on the dashboard.
  */
-export function publishCommit(repo, { version = 'v2', subject = 'feat: a new thing', extraFile } = {}) {
+export function publishCommit(
+  repo, { version = 'v2', subject = 'feat: a new thing', extraFile, viaMergeCommit = false } = {},
+) {
   const staging = join(repo.base, `staging-${version}`);
   git(repo.base, ['clone', repo.remote, staging]);
+  if (viaMergeCommit) git(staging, ['checkout', '-b', 'feature']);
   writeFileSync(join(staging, 'app.mjs'), fakeApp(version));
   if (extraFile) writeFileSync(join(staging, extraFile), 'added by the update\n');
   git(staging, ['add', '-A']);
   git(staging, ['commit', '-m', subject]);
+  if (viaMergeCommit) {
+    git(staging, ['checkout', 'main']);
+    git(staging, ['merge', '--no-ff', 'feature', '-m', 'Merge pull request #1 from someone/feature']);
+  }
   git(staging, ['push', 'origin', 'main']);
   rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
 }

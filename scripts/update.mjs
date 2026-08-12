@@ -482,7 +482,7 @@ async function probeServer(port) {
 // Reporting
 // ---------------------------------------------------------------------------
 
-/** Format `git log --oneline old..new` for humans, capping the list. */
+/** Format `git log --oneline --no-merges old..new` for humans, capping the list. */
 export function describeUpdates(logOutput, cap = LOG_CAP) {
   const lines = String(logOutput ?? '')
     .split('\n')
@@ -624,7 +624,12 @@ export async function runUpdate(cfg, { now = new Date(), out = console } = {}) {
 
   let log = '';
   try {
-    log = git(cfg.root, ['log', '--oneline', `${before}..${after}`]);
+    // --no-merges, because this list is a changelog and a merge commit is not a change. A PR
+    // merged with GitHub's button lands as the branch's own commit PLUS a merge commit, so
+    // counting both told the operator "2 new changes" for one fix — and the extra line
+    // ("Merge pull request #31 from itaiintezer/claude/…") is the one that means least to
+    // someone who has never seen a branch name.
+    log = git(cfg.root, ['log', '--oneline', '--no-merges', `${before}..${after}`]);
   } catch {
     /* the update worked; not being able to list it is cosmetic */
   }
