@@ -20,6 +20,23 @@ describe('normalizeEventUrl', () => {
     }
   });
 
+  it('accepts a slug fused straight into the id, with or without tracking params', () => {
+    for (const raw of [
+      // the real shape LinkedIn's share button copies — no dash before the id
+      'https://www.linkedin.com/events/aisoclive-wheredoesclaudefitint7486088214579982336/?lipi=urn%3Ali%3Apage%3Ad_flagship3_company%3BCtpdUAeVQtGx3n52of9sSA%3D%3D',
+      'https://www.linkedin.com/events/aisoclive-wheredoesclaudefitint7486088214579982336/',
+      // digit runs inside the slug must not be mistaken for the id
+      'https://www.linkedin.com/events/web3-summit-2026-sf7486088214579982336/',
+      'https://www.linkedin.com/events/123456meetup7486088214579982336',
+    ]) {
+      expect(normalizeEventUrl(raw)).toBe('https://www.linkedin.com/events/7486088214579982336/');
+    }
+  });
+
+  it('rejects a slug whose digit runs never end the segment', () => {
+    expect(normalizeEventUrl('https://www.linkedin.com/events/summit-2026123456-recap-live/')).toBeNull();
+  });
+
   it('rejects anything that is not an event url', () => {
     expect(normalizeEventUrl('https://www.linkedin.com/in/keren-tevet-3453a079')).toBeNull();
     expect(normalizeEventUrl('https://www.linkedin.com/events/')).toBeNull();

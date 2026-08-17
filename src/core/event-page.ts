@@ -12,10 +12,17 @@ const MONTHS: Record<string, number> = {
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
-/** Canonical form: https://www.linkedin.com/events/<digits>/ */
+/**
+ * Canonical form: https://www.linkedin.com/events/<digits>/
+ *
+ * The path segment LinkedIn hands out varies: bare digits, `slug-<digits>`, or a slug fused
+ * straight into the digits (`aisoclivewheredoes...int7493353085235343360`) — so the id is
+ * "the digit run that ends the segment", not "digits after a dash". Slugs can contain their
+ * own digit runs mid-word, which is why the end-of-segment lookahead does the anchoring.
+ */
 export function normalizeEventUrl(raw: string): string | null {
   if (typeof raw !== 'string') return null;
-  const m = raw.trim().match(/linkedin\.com\/events\/(?:[^/?#]*-)?(\d{6,})/i);
+  const m = raw.trim().match(/linkedin\.com\/events\/[^/?#]*?(\d{6,})(?=[/?#]|$)/i);
   if (!m) return null;
   return `https://www.linkedin.com/events/${m[1]}/`;
 }
