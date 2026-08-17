@@ -638,3 +638,66 @@ test('an invite falls back to the live read — invitees are not in the roster',
 
   expect(driver.sentLog[0].message).toBe('Hi Scraped');
 });
+
+/* ---------- offline failures: forgiven, requeued, never a halt ---------- */
+// The machine being asleep or disconnected is not the profile's fault and not LinkedIn's
+// doing — profiles 385 (2026-07-05) and 483 (2026-07-21) were terminally failed for it.
+
+test('an offline invite failure requeues the profile, stops the batch, and never trips', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  const p1 = seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  const p2 = seedScheduled('https://www.linkedin.com/in/b', '2026-06-29T09:00:00.000Z', c.id);
+  driver.sendConnectionRequest = async () => ({
+    result: 'error', error: 'page.goto: net::ERR_NETWORK_IO_SUSPENDED at https://www.linkedin.com/in/a',
+  });
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p1.id)!;
+  expect(row.status).toBe('queued'); // not 'failed' — blameless, retried next pass
+  expect(row.scheduled_for).toBeNull();
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+  // The pass ends on the first offline failure — every later row would fail the same way.
+  expect(repos.profiles.findById(p2.id)!.status).toBe('scheduled');
+});
+
+test('an offline message failure AT NAVIGATION requeues — the compose page never loaded', async () => {
+  const c = repos.cohorts.create('M', 'hi', true, 'message');
+  const p = seedScheduledMsg('https://www.linkedin.com/in/m1', '2026-06-29T09:00:00.000Z', c.id);
+  driver.sendMessage = async () => ({
+    result: 'error', error: 'page.goto: net::ERR_INTERNET_DISCONNECTED at https://www.linkedin.com/in/m1',
+  });
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('queued');
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+});
+
+test('an offline message failure AFTER navigation parks — the DM may already be sent', async () => {
+  // Same doctrine as recoverOrphanedSending: a duplicate DM in front of a real person
+  // cannot be unsent, so an interrupted send with an unknown outcome is a human's call.
+  const c = repos.cohorts.create('M', 'hi', true, 'message');
+  const p = seedScheduledMsg('https://www.linkedin.com/in/m1', '2026-06-29T09:00:00.000Z', c.id);
+  driver.sendMessage = async () => ({
+    result: 'error', error: 'page.waitForSelector: net::ERR_NETWORK_IO_SUSPENDED',
+  });
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.last_error).toMatch(/may have been sent/i);
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+});
+
+test('offline failures never record a failed event — the send never happened', async () => {
+  const c = repos.cohorts.create('A', 'hi', true);
+  seedScheduled('https://www.linkedin.com/in/a', '2026-06-29T09:00:00.000Z', c.id);
+  driver.sendConnectionRequest = async () => ({
+    result: 'error', error: 'page.goto: net::ERR_NAME_NOT_RESOLVED at https://www.linkedin.com/in/a',
+  });
+  await run(new Date('2026-06-29T10:00:00Z'));
+  expect(repos.profiles.byStatus('failed')).toHaveLength(0);
+});

@@ -474,3 +474,46 @@ test('the unreachable fourth state (commented but never reacted) requeues withou
   expect(driver.reactLog).toHaveLength(1);
   expect(driver.commentLog).toHaveLength(0); // never re-published
 });
+
+/* ---------- offline failures: forgiven, requeued, never a halt ---------- */
+
+test('an offline reaction failure requeues the task and never touches the streak', async () => {
+  const e = seed(1);
+  driver.reactToPost = async () => ({
+    result: 'error', error: 'page.goto: net::ERR_NETWORK_IO_SUSPENDED at https://www.linkedin.com/feed/',
+  });
+  await run(NOW);
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.status).toBe('queued'); // not 'failed' — the replay is safe (driver reports `already`)
+  expect(row.scheduled_for).toBeNull();
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+});
+
+test('an offline comment failure AFTER navigation parks — it may already be published', async () => {
+  // Same doctrine as recoverOrphanedEngagements: a duplicate comment under the operator's
+  // name is visible to real people and cannot be cleanly unsent.
+  const e = seed(1, 'great post');
+  driver.commentOnPost = async () => ({
+    result: 'error', error: 'page.waitForSelector: net::ERR_INTERNET_DISCONNECTED',
+  });
+  await run(NOW);
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.last_error).toMatch(/may have posted/i);
+  expect(repos.appState.get().failure_streak).toBe(0);
+});
+
+test('an offline comment failure AT NAVIGATION requeues — nothing was ever typed', async () => {
+  const e = seed(1, 'great post');
+  driver.commentOnPost = async () => ({
+    result: 'error', error: 'page.goto: net::ERR_INTERNET_DISCONNECTED at https://www.linkedin.com/feed/',
+  });
+  await run(NOW);
+  const row = repos.engagements.findById(e.id)!;
+  expect(row.status).toBe('queued');
+  // The reaction that DID land earlier in this attempt survives on the row, so the
+  // replay's reacted_at guard skips straight to the comment.
+  expect(row.reacted_at).not.toBeNull();
+  expect(repos.appState.get().failure_streak).toBe(0);
+});

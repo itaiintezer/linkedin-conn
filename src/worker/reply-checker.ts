@@ -250,7 +250,7 @@ export async function runReplyCheck(
   try {
     rows = await driver.readInboxSnapshot();
   } catch (e) {
-    recordReadError(repos, (e as Error).message ?? 'inbox read failed', now);
+    await recordReadError(repos, (e as Error).message ?? 'inbox read failed', now);
     return { ran: false, reason: 'read_error', replied: 0 };
   }
 
