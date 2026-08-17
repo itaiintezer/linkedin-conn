@@ -122,6 +122,7 @@ export async function runEventCampaign(
 
     repos.eventRuns.progress(run.id, bucket.id, {});
     const result = await driver.runEventBucket({
+      eventUrl: event.event_url,
       geoCandidates: repos.eventBuckets.candidates(bucket),
       pending: [...pending.keys()],
       limit: remainingCap,

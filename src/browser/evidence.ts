@@ -15,7 +15,12 @@ export interface PageEvidenceSource {
   url(): string;
   title(): Promise<string>;
   content(): Promise<string>;
-  screenshot(options?: { fullPage?: boolean }): Promise<Buffer>;
+  screenshot(options?: {
+    fullPage?: boolean;
+    timeout?: number;
+    animations?: 'disabled' | 'allow';
+    caret?: 'hide' | 'initial';
+  }): Promise<Buffer>;
 }
 
 export interface Evidence {
@@ -47,9 +52,14 @@ export async function captureEvidence(
     const title = await page.title().catch(() => '');
 
     // Each artifact is best-effort: a dead page must not lose the others.
+    // Animations disabled + a bounded timeout: the invitee picker (1,000 avatar rows,
+    // artdeco spinners) never settles for the default capture, which is why all 17 of
+    // the 2026-08-14 event-invite incidents came back screenshot-less.
     let screenshot: string | null = null;
     try {
-      writeFileSync(join(dir, `${base}.png`), await page.screenshot({ fullPage: false }));
+      writeFileSync(join(dir, `${base}.png`), await page.screenshot({
+        fullPage: false, animations: 'disabled', caret: 'hide', timeout: 15_000,
+      }));
       screenshot = `${base}.png`;
     } catch { /* page gone mid-capture */ }
 

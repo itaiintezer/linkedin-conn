@@ -169,6 +169,8 @@ export interface EventStepOutcome {
 }
 
 export interface BucketRunRequest {
+  /** The event page URL — the driver's hard reset when the picker won't close. */
+  eventUrl: string;
   /** Exact typeahead labels to try, in order. */
   geoCandidates: string[];
   /** URNs still awaiting an invite. Any of these that appears gets ticked — bucket
