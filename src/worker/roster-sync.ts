@@ -60,8 +60,9 @@ export async function runRosterSync(
   try {
     cards = await driver.readConnectionCards();
   } catch (e) {
-    // Checkpoint text trips immediately; other read failures count toward the streak.
-    recordReadError(repos, (e as Error).message ?? 'roster read failed', now);
+    // Checkpoint text trips immediately; other read failures count toward the streak
+    // (offline failures are forgiven — see recordFailure).
+    await recordReadError(repos, (e as Error).message ?? 'roster read failed', now);
     return { ran: false, reason: 'read_error', seen: 0, discovered: 0 };
   }
 

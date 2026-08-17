@@ -97,9 +97,9 @@ function handleCheckpoint(repos: Repos, p: Profile, outcome: SendOutcome, clock:
  *  full detail phrase ('send composer unavailable' for invites, 'message composer
  *  unavailable' for messages) so the streak detail stays specific to which pass hit it.
  *  Returns whether the streak tripped. */
-function handleUnavailable(
+async function handleUnavailable(
   repos: Repos, p: Profile, outcome: SendOutcome, clock: () => Date, label: string,
-): boolean {
+): Promise<boolean> {
   repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'unavailable' });
   repos.events.recordEvent(p.id, 'skipped');
   // Carry the evidence into the streak detail so a repeated_failures halt
@@ -107,17 +107,47 @@ function handleUnavailable(
   const shot = outcome.evidence?.screenshot;
   const detail = `${label}${shot ? ` — screenshot: /incidents/${shot}` : ''}`;
   logVerdict(p, `skipped: ${detail}`);
-  return recordFailure(repos, detail, clock());
+  return (await recordFailure(repos, detail, clock())) === 'tripped';
 }
 
-/** Shared 'error'/default verdict: failed + failure-streak count. Returns whether the
- *  streak tripped so the caller can halt the pass. */
-function handleError(repos: Repos, p: Profile, outcome: SendOutcome, clock: () => Date): boolean {
+/** True when the failure provably happened AT NAVIGATION — before anything was clicked
+ *  or typed. Playwright names the API that threw, so a `page.goto` failure is one where
+ *  the target page never even loaded and no send can possibly have gone out. */
+const failedAtNavigation = (error: string): boolean => /page\.goto/.test(error);
+
+/** Shared 'error'/default verdict. Returns whether the caller should halt the pass.
+ *
+ *  An OFFLINE failure (the machine asleep or disconnected — see core/offline.ts) is not
+ *  the profile's fault and says nothing about LinkedIn, so it must not burn the row the
+ *  way profiles 385 and 483 were burned in July: recordFailure forgives the streak, the
+ *  row goes back for a later pass, and the pass ends (every row after it would fail the
+ *  same way). Requeue vs park follows the crash-recovery doctrine
+ *  (recoverOrphanedSending): replaying an invite is safe — the driver detects a pending
+ *  invite and skips — but a message whose failure came after navigation may already have
+ *  been sent, and a duplicate DM in front of a real person cannot be unsent. */
+async function handleError(
+  repos: Repos, p: Profile, outcome: SendOutcome, clock: () => Date,
+): Promise<boolean> {
+  const error = outcome.error ?? 'unknown';
+  const verdict = await recordFailure(repos, error, clock());
+  if (verdict === 'offline') {
+    if (p.kind === 'message' && !failedAtNavigation(error)) {
+      repos.profiles.setStatus(p.id, 'needs_attention', {
+        scheduled_for: null,
+        last_error: 'went offline mid-send — the message may have been sent; check the conversation before retrying',
+      });
+      logVerdict(p, 'needs attention: went offline mid-send — check the conversation before retrying');
+    } else {
+      repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null, last_error: error });
+      logVerdict(p, 'offline — requeued, will retry when the connection is back');
+    }
+    return true;
+  }
   const shot = outcome.evidence?.screenshot;
-  repos.profiles.setStatus(p.id, 'failed', { last_error: outcome.error ?? 'unknown' });
+  repos.profiles.setStatus(p.id, 'failed', { last_error: error });
   repos.events.recordEvent(p.id, 'failed');
-  logVerdict(p, `failed: ${outcome.error ?? 'unknown'}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
-  return recordFailure(repos, outcome.error ?? 'unknown', clock());
+  logVerdict(p, `failed: ${error}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
+  return verdict === 'tripped';
 }
 
 // --- Post engagements ------------------------------------------------------------------
@@ -153,23 +183,44 @@ function skipEngagement(
 
 /** Skip that DOES count toward the failure streak — the control was missing, which usually
  *  means a selector broke rather than anything being wrong with this post. */
-function skipEngagementCounted(
+async function skipEngagementCounted(
   repos: Repos, e: Engagement, outcome: EngagementOutcome, clock: () => Date, label: string,
-): boolean {
+): Promise<boolean> {
   repos.engagements.setStatus(e.id, 'skipped', { last_error: null, skip_reason: 'unavailable' });
   const shot = outcome.evidence?.screenshot;
   const detail = `${label}${shot ? ` — screenshot: /incidents/${shot}` : ''}`;
   logEngagementVerdict(e, `skipped: ${detail}`);
-  return recordFailure(repos, detail, clock());
+  return (await recordFailure(repos, detail, clock())) === 'tripped';
 }
 
-function failEngagement(
+/** Returns whether the caller should halt the pass. `step` matters only for OFFLINE
+ *  failures, where requeue vs park follows the crash-recovery doctrine
+ *  (recoverOrphanedEngagements): replaying a reaction is safe — the driver reads the
+ *  live reaction state and reports `already` — but a comment whose failure came after
+ *  navigation may already be published under the operator's name, so it parks instead. */
+async function failEngagement(
   repos: Repos, e: Engagement, outcome: EngagementOutcome, clock: () => Date,
-): boolean {
+  step: 'reaction' | 'comment',
+): Promise<boolean> {
+  const error = outcome.error ?? 'unknown';
+  const verdict = await recordFailure(repos, error, clock());
+  if (verdict === 'offline') {
+    if (step === 'comment' && !failedAtNavigation(error)) {
+      repos.engagements.setStatus(e.id, 'needs_attention', {
+        scheduled_for: null,
+        last_error: 'went offline mid-comment — it may have posted; check the post before retrying',
+      });
+      logEngagementVerdict(e, 'needs attention: went offline mid-comment — check the post before retrying');
+    } else {
+      repos.engagements.setStatus(e.id, 'queued', { scheduled_for: null, last_error: error });
+      logEngagementVerdict(e, 'offline — requeued, will retry when the connection is back');
+    }
+    return true;
+  }
   const shot = outcome.evidence?.screenshot;
-  repos.engagements.setStatus(e.id, 'failed', { last_error: outcome.error ?? 'unknown' });
-  logEngagementVerdict(e, `failed: ${outcome.error ?? 'unknown'}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
-  return recordFailure(repos, outcome.error ?? 'unknown', clock());
+  repos.engagements.setStatus(e.id, 'failed', { last_error: error });
+  logEngagementVerdict(e, `failed: ${error}${shot ? ` — screenshot: /incidents/${shot}` : ''}`);
+  return verdict === 'tripped';
 }
 
 /**
@@ -433,13 +484,13 @@ async function attemptInvite(
       logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
       return { halted: false, contacted: true };
     case 'unavailable':
-      return { halted: handleUnavailable(repos, p, outcome, clock, 'send composer unavailable'), contacted: true };
+      return { halted: await handleUnavailable(repos, p, outcome, clock, 'send composer unavailable'), contacted: true };
     case 'checkpoint':
       handleCheckpoint(repos, p, outcome, clock);
       return { halted: true, contacted: true };
     case 'error':
     default:
-      return { halted: handleError(repos, p, outcome, clock), contacted: true };
+      return { halted: await handleError(repos, p, outcome, clock), contacted: true };
   }
 }
 
@@ -508,13 +559,13 @@ async function attemptMessage(
       logVerdict(p, 'skipped: profile no longer exists (LinkedIn 404)');
       return { halted: false, contacted: true };
     case 'unavailable':
-      return { halted: handleUnavailable(repos, p, outcome, clock, 'message composer unavailable'), contacted: true };
+      return { halted: await handleUnavailable(repos, p, outcome, clock, 'message composer unavailable'), contacted: true };
     case 'checkpoint':
       handleCheckpoint(repos, p, outcome, clock);
       return { halted: true, contacted: true };
     case 'error':
     default:
-      return { halted: handleError(repos, p, outcome, clock), contacted: true };
+      return { halted: await handleError(repos, p, outcome, clock), contacted: true };
   }
 }
 
@@ -611,7 +662,7 @@ async function attemptEngagement(
       case 'unavailable':
       case 'comments_disabled': // not reachable from a reaction; the union is shared
         return {
-          halted: skipEngagementCounted(repos, e, outcome, clock, 'reaction control unavailable'),
+          halted: await skipEngagementCounted(repos, e, outcome, clock, 'reaction control unavailable'),
           contacted: true,
         };
       case 'checkpoint':
@@ -620,7 +671,7 @@ async function attemptEngagement(
       case 'unverified': // comment-only in practice; treated as retryable here
       case 'error':
       default:
-        return { halted: failEngagement(repos, e, outcome, clock), contacted: true };
+        return { halted: await failEngagement(repos, e, outcome, clock, 'reaction'), contacted: true };
     }
 
     const retired = reconcileAfterReaction(repos, e, outcome);
@@ -673,7 +724,7 @@ async function attemptEngagement(
         return { halted: false, contacted: true };
       case 'unavailable':
         return {
-          halted: skipEngagementCounted(repos, e, outcome, clock, 'comment box unavailable'),
+          halted: await skipEngagementCounted(repos, e, outcome, clock, 'comment box unavailable'),
           contacted: true,
         };
       case 'checkpoint':
@@ -682,7 +733,7 @@ async function attemptEngagement(
       case 'already':
       case 'error':
       default:
-        return { halted: failEngagement(repos, e, outcome, clock), contacted: true };
+        return { halted: await failEngagement(repos, e, outcome, clock, 'comment'), contacted: true };
     }
   }
 
