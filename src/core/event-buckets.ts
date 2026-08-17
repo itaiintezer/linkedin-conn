@@ -147,6 +147,25 @@ export function typeaheadQueryFor(geoLabel: string): string {
   return geoLabel.split(',')[0]!.trim();
 }
 
+/**
+ * Does the page's checked set agree with the URNs we ticked?
+ *
+ * Compared as SETS of member URNs, never as counts: the picker serves duplicate rows for
+ * the same person (1,000 rows / 821 distinct people in the 2026-08-14 captures), so any
+ * row- or node-count is off by the duplication rate and a count match would be luck.
+ * Duplicates in `actual` collapse — they are normal page behaviour, not a mismatch.
+ */
+export function selectionDiff(
+  expected: readonly string[], actual: readonly string[],
+): { missing: string[]; extra: string[] } {
+  const want = new Set(expected);
+  const have = new Set(actual);
+  return {
+    missing: [...want].filter((u) => !have.has(u)),
+    extra: [...have].filter((u) => !want.has(u)),
+  };
+}
+
 export interface BuildBucketsOptions {
   /**
    * Roster counts per bucket key id — how many connections LinkedIn will list. Only

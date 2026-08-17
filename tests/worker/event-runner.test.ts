@@ -42,6 +42,14 @@ test('attends before inviting, because the Invite menu item does not exist other
   expect(driver.invited).toEqual(['ACoAAkeren']);
 });
 
+test('every bucket request carries the event URL, the driver\'s hard reset', async () => {
+  const ev = campaign([conn('keren')]);
+  driver.eventRowsByGeo.set('Israel', ['ACoAAkeren']);
+  await runEventCampaign(repos, driver, ev, { clock: () => NOW });
+  expect(driver.bucketCalls.length).toBeGreaterThan(0);
+  for (const call of driver.bucketCalls) expect(call.eventUrl).toBe(EVENT);
+});
+
 test('does not re-attend when already attending', async () => {
   driver.eventInfo = { title: 'Fake', startsAtText: null, attending: true, canAttend: false };
   const ev = campaign([conn('keren')]);

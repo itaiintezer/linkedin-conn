@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  bucketKeyFor, buildBuckets, displayLabelFor, geoCandidatesFor, keyId, typeaheadQueryFor,
+  bucketKeyFor, buildBuckets, displayLabelFor, geoCandidatesFor, keyId, selectionDiff,
+  typeaheadQueryFor,
   type LocatedRow,
 } from '../../src/core/event-buckets.js';
 
@@ -65,6 +66,28 @@ describe('typeaheadQueryFor', () => {
   it('types only the leading segment, which is safer for typeahead latency', () => {
     expect(typeaheadQueryFor('California, United States')).toBe('California');
     expect(typeaheadQueryFor('Israel')).toBe('Israel');
+  });
+});
+
+describe('selectionDiff', () => {
+  it('agrees when the page shows exactly the ticked people', () => {
+    expect(selectionDiff(['ACoAAa', 'ACoAAb'], ['ACoAAb', 'ACoAAa']))
+      .toEqual({ missing: [], extra: [] });
+  });
+
+  it('collapses duplicate page rows — the picker serves the same person twice', () => {
+    expect(selectionDiff(['ACoAAa', 'ACoAAb'], ['ACoAAa', 'ACoAAa', 'ACoAAb']))
+      .toEqual({ missing: [], extra: [] });
+  });
+
+  it('names who is missing and who is extra', () => {
+    expect(selectionDiff(['ACoAAa', 'ACoAAb'], ['ACoAAb', 'ACoAAc']))
+      .toEqual({ missing: ['ACoAAa'], extra: ['ACoAAc'] });
+  });
+
+  it('an empty page selection is all-missing, not a crash', () => {
+    expect(selectionDiff(['ACoAAa'], [])).toEqual({ missing: ['ACoAAa'], extra: [] });
+    expect(selectionDiff([], [])).toEqual({ missing: [], extra: [] });
   });
 });
 
