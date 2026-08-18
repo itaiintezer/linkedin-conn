@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 import { readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { DATA_DIR, INCIDENTS_DIR, ROOT } from '../config.js';
 import { isPending, newRequest, readControl, summarizeControl, writeControl } from '../../scripts/control-file.mjs';
-import { DRAIN_TIMEOUT_MS, EXIT_RESTART, EXIT_UPDATE, drainBrowserLock } from '../core/lifecycle.js';
+import {
+  DRAIN_TIMEOUT_MS, EXIT_RESTART, EXIT_UPDATE, RESTART_PAUSE_REASON, UPDATE_PAUSE_REASON,
+  drainBrowserLock,
+} from '../core/lifecycle.js';
 import { checkForUpdates } from '../core/update-check.js';
 import { listIncidents } from '../browser/evidence.js';
 import type { Repos } from '../db/repositories.js';
@@ -1464,11 +1467,16 @@ export function buildServer(
     }
 
     // Paused first, so that if anything below goes wrong the engines are already quiet rather
-    // than mid-send. Resume happens in the normal way after the restart.
-    repos.settings.update({
-      paused: 1,
-      pause_reason: action === 'update' ? 'Updating The Machine' : 'Restarting The Machine',
-    });
+    // than mid-send. This pause is the handover's, not the operator's: boot recognises the
+    // reason string and lifts it (clearLifecyclePauseOnBoot), so the machine comes back
+    // sending. An already-paused machine keeps its own reason — overwriting it would make
+    // boot "resume" a pause the operator (or the weekly limit) actually meant.
+    if (repos.settings.get().paused !== 1) {
+      repos.settings.update({
+        paused: 1,
+        pause_reason: action === 'update' ? UPDATE_PAUSE_REASON : RESTART_PAUSE_REASON,
+      });
+    }
     const requestedAt = new Date().toISOString();
     writeControl(dataDir, newRequest(action, requestedAt));
     logger.info('api', `${action} requested`);

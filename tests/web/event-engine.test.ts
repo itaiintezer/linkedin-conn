@@ -171,6 +171,27 @@ test('an armed run leads the queue, listed by location rather than by person', a
   expect(group.querySelector('.qg-foot')!.textContent).toBe('6 locations roll into a later run.');
 });
 
+test('an event campaign starts collapsed and its chevron expands it, like a cohort', async () => {
+  localStorage.clear(); // expansion persists per id — a previous test must not pre-expand this one
+  stubFetchRoutes({ '/api/queue/grouped': { body: queue() } });
+  await app.refreshQueue();
+  await flush();
+
+  const group = byId('queueGroups').querySelector('.qg-event')!;
+  expect(group.classList.contains('is-collapsed')).toBe(true);
+  const chevron = group.querySelector<HTMLButtonElement>('.qg-chevron')!;
+  expect(chevron.getAttribute('aria-expanded')).toBe('false');
+
+  chevron.click();
+  expect(group.classList.contains('is-collapsed')).toBe(false);
+  expect(chevron.getAttribute('aria-expanded')).toBe('true');
+  // The choice survives a re-render (the dashboard redraws the queue every 15s).
+  await app.refreshQueue();
+  await flush();
+  expect(byId('queueGroups').querySelector('.qg-event')!.classList.contains('is-collapsed')).toBe(false);
+  localStorage.clear();
+});
+
 test('an event run cannot be reordered or dropped from the queue', async () => {
   // Its place in the day belongs to the planner, and dropping a location is only safe
   // beside the full ladder on the Events tab.

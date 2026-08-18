@@ -590,7 +590,7 @@ time budget gates *starting* another bucket — a bucket in flight always finish
 worst-case overrun is one bucket.
 
 ### Settings
-`events_per_day`, `event_invite_cap` (lifetime per event, default 500),
+`events_per_day`, `event_invite_cap` (lifetime per event, default 1000),
 `event_bucket_ceiling` (locations per run, default 10), `event_run_budget_minutes`,
 `event_shard_threshold` (roster size above which a bucket is sub-sharded, default 900).
 
