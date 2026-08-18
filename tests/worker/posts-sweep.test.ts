@@ -337,6 +337,97 @@ test('two consecutive fully-failed passes latch run_failed, so failed runs stop 
   expect(repos.appState.get().posts_halt_reason).toBe('run_failed');
 });
 
+/* ---------- offline passes and the run_failed latch ----------
+ * Between 2026-08-07 and 2026-08-16 every run_failed halt in the production log was this
+ * machine's own dead network (getaddrinfo ENOTFOUND api.apify.com after sleep, a client-side
+ * timeout on a half-dead stack). A start POST that never reached Apify billed NOTHING, so
+ * those failures are exempt from a latch whose whole purpose is billing containment. */
+
+const offlineErr = () => new ApifyRequestError(
+  'Apify run start transport failure at /v2/acts/x/runs: fetch failed (getaddrinfo ENOTFOUND api.apify.com)',
+  undefined, true, true,
+);
+const ambiguousErr = () => new ApifyRequestError(
+  'Apify run start timed out client-side after 60000ms (path /v2/acts/x/runs)',
+  undefined, true, true,
+);
+/** For paths that must classify WITHOUT consulting connectivity. */
+const probeMustNotRun = async (): Promise<boolean> => { throw new Error('the probe must not be consulted here'); };
+
+test('an offline machine never latches run_failed, however many passes in a row it fails', async () => {
+  const a = repos.trackedProfiles.add(URL_A, null, 'urls');
+
+  for (let pass = 0; pass < 3; pass++) {
+    const res = await runPostsSweep(repos, {
+      client: fakeClient(() => [], offlineErr), now: NOW, maxPosts: 3, batchSize: 200,
+      // A definitive offline code (ENOTFOUND) classifies on its own — the probe is for
+      // ambiguous shapes only, and consulting it here would make the definitive path flaky.
+      probe: probeMustNotRun,
+    });
+    expect(res.clean).toBe(false);          // the slot is not stamped, so the next tick retries
+    expect(res.offlineFailures).toBe(1);
+    expect(repos.appState.get().posts_halted).toBe(0);
+  }
+  // No sweep error is written either: an offline pass must not masquerade as "the previous
+  // failed pass" once the machine is back online and a real failure happens next.
+  expect(repos.trackedProfiles.findById(a.id)!.last_sweep_error).toBeNull();
+});
+
+test('an ambiguous network failure asks the probe: offline forgives, online counts', async () => {
+  repos.trackedProfiles.add(URL_A, null, 'urls');
+
+  // Offline at failure time: forgiven, twice over, no latch.
+  for (let pass = 0; pass < 2; pass++) {
+    await runPostsSweep(repos, {
+      client: fakeClient(() => [], ambiguousErr), now: NOW, maxPosts: 3, batchSize: 200,
+      probe: async () => false,
+    });
+  }
+  expect(repos.appState.get().posts_halted).toBe(0);
+
+  // The same failure shape on a WORKING network is real evidence about Apify — two such
+  // passes latch exactly as before this exemption existed.
+  await runPostsSweep(repos, {
+    client: fakeClient(() => [], ambiguousErr), now: NOW, maxPosts: 3, batchSize: 200,
+    probe: async () => true,
+  });
+  expect(repos.appState.get().posts_halted).toBe(0);
+  await runPostsSweep(repos, {
+    client: fakeClient(() => [], ambiguousErr), now: NOW, maxPosts: 3, batchSize: 200,
+    probe: async () => true,
+  });
+  expect(repos.appState.get().posts_halted).toBe(1);
+  expect(repos.appState.get().posts_halt_reason).toBe('run_failed');
+});
+
+test('an offline pass cannot COMPLETE a latch that a genuinely failed pass started', async () => {
+  repos.trackedProfiles.add(URL_A, null, 'urls');
+
+  // Pass 1: a real, billed failure — every profile now carries a sweep error.
+  await runPostsSweep(repos, {
+    client: fakeClient(() => [], () => new Error('run ended FAILED')),
+    now: NOW, maxPosts: 3, batchSize: 200,
+  });
+  expect(repos.appState.get().posts_halted).toBe(0);
+
+  // Pass 2: the laptop is offline. All three legacy latch conditions hold (runs attempted,
+  // nothing swept, everyone previously errored) — this is exactly the pass that used to halt.
+  await runPostsSweep(repos, {
+    client: fakeClient(() => [], offlineErr), now: NOW, maxPosts: 3, batchSize: 200,
+    probe: probeMustNotRun,
+  });
+  expect(repos.appState.get().posts_halted).toBe(0);
+
+  // Pass 3: back online and Apify really is failing — the latch still works, because the
+  // offline pass neither counted nor erased pass 1's evidence.
+  await runPostsSweep(repos, {
+    client: fakeClient(() => [], () => new Error('run ended FAILED')),
+    now: NOW, maxPosts: 3, batchSize: 200,
+  });
+  expect(repos.appState.get().posts_halted).toBe(1);
+  expect(repos.appState.get().posts_halt_reason).toBe('run_failed');
+});
+
 test('a pass that partly succeeds never latches run_failed', async () => {
   const a = repos.trackedProfiles.add(URL_A, null, 'urls');
   const b = repos.trackedProfiles.add(URL_B, null, 'urls');
