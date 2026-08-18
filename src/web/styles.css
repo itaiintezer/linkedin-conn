@@ -291,6 +291,18 @@ body > *:not(.atmosphere) { position: relative; z-index: 1; }
   width: 7px; height: 7px; border-radius: 50%; flex: none;
   background: var(--brand); box-shadow: 0 0 0 3px var(--brand-glow);
 }
+/* The pill's own install button — solid where the pill is tinted, so the pair reads as
+   "notice + action" rather than two competing badges. */
+.update-pill-go {
+  padding: 5px 13px; margin-right: 4px;
+  font: inherit; font-size: 12.5px; font-weight: 600; letter-spacing: 0.1px;
+  color: #fff; background: var(--brand);
+  border: 1px solid var(--brand-700); border-radius: 999px;
+  cursor: pointer; transition: background .15s, transform .15s;
+}
+.update-pill-go:hover { background: var(--brand-700); transform: translateY(-1px); }
+.update-pill-go:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.update-pill-go:disabled { opacity: .55; cursor: default; transform: none; }
 
 .maint-block { margin-top: 4px; }
 .maint-note { margin: 0; font-size: 14px; color: var(--ink-2); }
@@ -929,6 +941,9 @@ select:disabled { opacity: 1; } /* Safari/Chrome dim disabled selects on their o
 .btn:hover { border-color: #d8d3c6; box-shadow: var(--shadow); transform: translateY(-1px); }
 .btn:active { transform: translateY(0); box-shadow: var(--shadow-sm); }
 .btn:disabled { opacity: 0.55; cursor: default; transform: none; box-shadow: var(--shadow-sm); }
+/* A button with a small inline icon before its label (e.g. the selection bar's Copy URLs). */
+.btn-ico { display: inline-flex; align-items: center; gap: 7px; }
+.btn-ico svg { flex: none; }
 
 .btn-green {
   background: linear-gradient(180deg, var(--brand) 0%, var(--brand-600) 100%);

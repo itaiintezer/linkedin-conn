@@ -83,6 +83,27 @@ function toast(node, msg, isError = false) {
   node.textContent = msg;
 }
 
+/**
+ * Copy text to the clipboard, preferring the async Clipboard API (always available on the
+ * localhost origin this dashboard is served from). The execCommand path is a fallback for an
+ * embedded/older browser; it throws rather than pretending, so the caller's toast stays honest.
+ */
+async function copyToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = el('textarea', { style: 'position:fixed;opacity:0', 'aria-hidden': 'true' });
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    if (!document.execCommand('copy')) throw new Error('the browser refused clipboard access');
+  } finally {
+    ta.remove();
+  }
+}
+
 /* ---------- tab navigation ----------
  * The dashboard has no tab of its own — the brand lockup is its entry point — so every
  * button in the tab bar is a departure from it, and showing the dashboard means leaving
@@ -2448,6 +2469,20 @@ function initSearch() {
   $('#selectionAdd')?.addEventListener('click', () => { void openCampaignDialog(); });
   $('#selectionEvent')?.addEventListener('click', () => { void openEventDialog(); });
 
+  $('#selectionCopy')?.addEventListener('click', async () => {
+    // The same Set the other three buttons read, newline-joined — the shape /api/lists and
+    // every "paste URLs" box in this app already accept, so a copied selection round-trips.
+    const urls = [...selected];
+    if (urls.length === 0) return;
+    const result = $('#selectionResult');
+    try {
+      await copyToClipboard(urls.join('\n'));
+      toast(result, `Copied ${plural(urls.length, 'profile URL', 'profile URLs')} to the clipboard.`, false);
+    } catch (err) {
+      toast(result, `Could not copy: ${err.message}`, true);
+    }
+  });
+
   $('#selectionTrack')?.addEventListener('click', async (ev) => {
     // `selected` is the module-level Set the other two buttons already read (app.js:1879,
     // spread the same way in submitEventInvite). No second selection store.
@@ -3028,6 +3063,30 @@ function evAddPeopleForm(eventId) {
   );
 }
 
+/** The card's one-line summary. Shared with evLoadList so the closed card and the open detail
+ *  can never drift apart in wording. */
+function evCardSubText(counts, startsAt) {
+  const invited = counts.invited || 0;
+  const pending = counts.pending || 0;
+  return `${invited} invited · ${pending} to go${startsAt ? ` · starts ${fmtTime(startsAt)}` : ''}`;
+}
+
+/**
+ * Keep the (short) card honest whenever its detail refreshes. The detail polls every 4s while
+ * a run is live, but the card list is only rebuilt on load and after actions — so without this
+ * the card kept saying "0 invited" while the numbers underneath it climbed, until a full page
+ * refresh. Updated in place from the SAME payload the detail just rendered, so the two can
+ * never disagree.
+ */
+function evSyncCard(detail) {
+  const card = $(`#evList .ev-card[data-id="${detail.event.id}"]`);
+  if (!card) return;
+  const sub = card.querySelector('.ev-card-sub');
+  if (sub) sub.textContent = evCardSubText(detail.counts || {}, detail.event.starts_at);
+  const right = card.querySelector('.ev-card-right');
+  if (right) right.replaceChildren(evBadge(detail.event.status));
+}
+
 function evRenderDetail(detail) {
   const host = $('#evDetail');
   host.innerHTML = '';
@@ -3162,6 +3221,9 @@ function evRenderDetail(detail) {
     host.appendChild(wrap);
   }
 
+  // The closed card above carries the same numbers — refresh it from this same payload.
+  evSyncCard(detail);
+
   // Poll only while something is actually moving.
   clearTimeout(evPollTimer);
   if (liveRun || event.status === 'running') {
@@ -3212,12 +3274,9 @@ async function evLoadList() {
   list.innerHTML = '';
   $('#evEmpty').hidden = events.length > 0;
   for (const e of events) {
-    const counts = e.counts || {};
-    const invited = counts.invited || 0;
-    const pending = counts.pending || 0;
     const card = el('div', { class: 'ev-card', 'data-id': String(e.id) },
       el('div', { class: 'ev-card-title', text: e.title || e.event_url.replace(/^https?:\/\/(www\.)?/, '') }),
-      el('div', { class: 'ev-card-sub', text: `${invited} invited · ${pending} to go${e.starts_at ? ` · starts ${fmtTime(e.starts_at)}` : ''}` }),
+      el('div', { class: 'ev-card-sub', text: evCardSubText(e.counts || {}, e.starts_at) }),
       el('div', { class: 'ev-card-right' }, evBadge(e.status)),
     );
     card.addEventListener('click', () => evOpen(e.id));
@@ -3316,6 +3375,9 @@ function renderAvailability(a) {
   const n = a && Number(a.available) > 0 ? Number(a.available) : 0;
 
   pill.hidden = n === 0;
+  // The install affordance travels with the pill: an operator should never have to dig out
+  // Settings → Maintenance just to act on a notification the top bar already showed them.
+  $('#updatePillGo').hidden = n === 0;
   if (n > 0) $('#updatePillText').textContent = n === 1 ? '1 update available' : `${n} updates available`;
 
   list.hidden = n === 0;
@@ -3355,6 +3417,7 @@ async function awaitComeback(action, requestedAt) {
   maintBanner('busy', `${verb} The Machine…`, 'Waiting for anything mid-send to finish first.');
   $('#updateBtn').disabled = true;
   $('#restartBtn').disabled = true;
+  $('#updatePillGo').disabled = true;
 
   try {
     for (;;) {
@@ -3393,6 +3456,7 @@ async function awaitComeback(action, requestedAt) {
     maintWaiting = false;
     $('#updateBtn').disabled = false;
     $('#restartBtn').disabled = false;
+    $('#updatePillGo').disabled = false;
   }
 }
 
@@ -3414,9 +3478,10 @@ async function refreshMaintStatus() {
     return;
   }
   if (!status.supervised) {
-    // Started by hand, so neither button can work. Say why rather than let them fail.
+    // Started by hand, so none of these can work. Say why rather than let them fail.
     $('#restartBtn').disabled = true;
     $('#updateBtn').disabled = true;
+    $('#updatePillGo').disabled = true;
     $('#maintVersionLine').textContent =
       'The Machine was started by hand this time, so it cannot restart itself from here.';
     return;
@@ -3435,6 +3500,11 @@ function initMaintenance() {
     }
   };
 
+  // One wording for both install buttons (Settings and the top-bar pill), so the promise made
+  // in the confirm dialog cannot drift between the two places it is made.
+  const installConfirmText = (n) =>
+    `Install ${n} new change${n === 1 ? '' : 's'}? The Machine will close and start again — a minute or two. Your queue and contacts are not affected.`;
+
   $('#restartBtn').addEventListener('click', () => {
     void start('restart', 'Restart The Machine? It will be unavailable for a minute or two. Anything mid-send finishes first.');
   });
@@ -3450,7 +3520,16 @@ function initMaintenance() {
       return;
     }
     const n = Number(updateAvailability.available);
-    void start('update', `Install ${n} new change${n === 1 ? '' : 's'}? The Machine will close and start again — a minute or two. Your queue and contacts are not affected.`);
+    void start('update', installConfirmText(n));
+  });
+
+  // The pill's own Update button: act from the notification itself. Only ever visible when
+  // renderAvailability counted something to install, and the same confirm dialog still stands
+  // between the click and a restart.
+  $('#updatePillGo').addEventListener('click', () => {
+    const n = updateAvailability ? Number(updateAvailability.available) : 0;
+    if (n === 0) return;
+    void start('update', installConfirmText(n));
   });
 
   $('#updatePill').addEventListener('click', () => {

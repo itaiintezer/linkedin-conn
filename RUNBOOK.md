@@ -453,16 +453,21 @@ the log if it's unclear), then press **Sweep now**. That button does two things 
 runs a check immediately, and it's how you tell The Machine "I've fixed it, try again" —
 pressing it clears the halt regardless of whether the next check succeeds.
 
+Being offline doesn't count. If the laptop was asleep or off the internet when a check came
+due, that check simply waits — it isn't treated as a failure and won't trip this banner. So if
+the banner *does* appear, it's about the checks themselves, not your connection.
+
 ## 13. Getting a newer version
 No terminal. It's a button.
 
 **How you'll know.** When there's something new, a green **"N updates available"** pill appears
-in the top-right of the dashboard, next to the LinkedIn status light. If there's no pill,
-there's nothing to install. The Machine checks quietly on its own.
+in the top-right of the dashboard, next to the LinkedIn status light, with an **Update** button
+right beside it. If there's no pill, there's nothing to install. The Machine checks quietly on
+its own.
 
-1. Click the pill (or go to **Settings → Maintenance**).
-2. You'll see a list of what's new. Click **Install N updates**.
-3. Confirm. That's it — walk away.
+1. Click **Update** right there in the top bar, then confirm. That's it — walk away.
+2. Or, if you'd like to see what's new first: click the pill itself to open
+   **Settings → Maintenance**, read the list of changes, and click **Install N updates** there.
 
 The Machine closes itself, installs the update and starts itself again. It takes a minute or
 two. The page will say **"Updating The Machine…"** and then tell you when it's done. **The page

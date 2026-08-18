@@ -79,12 +79,17 @@
 
     <div class="login-status" id="loginStatus" aria-live="polite">
       <!-- Silent unless there is genuinely something to install. A badge that is always there
-           is a badge nobody reads, and a standing invitation to restart for no reason. -->
+           is a badge nobody reads, and a standing invitation to restart for no reason.
+           Two controls on purpose: the pill says WHAT (and routes to Settings for the change
+           list), the Update button next to it acts — installing must not require finding the
+           Maintenance section first. -->
       <button class="update-pill" id="updatePill" type="button" hidden
-              title="A newer version is available — open Settings to install it">
+              title="A newer version is available — see what changed in Settings">
         <span class="update-pill-dot" aria-hidden="true"></span>
         <span id="updatePillText">Update available</span>
       </button>
+      <button class="update-pill-go" id="updatePillGo" type="button" hidden
+              title="Install now — The Machine restarts itself; your queue and contacts are not affected">Update</button>
       <span class="led" id="loginLed"></span>
       <span class="login-label" id="loginLabel">checking link…</span>
       <button class="btn btn-ghost" id="connectBtn" hidden>Connect LinkedIn</button>
@@ -717,6 +722,15 @@
         <span class="selection-count" id="selectionCount">0 selected</span>
         <div class="selection-actions">
           <button class="btn btn-ghost" id="selectionClear" type="button">Clear</button>
+          <!-- Ghost, like Track posts: copying sends nothing to anyone. -->
+          <button class="btn btn-ghost btn-ico" id="selectionCopy" type="button"
+                  title="Copy the selected profile URLs to the clipboard, one per line">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <rect x="9" y="9" width="12" height="12" rx="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+            Copy URLs
+          </button>
           <button class="btn btn-event" id="selectionEvent" type="button">Invite to event</button>
           <!-- Ghost, not green: tracking sends nothing to anyone, it only decides whose posts
                get scraped. The one committing action in this bar stays the green one. -->

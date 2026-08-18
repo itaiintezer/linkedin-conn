@@ -189,6 +189,28 @@ test('the tab exists and its panel is present', () => {
   expect(byId('tab-events')).not.toBeNull();
 });
 
+test('the closed card tracks the open detail\'s numbers, not the page load', async () => {
+  // The detail polls every 4s while a run is live; the card list is only rebuilt on load.
+  // Without the sync, the card said "0 invited" while the numbers underneath it climbed.
+  const list = [
+    { id: 1, title: 'NYC Forum', event_url: 'https://www.linkedin.com/events/1/', status: 'armed', counts: { invited: 0, pending: 40 }, starts_at: null },
+  ];
+  stubFetchRoutes({ '/api/events': { body: list } });
+  await app.evLoadList();
+  const card = byId('evList').querySelector('.ev-card') as HTMLElement;
+  expect(card.textContent).toContain('0 invited · 40 to go');
+
+  // A poll re-renders the detail with fresher numbers and a new status — the card follows,
+  // with no evLoadList in between.
+  app.evRenderDetail(detail({
+    // id spelled out: the helper's trailing `...o` replaces the whole merged event object.
+    event: { id: 1, status: 'running', starts_at: null },
+    counts: { invited: 15, pending: 25 },
+  }));
+  expect(card.textContent).toContain('15 invited · 25 to go');
+  expect(card.querySelector('.ev-card-right')?.textContent?.toLowerCase()).toContain('running');
+});
+
 test('opening a campaign marks its card, and does not report a failure that did not happen', async () => {
   // `$('.ev-card').forEach` — querySelector, not querySelectorAll — threw a TypeError on
   // every open. The catch turned it into "Could not load the campaign: …" over a campaign
