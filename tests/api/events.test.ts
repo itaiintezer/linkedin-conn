@@ -130,6 +130,32 @@ test('stop closes the campaign and releases its window', async () => {
   expect(stopped.json().reservation).toBeNull();
 });
 
+test('a failed campaign can be reopened as a draft and re-armed', async () => {
+  const created = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('keren')] })).json();
+  const id = created.event.id;
+  repos.eventCampaigns.close(id, 'failed', 'no Share control — not an event page, or no access',
+    '2026-08-18T13:27:56.447Z');
+
+  const reopened = await post(`/api/events/${id}/reopen`, {});
+  expect(reopened.statusCode).toBe(200);
+  expect(reopened.json().event.status).toBe('draft');
+  expect(reopened.json().event.close_reason).toBeNull();
+
+  const armed = await post(`/api/events/${id}/arm`, {});
+  expect(armed.statusCode).toBe(200);
+  expect(armed.json().event.status).toBe('armed');
+});
+
+test('reopen refuses a done campaign and 404s for an unknown one', async () => {
+  const created = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('keren')] })).json();
+  repos.eventCampaigns.close(created.event.id, 'done', 'everyone reachable was invited',
+    '2026-08-18T13:27:56.447Z');
+  const r = await post(`/api/events/${created.event.id}/reopen`, {});
+  expect(r.statusCode).toBe(409);
+  expect(r.json().error).toMatch(/done/);
+  expect((await post('/api/events/999/reopen', {})).statusCode).toBe(404);
+});
+
 test('run-now refuses a campaign that is not armed', async () => {
   const created = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('keren')] })).json();
   const r = await post(`/api/events/${created.event.id}/run-now`, {});

@@ -3079,6 +3079,14 @@ function evRenderDetail(detail) {
       class: 'btn btn-ghost', text: 'Stop', onclick: () => evAction(event.id, 'stop'),
     }));
   }
+  // A campaign killed by a page problem is not gone: reopen it as a draft, fix what
+  // failed, and arm it again. Only `done` is truly final.
+  if (event.status === 'failed' || event.status === 'stopped') {
+    actions.appendChild(el('button', {
+      class: 'btn btn-primary', text: 'Reopen as draft',
+      onclick: () => evAction(event.id, 'reopen'),
+    }));
+  }
 
   host.appendChild(el('div', { class: 'ev-detail-head' },
     el('div', {},
@@ -3176,7 +3184,7 @@ async function evOpen(id, quiet = false) {
 }
 
 async function evAction(id, action) {
-  const verb = { arm: 'Arm', 'run-now': 'Run', 'dry-run': 'Dry run', stop: 'Stop' }[action];
+  const verb = { arm: 'Arm', 'run-now': 'Run', 'dry-run': 'Dry run', stop: 'Stop', reopen: 'Reopen' }[action];
   // Arming and running are the two that can lead to real invitations going out.
   if ((action === 'arm' || action === 'run-now')
       && !confirm(`${verb} this campaign? Invitations sent to LinkedIn cannot be recalled.`)) return;

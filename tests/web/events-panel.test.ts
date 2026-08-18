@@ -110,6 +110,18 @@ test('the Add people form stays open across a re-render of the same draft', () =
     .toBe('https://www.linkedin.com/in/half-pasted');
 });
 
+test('a failed or stopped campaign offers Reopen as draft; open and done ones do not', () => {
+  const btns = () => Array.from(byId('evDetail').querySelectorAll('button')).map((b) => b.textContent);
+  app.evRenderDetail(detail({ event: { status: 'failed', close_reason: 'no Share control' } }));
+  expect(btns()).toContain('Reopen as draft');
+  app.evRenderDetail(detail({ event: { status: 'stopped' } }));
+  expect(btns()).toContain('Reopen as draft');
+  app.evRenderDetail(detail());
+  expect(btns()).not.toContain('Reopen as draft');
+  app.evRenderDetail(detail({ event: { status: 'done' } }));
+  expect(btns()).not.toContain('Reopen as draft');
+});
+
 test('a bucket can be dropped only while the plan is still a draft', () => {
   app.evRenderDetail(detail());
   expect(byId('evDetail').querySelectorAll('.rung-drop')).toHaveLength(1);

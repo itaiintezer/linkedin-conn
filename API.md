@@ -576,6 +576,12 @@ advance the cursor. Use it to see real reach before arming.
 Run immediately rather than waiting for the reserved window; or close the campaign and
 release its window.
 
+### POST /api/events/:id/reopen
+Failed/stopped → **draft**, so a campaign killed by a page problem can be re-armed once
+the cause is fixed. Invitees, buckets and the cursor are untouched — arming re-validates
+everything. `409` for a `done` campaign: that means everyone reachable was invited or the
+event already started, and neither is undone by reopening.
+
 ### Scheduling
 An armed campaign reserves `event_run_budget_minutes` (default 20) in the largest free gap
 of the working day, and the send planner routes invite/message batches around that window

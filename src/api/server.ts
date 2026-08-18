@@ -40,7 +40,7 @@ import { searchConnections } from '../core/connection-search.js';
 import { planAndAssignToday } from '../worker/scheduler-service.js';
 import {
   addEventInvitees, armEventCampaign, createEventCampaign, ensureEventReservation,
-  eventPipelineSummary, nextEventRun,
+  eventPipelineSummary, nextEventRun, reopenEventCampaign,
 } from '../worker/event-campaign.js';
 import { runEventCampaign } from '../worker/event-runner.js';
 import { defaultCohortName } from '../core/cohort-name.js';
@@ -688,6 +688,18 @@ export function buildServer(
     repos.eventCampaigns.close(id, 'stopped', 'stopped by the operator', new Date().toISOString());
     repos.reservations.clearFor('event_invite', id);
     defaultLog.info('api', 'event campaign stopped', { event: id });
+    return eventDetail(id);
+  });
+
+  /** Failed/stopped → draft, so a campaign killed by a page problem can be re-armed
+   *  once the cause is fixed, instead of being terminal. */
+  app.post('/api/events/:id/reopen', async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const r = reopenEventCampaign(repos, id);
+    if (!r.ok) {
+      return reply.code(r.error === 'no such event' ? 404 : 409).send({ error: r.error });
+    }
+    defaultLog.info('api', 'event campaign reopened', { event: id });
     return eventDetail(id);
   });
 
