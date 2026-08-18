@@ -1085,7 +1085,7 @@ failure.
 
 ```json
 { "runs": 1, "profilesSwept": 12, "postsAdded": 6, "postsRejected": 0, "unattributed": 0,
-  "unusable": 2, "reshares": 9, "pruned": 3, "clean": true }
+  "unusable": 2, "reshares": 9, "pruned": 3, "offlineFailures": 0, "clean": true }
 ```
 
 Three separate counts for three unrelated reasons an item didn't become a post, and only the
@@ -1101,6 +1101,11 @@ last is a fault:
 
 All three are non-fatal; `clean: false` is what actually means "something needs attention" —
 check the log.
+
+`offlineFailures` counts batches that failed because **this machine** was offline (a laptop
+asleep or off the network — DNS dead, no route). Those runs never reached Apify, billed
+nothing, and are exempt from the `run_failed` halt: the pass stays un-clean so the next tick
+simply retries once the machine is back online.
 
 ```
 curl -s -X POST http://localhost:4400/api/posts/sweep-now

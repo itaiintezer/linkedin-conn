@@ -140,10 +140,58 @@ function isRetryableHttpStatus(status: number): boolean {
  * the inevitable, and on a poll would delay the sweep worker's auth-failure latch for nothing).
  */
 export class ApifyRequestError extends Error {
-  constructor(message: string, public readonly status: number | undefined, public readonly retryable: boolean) {
+  /**
+   * `transport` is true only when NO HTTP response arrived at all — the fetch itself threw
+   * (DNS, connection, TLS) or our own client-side timeout fired. It is set where the error is
+   * constructed, from facts about the failure, never inferred from message text: an HTTP-level
+   * failure's message embeds up to MAX_ERROR_BODY_CHARS of untrusted upstream body, and a
+   * gateway page that merely QUOTES "ENOTFOUND" must not be able to impersonate an offline
+   * laptop. See isApifyOfflineFailure for who reads it and why.
+   */
+  constructor(
+    message: string,
+    public readonly status: number | undefined,
+    public readonly retryable: boolean,
+    public readonly transport: boolean = false,
+  ) {
     super(message);
     this.name = 'ApifyRequestError';
   }
+}
+
+/**
+ * Node error codes that can ONLY mean this machine cannot reach the network — DNS dead or
+ * suspended (the closed-laptop signature), no route, or nothing listening where the OS looked.
+ * A live-and-misbehaving Apify cannot produce any of these; they mean the request never got
+ * anywhere near being billed. Deliberately NOT included: ECONNRESET / ETIMEDOUT / EPIPE, which
+ * a working network can also produce mid-exchange — those stay ambiguous and need the
+ * connectivity probe to disambiguate (isApifyAmbiguousNetworkFailure).
+ *
+ * Matched against the TRANSPORT error's message only (see the `transport` gate), which is
+ * Node/undici's own text plus the cause we folded in — never an upstream response body.
+ */
+const OFFLINE_CODE_RE = /\b(ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ENETDOWN|ECONNREFUSED)\b/;
+
+/**
+ * Did this failure definitively happen on OUR side of the wire — an offline machine, not a
+ * broken Apify? Same duck-typing rationale as isApifyAuthFailure: holds across a module
+ * boundary and for any caller modelling the same shape. The `transport === true` gate is the
+ * load-bearing part — it structurally excludes every message that could carry upstream body
+ * text, so this is a regex over OUR OWN transport diagnostics, not over untrusted input.
+ */
+export function isApifyOfflineFailure(err: unknown): boolean {
+  const e = err as { transport?: unknown; message?: unknown } | null | undefined;
+  return e?.transport === true && typeof e?.message === 'string' && OFFLINE_CODE_RE.test(e.message);
+}
+
+/**
+ * Network-shaped but not definitive: no HTTP response arrived, yet the cause (a reset, a
+ * client-side timeout) is one a working network could also produce. The caller should probe
+ * connectivity to decide — offline forgives, online counts as real evidence.
+ */
+export function isApifyAmbiguousNetworkFailure(err: unknown): boolean {
+  const e = err as { transport?: unknown } | null | undefined;
+  return e?.transport === true && !isApifyOfflineFailure(err);
 }
 
 /**
@@ -423,26 +471,31 @@ export class HttpApifyPostsClient implements ApifyPostsClient {
     try {
       res = await this.fetchImpl(url, { ...init, signal: controller.signal });
     } catch (e) {
-      const err = e as (Error & { cause?: { message?: string } });
+      const err = e as (Error & { cause?: { message?: string; code?: string } });
       if (err?.name === 'AbortError') {
         // Our own client-side timeout: the server may just be slow, not down, so worth
-        // another poll/attempt.
+        // another poll/attempt. `transport: true` because no response arrived — but the
+        // message carries no error code, so it classifies as AMBIGUOUS (a dead network and a
+        // slow Apify look identical from here) and the sweep's probe decides which it was.
         throw new ApifyRequestError(
           `Apify ${label} timed out client-side after ${this.timeoutMs}ms (path ${path})`,
-          undefined, true,
+          undefined, true, true,
         );
       }
       // A raw transport failure (DNS, connection refused/reset, TLS) is an error we did not
       // construct. Node/undici's own message and cause were verified token-free for DNS
       // failure and abort (they report reason/host, never a full request URL) — redact()ed
       // anyway as defense in depth against a fetch polyfill or proxy that behaves differently.
-      const cause = err?.cause?.message;
+      // Some transport causes (undici's AggregateError for a refused connection) carry their
+      // error code on `code` with an empty `message` — fold whichever says something, so the
+      // offline classifier above has the code to look at.
+      const cause = [err?.cause?.code, err?.cause?.message].filter(Boolean).join(' ');
       throw new ApifyRequestError(
         this.redact(
           `Apify ${label} transport failure at ${path}: ${err?.message ?? String(e)}`
           + (cause ? ` (${cause})` : ''),
         ),
-        undefined, true,
+        undefined, true, true,
       );
     } finally {
       clearTimeout(timer);

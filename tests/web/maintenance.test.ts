@@ -280,6 +280,55 @@ test('Restart asks for confirmation first, and does nothing if declined', async 
   expect(posts).toEqual([]);
 });
 
+test('the pill\'s Update button shows and hides with the pill itself', () => {
+  app.renderAvailability({ available: 2, changes: ['a', 'b'] });
+  expect(byId('updatePillGo').hidden).toBe(false);
+
+  app.renderAvailability({ available: 0, changes: [] });
+  expect(byId('updatePillGo').hidden).toBe(true);
+});
+
+test('the pill\'s Update button installs from the top bar — no trip to Settings required', async () => {
+  const posts: string[] = [];
+  globalThis.fetch = (async (path: string, opts?: { method?: string }) => {
+    const p = String(path);
+    if (opts?.method === 'POST') {
+      posts.push(p);
+      return { ok: true, json: async () => ({ ok: true, action: 'update', requested_at: 'REQ-11' }) };
+    }
+    if (p.includes('/api/update/check')) return { ok: true, json: async () => ({ available: 2, changes: ['a', 'b'] }) };
+    if (p.includes('/api/update/status')) {
+      return { ok: true, json: async () => ({ state: 'done', message: 'Updated — 2 new changes installed.', action: 'update', requested_at: 'REQ-11', changes: [], supervised: true }) };
+    }
+    throw new TypeError('not stubbed');
+  }) as unknown as typeof fetch;
+
+  app.initMaintenance();
+  await vi.waitFor(() => expect(byId('updatePillGo').hidden).toBe(false));
+  byId('updatePillGo').click();
+
+  await vi.waitFor(() => expect(posts).toContain('/api/update'));
+  await vi.waitFor(() => expect(byId('maintBanner').className).toContain('is-done'), { timeout: 5000 });
+});
+
+test('the pill\'s Update button still asks for confirmation, and declining does nothing', async () => {
+  const posts: string[] = [];
+  globalThis.confirm = () => false;
+  globalThis.fetch = (async (path: string, opts?: { method?: string }) => {
+    if (opts?.method === 'POST') posts.push(String(path));
+    if (String(path).includes('/api/update/check')) return { ok: true, json: async () => ({ available: 1, changes: ['a'] }) };
+    if (String(path).includes('/api/update/status')) return { ok: true, json: async () => ({ state: 'idle', supervised: true, changes: [] }) };
+    throw new TypeError('not stubbed');
+  }) as unknown as typeof fetch;
+
+  app.initMaintenance();
+  await vi.waitFor(() => expect(byId('updatePillGo').hidden).toBe(false));
+  byId('updatePillGo').click();
+  await Promise.resolve();
+
+  expect(posts).toEqual([]);
+});
+
 test('the pill routes to Settings, where the button actually is', async () => {
   globalThis.fetch = (async (path: string) => {
     if (String(path).includes('/api/update/check')) return { ok: true, json: async () => ({ available: 2, changes: ['a', 'b'] }) };

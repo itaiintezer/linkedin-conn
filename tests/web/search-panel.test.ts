@@ -167,3 +167,51 @@ test('a search failure surfaces rather than silently leaving stale rows', async 
   await submit();
   expect(byId('searchMeta').textContent).toContain('database is locked');
 });
+
+/* ---------- Copy URLs ---------- */
+
+test('Copy URLs puts the selected profile URLs on the clipboard, newline-joined', async () => {
+  const written: string[] = [];
+  Object.defineProperty(globalThis.navigator, 'clipboard', {
+    value: { writeText: async (t: string) => { written.push(t); } },
+    configurable: true,
+  });
+
+  const sel = app.searchSelection();
+  sel.add('https://www.linkedin.com/in/ada');
+  sel.add('https://www.linkedin.com/in/hopper');
+  byId('selectionCopy').click();
+  await flush();
+
+  // One URL per line — the shape every "paste URLs" box in the app accepts back.
+  expect(written).toEqual(['https://www.linkedin.com/in/ada\nhttps://www.linkedin.com/in/hopper']);
+  expect(byId('selectionResult').textContent).toContain('Copied 2 profile URLs');
+  // Copying must not disturb the selection: it is a read, not an action on it.
+  expect(sel.size).toBe(2);
+});
+
+test('Copy URLs with nothing selected copies nothing and stays silent', async () => {
+  const written: string[] = [];
+  Object.defineProperty(globalThis.navigator, 'clipboard', {
+    value: { writeText: async (t: string) => { written.push(t); } },
+    configurable: true,
+  });
+
+  byId('selectionCopy').click();
+  await flush();
+
+  expect(written).toEqual([]);
+});
+
+test('a clipboard refusal is reported, not swallowed', async () => {
+  Object.defineProperty(globalThis.navigator, 'clipboard', {
+    value: { writeText: async () => { throw new Error('Document is not focused.'); } },
+    configurable: true,
+  });
+
+  app.searchSelection().add('https://www.linkedin.com/in/ada');
+  byId('selectionCopy').click();
+  await flush();
+
+  expect(byId('selectionResult').textContent).toContain('Could not copy');
+});

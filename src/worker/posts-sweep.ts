@@ -8,7 +8,10 @@
  */
 import type { Repos } from '../db/repositories.js';
 import type { ApifyPostsClient, PostedWindow } from '../core/apify-posts-client.js';
-import { isApifyAuthFailure } from '../core/apify-posts-client.js';
+import {
+  isApifyAuthFailure, isApifyOfflineFailure, isApifyAmbiguousNetworkFailure,
+} from '../core/apify-posts-client.js';
+import { probeOnline } from '../core/offline.js';
 import { attribute } from '../core/apify-posts-extract.js';
 import { normalizeProfileUrl } from '../core/url.js';
 import { log } from '../core/log.js';
@@ -31,6 +34,10 @@ export interface PostsSweepOptions {
    *  better than settings should pass it; production leaves it unset so an operator's edit
    *  takes effect on the next pass. */
   retentionDays?: number;
+  /** Connectivity check used to disambiguate a network-shaped run failure — offline forgives,
+   *  online counts. Injected by tests; production leaves it unset and gets a DNS lookup of
+   *  api.apify.com, the host the failed request actually needed. */
+  probe?: () => Promise<boolean>;
 }
 
 export interface PostsSweepResult {
@@ -55,6 +62,13 @@ export interface PostsSweepResult {
    *  the original author. See `isBareReshare`. */
   reshares: number;
   pruned: number;
+  /** Batches that failed because THIS MACHINE was offline (DNS dead, no route — the closed-
+   *  laptop signature), not because Apify failed a run. Counted apart because these are
+   *  exempt from the run_failed halt: the start POST never reached Apify, so nothing was
+   *  billed and there is nothing for that latch to contain — the failure heals itself the
+   *  moment the machine is back online. Between 2026-08-07 and 2026-08-16 every run_failed
+   *  halt in the log was one of these. */
+  offlineFailures: number;
   /** True when every run succeeded. Only a clean pass stamps posts_swept_at. */
   clean: boolean;
 }
@@ -140,8 +154,9 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
   const nowIso = now.toISOString();
   const result: PostsSweepResult = {
     runs: 0, profilesSwept: 0, postsAdded: 0, postsRejected: 0, unattributed: 0,
-    unusable: 0, reshares: 0, pruned: 0, clean: true,
+    unusable: 0, reshares: 0, pruned: 0, offlineFailures: 0, clean: true,
   };
+  const probe = opts.probe ?? (() => probeOnline(3000, 'api.apify.com'));
 
   // `batchSize` comes from operator-editable settings, and a settings write is not
   // type-checked — the same hazard PostRepo.prune refuses `days` for. Validated HERE, once, so
@@ -282,11 +297,9 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
         } catch (e) {
           const error = e instanceof Error ? e.message : String(e);
           result.clean = false;
-          // Only THIS batch's profiles are marked, so the next pass retries them without
-          // re-billing everyone else.
-          for (const m of batch) repos.trackedProfiles.markSweepError(m.id, error);
-          log.error('posts', 'sweep batch failed', { count: batch.length, window: label, error });
           if (isApifyAuthFailure(e)) {
+            for (const m of batch) repos.trackedProfiles.markSweepError(m.id, error);
+            log.error('posts', 'sweep batch failed', { count: batch.length, window: label, error });
             // Pass Apify's own message through rather than asserting a cause: a 403 means
             // either a bad key or a spent monthly budget, and telling an operator their key
             // is wrong when it isn't sends them down the wrong path.
@@ -294,6 +307,26 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
             bailed = true;
             break;   // every remaining batch would fail the same way
           }
+          // A failure that means OUR network was down is not evidence about Apify, and (for a
+          // run that never started) there is nothing billed for the halt to contain — so it is
+          // reported but exempted from the run_failed latch: no sweep error is written to the
+          // profiles (so it cannot count as "the previous failed pass" next time either), and
+          // the pass stays un-clean so the next tick simply retries once the machine is back.
+          // Checked AFTER auth: a 401/403 arrived over a working network by definition, and
+          // the more specific latch must keep winning. Definitive offline codes forgive
+          // outright; ambiguous network shapes (a reset, our own client timeout) ask the
+          // probe — offline forgives, online counts, because a timeout on a working network
+          // is real evidence of an Apify-side problem.
+          if (isApifyOfflineFailure(e) || (isApifyAmbiguousNetworkFailure(e) && !(await probe()))) {
+            result.offlineFailures++;
+            log.warn('posts', 'sweep batch failed while this machine was offline — not counted toward the halt rule',
+              { count: batch.length, window: label, error });
+            continue;
+          }
+          // Only THIS batch's profiles are marked, so the next pass retries them without
+          // re-billing everyone else.
+          for (const m of batch) repos.trackedProfiles.markSweepError(m.id, error);
+          log.error('posts', 'sweep batch failed', { count: batch.length, window: label, error });
         }
       }
     }
@@ -314,14 +347,21 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
     // passed-through Apify message, which is the whole point of the 401/403 work: it is what
     // distinguishes "monthly usage hard limit exceeded" from "your key is wrong". The more
     // specific latch that already fired must win.
-    if (!bailed && result.runs > 0 && result.profilesSwept === 0 && allPreviouslyErrored) {
+    //
+    // Offline failures are subtracted before the runs-attempted check: a pass where every
+    // failure was this machine's own dead network says nothing about Apify and billed nothing,
+    // so it must neither latch by itself nor complete a latch that a genuinely failed previous
+    // pass started. (The previous-pass side is covered by never writing sweep errors for
+    // offline failures — see the catch above.)
+    const countedRuns = result.runs - result.offlineFailures;
+    if (!bailed && countedRuns > 0 && result.profilesSwept === 0 && allPreviouslyErrored) {
       repos.appState.haltPosts(
         'run_failed',
-        `Every Apify run failed twice in a row (${result.runs} this pass). Sweeping is stopped so it `
+        `Every Apify run failed twice in a row (${countedRuns} this pass). Sweeping is stopped so it `
         + 'does not keep billing for failed runs; check the log, then resume.',
         nowIso,
       );
-      log.error('posts', 'halted after consecutive fully-failed passes', { runs: result.runs });
+      log.error('posts', 'halted after consecutive fully-failed passes', { runs: countedRuns });
     }
 
     // Prune regardless of how the runs went — including the auth bail-out above, which is why
@@ -352,7 +392,7 @@ export async function runPostsSweep(repos: Repos, opts: PostsSweepOptions): Prom
       runs: result.runs, profiles: result.profilesSwept, added: result.postsAdded,
       rejected: result.postsRejected, unattributed: result.unattributed,
       unusable: result.unusable, reshares: result.reshares, pruned: result.pruned,
-      clean: result.clean,
+      offline: result.offlineFailures, clean: result.clean,
     });
     return result;
   } finally {

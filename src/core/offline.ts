@@ -52,16 +52,19 @@ export function isAmbiguousNetworkError(message: string): boolean {
 }
 
 /**
- * Is the machine online enough to blame LinkedIn for a failure? One OS-level DNS lookup
- * of www.linkedin.com with a short deadline — cheap, browser-free, and exactly the layer
- * that dies first under sleep/wake. Any error or timeout reads as offline: erring toward
- * "offline" only delays a genuine halt by one more failure, while erring toward "online"
- * latches a red banner over a closed laptop lid.
+ * Is the machine online enough to blame the remote side for a failure? One OS-level DNS
+ * lookup with a short deadline — cheap, browser-free, and exactly the layer that dies first
+ * under sleep/wake. Any error or timeout reads as offline: erring toward "offline" only
+ * delays a genuine halt by one more failure, while erring toward "online" latches a red
+ * banner over a closed laptop lid.
+ *
+ * `host` defaults to www.linkedin.com for the browser guardrail; the posts sweep passes
+ * api.apify.com so the probe asks about the host its failed request actually needed.
  */
-export async function probeOnline(timeoutMs = 3000): Promise<boolean> {
+export async function probeOnline(timeoutMs = 3000, host = 'www.linkedin.com'): Promise<boolean> {
   try {
     await Promise.race([
-      lookup('www.linkedin.com'),
+      lookup(host),
       new Promise((_, reject) => {
         const t = setTimeout(() => reject(new Error('connectivity probe timed out')), timeoutMs);
         t.unref(); // never hold the process open for a probe

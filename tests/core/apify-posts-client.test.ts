@@ -6,7 +6,9 @@
  * shares when troubleshooting.
  */
 import { test, expect, vi } from 'vitest';
-import { HttpApifyPostsClient } from '../../src/core/apify-posts-client.js';
+import {
+  HttpApifyPostsClient, ApifyRequestError, isApifyOfflineFailure, isApifyAmbiguousNetworkFailure,
+} from '../../src/core/apify-posts-client.js';
 import { log } from '../../src/core/log.js';
 
 const TOKEN = 'apify_api_SECRETVALUE';
@@ -503,4 +505,76 @@ test('an empty tracked list never starts a run', async () => {
   });
   expect(await client.fetchPosts([], { maxPosts: 3, postedLimit: '24h' })).toEqual([]);
   expect(spy).not.toHaveBeenCalled();
+});
+
+/* ---------- offline classification ----------
+ * The run_failed halt exists to stop billing for failed runs. A laptop that went to sleep
+ * produces failures too — but its start POST never reached Apify, so nothing was billed and
+ * there is nothing to contain. These tests pin how the sweep worker tells the two apart. */
+
+test('a DNS-dead transport failure classifies as definitively offline', async () => {
+  const impl = (async () => {
+    const err = new Error('fetch failed');
+    (err as Error & { cause?: unknown }).cause = new Error('getaddrinfo ENOTFOUND api.apify.com');
+    throw err;
+  }) as unknown as typeof fetch;
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
+  const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' }).catch((e: Error) => e) as ApifyRequestError;
+
+  expect(err.transport).toBe(true);
+  expect(isApifyOfflineFailure(err)).toBe(true);
+  expect(isApifyAmbiguousNetworkFailure(err)).toBe(false);
+});
+
+test('a refused connection whose code lives on cause.code (undici AggregateError shape) still classifies offline', async () => {
+  const impl = (async () => {
+    const err = new Error('fetch failed');
+    // undici folds multi-address connect failures into an AggregateError with an empty
+    // message and the code on the error itself.
+    (err as Error & { cause?: unknown }).cause = Object.assign(new Error(''), { code: 'ECONNREFUSED' });
+    throw err;
+  }) as unknown as typeof fetch;
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
+  const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' }).catch((e: Error) => e) as ApifyRequestError;
+
+  expect(isApifyOfflineFailure(err)).toBe(true);
+});
+
+test('a client-side timeout is network-shaped but AMBIGUOUS — the probe decides, not the message', async () => {
+  const impl = ((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => {
+      const err = new Error('This operation was aborted');
+      err.name = 'AbortError';
+      reject(err);
+    });
+  })) as unknown as typeof fetch;
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {}, timeoutMs: 20 });
+  const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' }).catch((e: Error) => e) as ApifyRequestError;
+
+  expect(err.transport).toBe(true);
+  expect(isApifyOfflineFailure(err)).toBe(false);
+  expect(isApifyAmbiguousNetworkFailure(err)).toBe(true);
+}, 2000);
+
+test('an HTTP failure whose body merely QUOTES an offline code is neither offline nor ambiguous', async () => {
+  // The message embeds up to 500 chars of untrusted upstream body. transport === true is the
+  // structural gate: a gateway page quoting "ENOTFOUND" arrived over a WORKING network and
+  // must never be able to impersonate an offline laptop — that would silently exempt a real,
+  // billed failure from the halt.
+  const impl = (async () => ({
+    ok: false, status: 502,
+    text: async () => 'upstream error: getaddrinfo ENOTFOUND api.apify.com',
+    json: async () => ({}),
+  })) as unknown as typeof fetch;
+  const client = new HttpApifyPostsClient(TOKEN, { fetchImpl: impl, sleep: async () => {} });
+  const err = await client.fetchPosts(['https://www.linkedin.com/in/a'],
+    { maxPosts: 3, postedLimit: '24h' }).catch((e: Error) => e) as ApifyRequestError;
+
+  expect(err.message).toContain('ENOTFOUND');   // the bait is really in the message
+  expect(err.transport).toBe(false);
+  expect(isApifyOfflineFailure(err)).toBe(false);
+  expect(isApifyAmbiguousNetworkFailure(err)).toBe(false);
 });
