@@ -2869,10 +2869,29 @@ const PICKER_ROW_CAP = 1000;
 let evOpenId = null;
 let evPollTimer = null;
 
+/* The draft's inline "Add people" form: a successful add (or a bucket drop) re-renders
+   the whole detail, so whether the form is open, the half-pasted list, and the one-shot
+   result line must all live out here or they vanish mid-edit. */
+let evAddUi = { id: null, open: false, text: '', notice: '', error: false };
+
 const EV_UNREACHABLE_COPY = {
   no_country: 'no country on their roster record',
   us_without_state: 'in the US with no state on record',
 };
+
+/** "<lead> · M not connections · K unreachable (why)" — create and add report alike. */
+function evResultLine(r, lead) {
+  const parts = [lead];
+  if (r.rejected.length) parts.push(`${r.rejected.length} not connections`);
+  if (r.unreachable.length) {
+    const why = r.unreachable
+      .map((u) => EV_UNREACHABLE_COPY[u.reason] || u.reason)
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .join('; ');
+    parts.push(`${r.unreachable.length} unreachable (${why})`);
+  }
+  return parts.join(' · ');
+}
 
 function evBadge(status) {
   return el('span', { class: `ev-badge ${status}`, text: status });
@@ -2960,6 +2979,55 @@ function evRunBlock(run) {
   return block;
 }
 
+/**
+ * The draft's inline "add more people" — the same contract as the create form's textarea,
+ * posting to /invitees so the whole plan re-ranks. The POST's response is a full detail
+ * payload, so success re-renders in place with the new ladder already showing.
+ */
+function evAddPeopleForm(eventId) {
+  const msg = el('span', {
+    class: 'ev-create-msg' + (evAddUi.error ? ' is-error' : ''), text: evAddUi.notice,
+  });
+  const ta = el('textarea', {
+    id: 'evAddProfiles', rows: '4',
+    placeholder: 'Paste LinkedIn profile URLs, one per line.',
+  });
+  ta.value = evAddUi.text;
+  ta.addEventListener('input', () => { evAddUi.text = ta.value; });
+  const btn = el('button', { class: 'btn btn-primary', type: 'button', text: 'Add & re-rank' });
+  btn.addEventListener('click', async () => {
+    if (!ta.value.trim()) {
+      msg.classList.add('is-error');
+      msg.textContent = 'Paste at least one profile URL.';
+      return;
+    }
+    btn.disabled = true;
+    msg.classList.remove('is-error');
+    msg.textContent = 'Matching against your roster…';
+    try {
+      const r = await api(`/api/events/${eventId}/invitees`, { method: 'POST', body: { text: ta.value } });
+      evAddUi = {
+        id: eventId, open: true, text: '',
+        notice: evResultLine(r, `${r.added} added`), error: false,
+      };
+      await evLoadList();
+      evRenderDetail(r);
+    } catch (err) {
+      msg.classList.add('is-error');
+      msg.textContent = err.message;
+      btn.disabled = false;
+    }
+  });
+  return el('div', { class: 'ev-create ev-add', hidden: evAddUi.open ? null : '' },
+    el('div', { class: 'field' },
+      el('label', { for: 'evAddProfiles', text: 'Add more people' }),
+      ta,
+      el('p', { class: 'hint', text: 'Adding re-ranks the whole location plan — only drafts allow it.' }),
+    ),
+    el('div', { class: 'ev-create-actions' }, btn, msg),
+  );
+}
+
 function evRenderDetail(detail) {
   const host = $('#evDetail');
   host.innerHTML = '';
@@ -2973,11 +3041,24 @@ function evRenderDetail(detail) {
   const liveRun = runs.find((r) => !r.ended_at) || null;
   const liveByBucket = new Map((liveRun ? liveRun.buckets : []).map((b) => [b.bucket_id, b]));
 
+  if (evAddUi.id !== event.id) {
+    evAddUi = { id: event.id, open: false, text: '', notice: '', error: false };
+  }
+  const addForm = editable ? evAddPeopleForm(event.id) : null;
+
   const actions = el('div', { class: 'ev-detail-actions' });
   if (event.status === 'draft') {
     actions.appendChild(el('button', {
       class: 'btn btn-primary', text: 'Arm campaign',
       onclick: () => evAction(event.id, 'arm'),
+    }));
+    actions.appendChild(el('button', {
+      class: 'btn btn-ghost', text: 'Add people',
+      onclick: () => {
+        addForm.hidden = !addForm.hidden;
+        evAddUi.open = !addForm.hidden;
+        if (!addForm.hidden) addForm.querySelector('textarea').focus();
+      },
     }));
   }
   if (event.status === 'draft' || event.status === 'armed') {
@@ -3014,6 +3095,8 @@ function evRenderDetail(detail) {
     ),
     actions,
   ));
+
+  if (addForm) host.appendChild(addForm);
 
   host.appendChild(el('div', { class: 'ev-stats' },
     evStat(total, 'on the list'),
@@ -3162,16 +3245,11 @@ function initEvents() {
     try {
       const body = { event_url: $('#evUrl').value.trim(), text: $('#evProfiles').value };
       const created = await api('/api/events', { method: 'POST', body });
-      const parts = [`${created.added} on the list`];
-      if (created.rejected.length) parts.push(`${created.rejected.length} not connections`);
-      if (created.unreachable.length) {
-        const why = created.unreachable
-          .map((u) => EV_UNREACHABLE_COPY[u.reason] || u.reason)
-          .filter((v, i, a) => a.indexOf(v) === i)
-          .join('; ');
-        parts.push(`${created.unreachable.length} unreachable (${why})`);
-      }
-      msg.textContent = parts.join(' · ');
+      // The same URL again is not a mistake: the server folds the list into the existing
+      // draft, and the message should say that is what happened.
+      msg.textContent = evResultLine(created, created.merged
+        ? `added ${created.added} to the existing draft`
+        : `${created.added} on the list`);
       form.hidden = true;
       $('#evProfiles').value = '';
       $('#evUrl').value = '';

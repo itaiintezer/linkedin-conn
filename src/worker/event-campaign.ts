@@ -35,6 +35,8 @@ export interface CreateEventResult {
   /** In the roster, but with no location we can filter by. */
   unreachable: { url: string; reason: UnreachableReason }[];
   bucketCount: number;
+  /** Set when the list was folded into an existing draft instead of creating anew. */
+  merged?: boolean;
 }
 
 /**
@@ -95,6 +97,12 @@ const locatedFrom = (rows: {
 
 /**
  * Validate a list of profile URLs against the roster and plan the buckets.
+ *
+ * One campaign per event URL (the column is UNIQUE), but a repeat create against a DRAFT
+ * is not an error: the operator's intent — "invite these people to this event" — is the
+ * same either way, so the newcomers are folded into the draft and the plan re-ranked,
+ * exactly as `addEventInvitees` does. Only a frozen (armed/running) or closed campaign
+ * refuses, and says why.
  */
 export function createEventCampaign(
   repos: Repos, eventUrlRaw: string, profileUrlsRaw: string[],
@@ -103,7 +111,17 @@ export function createEventCampaign(
   if (eventUrl === null) return { error: `not a LinkedIn event URL: ${eventUrlRaw}` };
 
   const existing = repos.eventCampaigns.findByUrl(eventUrl);
-  if (existing) return { error: `event already has a campaign (#${existing.id})` };
+  if (existing) {
+    if (existing.status === 'draft') {
+      const r = addEventInvitees(repos, existing.id, profileUrlsRaw);
+      return 'error' in r ? r : { ...r, merged: true };
+    }
+    return {
+      error: existing.status === 'armed' || existing.status === 'running'
+        ? `this event's campaign (#${existing.id}) is already ${existing.status} — its location plan is frozen, so people can no longer be added`
+        : `this event's campaign (#${existing.id}) is ${existing.status} and can no longer take people`,
+    };
+  }
 
   const { connections, rejected } = resolveAgainstRoster(repos, profileUrlsRaw);
   const located = locatedFrom(connections);

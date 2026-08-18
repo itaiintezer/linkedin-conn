@@ -77,6 +77,39 @@ test('offers Arm on a draft, and never a second time once armed', () => {
   expect(armedBtns).toContain('Run now');
 });
 
+test('a draft offers Add people; a frozen plan does not', () => {
+  app.evRenderDetail(detail());
+  const host = byId('evDetail');
+  const btns = Array.from(host.querySelectorAll('button')).map((b) => b.textContent);
+  expect(btns).toContain('Add people');
+  const form = host.querySelector('.ev-add') as HTMLElement;
+  expect(form).not.toBeNull();
+  expect(form.hidden).toBe(true); // closed until asked for
+
+  app.evRenderDetail(detail({ event: { status: 'armed' } }));
+  expect(Array.from(byId('evDetail').querySelectorAll('button')).map((b) => b.textContent))
+    .not.toContain('Add people');
+  expect(byId('evDetail').querySelector('.ev-add')).toBeNull();
+});
+
+test('the Add people form stays open across a re-render of the same draft', () => {
+  app.evRenderDetail(detail());
+  const btn = Array.from(byId('evDetail').querySelectorAll('button'))
+    .find((b) => b.textContent === 'Add people') as HTMLButtonElement;
+  btn.click();
+  expect((byId('evDetail').querySelector('.ev-add') as HTMLElement).hidden).toBe(false);
+  const ta = byId('evDetail').querySelector('.ev-add textarea') as HTMLTextAreaElement;
+  ta.value = 'https://www.linkedin.com/in/half-pasted';
+  ta.dispatchEvent(new Event('input'));
+
+  // Dropping a bucket re-renders the whole detail; the operator's half-pasted list
+  // must not vanish into a re-collapsed, emptied form.
+  app.evRenderDetail(detail());
+  expect((byId('evDetail').querySelector('.ev-add') as HTMLElement).hidden).toBe(false);
+  expect((byId('evDetail').querySelector('.ev-add textarea') as HTMLTextAreaElement).value)
+    .toBe('https://www.linkedin.com/in/half-pasted');
+});
+
 test('a bucket can be dropped only while the plan is still a draft', () => {
   app.evRenderDetail(detail());
   expect(byId('evDetail').querySelectorAll('.rung-drop')).toHaveLength(1);

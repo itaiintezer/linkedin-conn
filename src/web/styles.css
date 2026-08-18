@@ -1558,6 +1558,10 @@ body > .drawer {
 .ev-create-msg { font-size: 13px; color: var(--ink-2); }
 .ev-create-msg.is-error { color: var(--red); }
 
+/* The same form, living inside a draft's detail panel ("Add people"). The detail already
+   carries the panel chrome, so the nested card drops the heavy shadow and outer margin. */
+.ev-add { margin: 18px 0 4px; box-shadow: none; background: var(--bg-wash); }
+
 .ev-list { display: grid; gap: 14px; }
 
 .ev-card {

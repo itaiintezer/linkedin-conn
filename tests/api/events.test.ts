@@ -70,12 +70,28 @@ test('rejects a bad event url and an empty list', async () => {
   expect((await post('/api/events', { event_url: EVENT, profile_urls: [] })).statusCode).toBe(400);
 });
 
-test('refuses a duplicate campaign for the same event', async () => {
+test('creating again for the same event folds the list into the existing draft', async () => {
+  const first = (await post('/api/events', { event_url: EVENT, profile_urls: [conn('il0')] })).json();
+  const uk = ['uk0', 'uk1'].map((s) => conn(s, { country: 'United Kingdom', cc: 'GB' }));
+  const again = await post('/api/events', { event_url: EVENT, profile_urls: uk });
+  expect(again.statusCode).toBe(200);            // merged, not created
+  const body = again.json();
+  expect(body.merged).toBe(true);
+  expect(body.added).toBe(2);
+  expect(body.event.id).toBe(first.event.id);
+  expect(body.counts.pending).toBe(3);
+  // ...and the plan re-ranked around the newcomers, same as POST /:id/invitees.
+  expect(body.buckets.map((b: { label: string }) => b.label)).toEqual(['United Kingdom', 'Israel']);
+  expect((await app.inject({ method: 'GET', url: '/api/events' })).json()).toHaveLength(1);
+});
+
+test('refuses a duplicate campaign once armed, and says the plan is frozen', async () => {
   const u = conn('keren');
-  await post('/api/events', { event_url: EVENT, profile_urls: [u] });
+  const created = (await post('/api/events', { event_url: EVENT, profile_urls: [u] })).json();
+  await post(`/api/events/${created.event.id}/arm`, {});
   const again = await post('/api/events', { event_url: EVENT, profile_urls: [u] });
   expect(again.statusCode).toBe(400);
-  expect(again.json().error).toMatch(/already has a campaign/);
+  expect(again.json().error).toMatch(/armed/);
 });
 
 test('arming reserves a window and freezes the bucket plan', async () => {

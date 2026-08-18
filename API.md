@@ -532,6 +532,13 @@ Responds `201` with the campaign, its ranked buckets, and — importantly — `r
 (URLs that are not connections) and `unreachable` (connections with no usable location),
 each listed by URL so nothing fails silently mid-run.
 
+An event has at most one campaign, but creating again for the same URL while that campaign
+is still a **draft** is not an error: the list is folded into the draft exactly as
+`POST /api/events/:id/invitees` would (plan re-ranked, reachability recomputed), and the
+response is `200` with `merged: true` instead of `201`. So "add more people to the same
+event" is simply creating it again. Once the campaign is armed, running, or closed, a
+repeat create gets a `400` that says why.
+
 ### POST /api/events/:id/invitees
 Add more people to a **draft**: `{ "profile_urls": [...] }`, or `text` to paste a blob.
 This is what the Connections screen's "Invite to event" posts when you pick an existing

@@ -73,10 +73,39 @@ test('deduplicates the input list', () => {
   expect(r.added).toBe(1);
 });
 
-test('refuses a second campaign for the same event', () => {
-  conn('keren');
-  createEventCampaign(repos, EVENT, []);
-  expect(createEventCampaign(repos, EVENT, [])).toHaveProperty('error');
+test('a second create for the same event folds into the existing draft', () => {
+  const first = createEventCampaign(repos, EVENT, [conn('il0')]) as { event: { id: number } };
+  const uk = conn('uk0', { country: 'United Kingdom', cc: 'GB' });
+  const again = createEventCampaign(repos, EVENT, [uk]) as {
+    event: { id: number }; added: number; merged?: boolean;
+  };
+  expect(again.merged).toBe(true);
+  expect(again.added).toBe(1);
+  expect(again.event.id).toBe(first.event.id);
+  expect(repos.eventCampaigns.list()).toHaveLength(1);
+  expect(repos.eventInvitees.countsByStatus(first.event.id).pending).toBe(2);
+  // The merge re-ranks: three more Brits and the ladder must lead with the UK.
+  ['uk1', 'uk2'].forEach((s) => conn(s, { country: 'United Kingdom', cc: 'GB' }));
+  createEventCampaign(repos, EVENT, [
+    'https://www.linkedin.com/in/uk1', 'https://www.linkedin.com/in/uk2',
+  ]);
+  expect(repos.eventBuckets.list(first.event.id).map((b) => b.label))
+    .toEqual(['United Kingdom', 'Israel']);
+});
+
+test('a second create is refused once the campaign is armed, and says why', () => {
+  const r = createEventCampaign(repos, EVENT, [conn('keren')]) as { event: { id: number } };
+  expect(armEventCampaign(repos, r.event.id, new Date())).toEqual({ ok: true });
+  const again = createEventCampaign(repos, EVENT, [conn('il9')]);
+  expect((again as { error: string }).error).toMatch(/armed/);
+  expect((again as { error: string }).error).toMatch(/frozen/);
+});
+
+test('a second create is refused once the campaign is closed', () => {
+  const r = createEventCampaign(repos, EVENT, [conn('keren')]) as { event: { id: number } };
+  repos.eventCampaigns.close(r.event.id, 'stopped', 'stopped by the operator', new Date().toISOString());
+  const again = createEventCampaign(repos, EVENT, [conn('il9')]);
+  expect((again as { error: string }).error).toMatch(/stopped/);
 });
 
 test('ranks buckets by invitee density and persists them', () => {
