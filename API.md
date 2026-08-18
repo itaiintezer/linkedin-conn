@@ -521,6 +521,11 @@ reach before you arm anything.
 Only URNs on your list are ever ticked, so a mis-resolved location can lose coverage but
 can never invite the wrong person.
 
+The browser always opens the event with `?viewAsMember=true`: an event **you organize**
+renders the organizer console by default — no Attend button, no Share control — which the
+run would otherwise report as `no Share control — not an event page, or no access`. The
+member view has both, and the parameter is ignored on events you don't organize.
+
 ### POST /api/events
 Create a campaign as a **draft**. Nothing is sent until you arm it.
 ```json

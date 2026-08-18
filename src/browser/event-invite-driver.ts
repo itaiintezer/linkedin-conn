@@ -17,7 +17,7 @@ import { EVSEL, PICKER_ROW_CAP, PICKER_SETTLE_MS } from './event-selectors.js';
 import { detectCheckpoint } from '../core/checkpoint.js';
 import { captureEvidence } from './evidence.js';
 import { selectionDiff, typeaheadQueryFor } from '../core/event-buckets.js';
-import { MEMBER_URN_PATTERN } from '../core/event-page.js';
+import { MEMBER_URN_PATTERN, memberViewUrl } from '../core/event-page.js';
 import { log } from '../core/log.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -65,9 +65,10 @@ async function dismissOverlays(page: Page): Promise<void> {
   await sleep(900);
 }
 
-/** Navigate to the event and read its top card. */
+/** Navigate to the event and read its top card. Always the MEMBER view: the organizer
+ *  console has neither Attend nor Share, and would read as "not an event page". */
 export async function openEvent(page: Page, eventUrl: string): Promise<EventStepOutcome> {
-  await page.goto(eventUrl, { waitUntil: 'domcontentloaded' });
+  await page.goto(memberViewUrl(eventUrl), { waitUntil: 'domcontentloaded' });
   await sleep(rand(6000, 9000));
 
   const cp = await scan(page);
@@ -178,9 +179,11 @@ export async function openInvitePicker(page: Page): Promise<EventStepOutcome> {
     evidence: await errorEvidence(page, 'picker did not load') };
 }
 
-/** Reload the event page — the reset no stuck modal can survive. */
+/** Reload the event page — the reset no stuck modal can survive. Member view, same as
+ *  openEvent: an organizer reloaded into the organizer console would lose the Share
+ *  button this reset exists to get back to. */
 async function reloadEventPage(page: Page, eventUrl: string): Promise<void> {
-  await page.goto(eventUrl, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
+  await page.goto(memberViewUrl(eventUrl), { waitUntil: 'domcontentloaded' }).catch(() => undefined);
   await sleep(rand(4000, 6000));
 }
 
