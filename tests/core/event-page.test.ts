@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  eventUrnFrom, hasStarted, MEMBER_URN_PATTERN, normalizeEventUrl, parseEventStart,
+  eventUrnFrom, hasStarted, MEMBER_URN_PATTERN, memberViewUrl, normalizeEventUrl,
+  parseEventStart,
 } from '../../src/core/event-page.js';
 
 describe('normalizeEventUrl', () => {
@@ -47,6 +48,22 @@ describe('normalizeEventUrl', () => {
     expect(eventUrnFrom('https://www.linkedin.com/events/7486088214579982336/'))
       .toBe('7486088214579982336');
     expect(eventUrnFrom('nonsense')).toBeNull();
+  });
+});
+
+describe('memberViewUrl', () => {
+  it('appends viewAsMember to the canonical url', () => {
+    expect(memberViewUrl('https://www.linkedin.com/events/7486088214579982336/'))
+      .toBe('https://www.linkedin.com/events/7486088214579982336/?viewAsMember=true');
+  });
+
+  it('canonicalises first, so slugs and old params cannot double up the query', () => {
+    // The organizer console (no Share, no Attend) is what campaign #2 failed on — the
+    // browser must always land on the member view, whatever form the stored URL took.
+    expect(memberViewUrl('https://www.linkedin.com/events/nyc-forum-7486088214579982336?utm=x'))
+      .toBe('https://www.linkedin.com/events/7486088214579982336/?viewAsMember=true');
+    expect(memberViewUrl('https://www.linkedin.com/events/7486088214579982336/?viewAsMember=true'))
+      .toBe('https://www.linkedin.com/events/7486088214579982336/?viewAsMember=true');
   });
 });
 

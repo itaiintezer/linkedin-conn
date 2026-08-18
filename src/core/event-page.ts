@@ -27,6 +27,20 @@ export function normalizeEventUrl(raw: string): string | null {
   return `https://www.linkedin.com/events/${m[1]}/`;
 }
 
+/**
+ * The URL the browser should actually VISIT — canonical plus `viewAsMember=true`.
+ *
+ * An event this account organizes renders the organizer console by default: no Attend
+ * button and no Share control, which `openEvent` correctly reads as "not an event page"
+ * (campaign #2 failed exactly this way, 2026-08-18). `viewAsMember=true` is LinkedIn's own
+ * "View as member" toggle; it forces the member view for an organizer and is ignored for
+ * everyone else, so every event is browsed this way. Stored URLs stay canonical —
+ * `normalizeEventUrl` strips the query — and only navigation adds it.
+ */
+export function memberViewUrl(raw: string): string {
+  return `${normalizeEventUrl(raw) ?? raw}?viewAsMember=true`;
+}
+
 /** The numeric event id, which is also the URN suffix. */
 export function eventUrnFrom(raw: string): string | null {
   const normalized = normalizeEventUrl(raw);

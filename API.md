@@ -521,6 +521,11 @@ reach before you arm anything.
 Only URNs on your list are ever ticked, so a mis-resolved location can lose coverage but
 can never invite the wrong person.
 
+The browser always opens the event with `?viewAsMember=true`: an event **you organize**
+renders the organizer console by default — no Attend button, no Share control — which the
+run would otherwise report as `no Share control — not an event page, or no access`. The
+member view has both, and the parameter is ignored on events you don't organize.
+
 ### POST /api/events
 Create a campaign as a **draft**. Nothing is sent until you arm it.
 ```json
@@ -570,6 +575,12 @@ advance the cursor. Use it to see real reach before arming.
 ### POST /api/events/:id/run-now · POST /api/events/:id/stop
 Run immediately rather than waiting for the reserved window; or close the campaign and
 release its window.
+
+### POST /api/events/:id/reopen
+Failed/stopped → **draft**, so a campaign killed by a page problem can be re-armed once
+the cause is fixed. Invitees, buckets and the cursor are untouched — arming re-validates
+everything. `409` for a `done` campaign: that means everyone reachable was invited or the
+event already started, and neither is undone by reopening.
 
 ### Scheduling
 An armed campaign reserves `event_run_budget_minutes` (default 20) in the largest free gap

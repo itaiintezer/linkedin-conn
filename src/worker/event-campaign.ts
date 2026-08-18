@@ -222,6 +222,32 @@ export function addEventInvitees(
 }
 
 /**
+ * Reopen a failed or stopped campaign as a DRAFT, so it can be fixed up and re-armed.
+ *
+ * Exists because a run that cannot even open the event page closes the campaign as
+ * `failed` — which used to be terminal, leaving SQL as the only recovery (campaign #2,
+ * 2026-08-18: the organizer view had no Share control). Nothing durable is lost by
+ * reopening: invitees keep their statuses, buckets and cursor stay where the last run
+ * left them, and arming re-validates everything anyway. `done` stays closed — it means
+ * everyone reachable was invited or the event already started, and neither is undone by
+ * wanting it to be.
+ */
+export function reopenEventCampaign(
+  repos: Repos, eventId: number,
+): { ok: true } | { ok: false; error: string } {
+  const event = repos.eventCampaigns.findById(eventId);
+  if (!event) return { ok: false, error: 'no such event' };
+  if (event.status !== 'failed' && event.status !== 'stopped') {
+    return { ok: false, error: `campaign is ${event.status} — only a failed or stopped campaign can be reopened` };
+  }
+  repos.eventCampaigns.update(eventId, {
+    status: 'draft', armed_at: null, closed_at: null, close_reason: null,
+  });
+  log.info('events', 'campaign reopened as draft', { event: eventId, was: event.status });
+  return { ok: true };
+}
+
+/**
  * Arm a draft. Arming does NOT place the reservation — that is a scheduling concern the
  * periodic tick owns, so a campaign armed at 11pm on a Friday still gets a sensible
  * Monday window instead of failing to arm.
