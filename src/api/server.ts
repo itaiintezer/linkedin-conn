@@ -609,6 +609,10 @@ export function buildServer(
    * Create a campaign. Accepts `profile_urls` (an array — the API path) or `text` (a
    * paste blob). Returns the rejected URLs by name: a URL with no roster row cannot be
    * invited or even bucketed, and finding that out mid-run would be far too late.
+   *
+   * If the event already has a DRAFT campaign, the list is folded into it instead —
+   * `200` with `merged: true` rather than `201` — so "add more people to the same event"
+   * is just creating it again. A frozen or closed campaign still gets a `400` that says why.
    */
   app.post('/api/events', async (req, reply) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
@@ -621,10 +625,11 @@ export function buildServer(
 
     const result = createEventCampaign(repos, eventUrl, urls);
     if ('error' in result) return reply.code(400).send({ error: result.error });
-    defaultLog.info('api', 'event campaign created', {
-      event: result.event.id, added: result.added, rejected: result.rejected.length,
-    });
-    return reply.code(201).send({ ...result, ...eventDetail(result.event.id) });
+    defaultLog.info('api',
+      result.merged ? 'event campaign re-create merged into draft' : 'event campaign created', {
+        event: result.event.id, added: result.added, rejected: result.rejected.length,
+      });
+    return reply.code(result.merged ? 200 : 201).send({ ...result, ...eventDetail(result.event.id) });
   });
 
   /**
