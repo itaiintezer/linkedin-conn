@@ -43,8 +43,19 @@ export async function checkForUpdates(
   try {
     // --quiet so a slow network does not fill the log with progress lines.
     await git(root, ['fetch', '--quiet', 'origin', RELEASE_BRANCH]);
-    const log = await git(root, ['log', '--oneline', `HEAD..origin/${RELEASE_BRANCH}`]);
-    const changes = parseChangeList(log);
+    // --no-merges, for the same reason `scripts/update.mjs` uses it on the after-the-fact
+    // changelog: one PR merged with GitHub's button lands as the branch's own commit PLUS a
+    // merge commit, so counting both told the operator "2 updates available" for one fix, and
+    // listed "Merge pull request #40 from itaiintezer/claude/…" above it — the line that means
+    // least to someone who has never seen a branch name.
+    const range = `HEAD..origin/${RELEASE_BRANCH}`;
+    let changes = parseChangeList(await git(root, ['log', '--oneline', '--no-merges', range]));
+    if (changes.length === 0) {
+      // Almost always "up to date". But `main` can be ahead by a merge commit whose own commits
+      // are already here, and hiding a real update is worse than naming it badly: an operator
+      // cannot run git to discover one for themselves.
+      changes = parseChangeList(await git(root, ['log', '--oneline', range]));
+    }
     return { available: changes.length, changes, checked_at };
   } catch (e) {
     return {

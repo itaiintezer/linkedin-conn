@@ -33,6 +33,37 @@ test('reports the number of changes waiting', async () => {
   expect(out.checked_at).toBe(NOW.toISOString());
 });
 
+/**
+ * One PR merged with GitHub's button reached the top bar as "2 updates available" for a single
+ * fix, listing the merge commit above it. `scripts/update.mjs` already dropped merges from the
+ * after-the-fact changelog (PR #32); the availability check the pill reads did not.
+ */
+test('a merge commit is not counted or listed as an update of its own', async () => {
+  const git = vi.fn(async (_root: string, args: string[]) => {
+    if (args[0] === 'fetch') return '';
+    // What `git log --oneline` would print for a button-merged PR, minus the merge line.
+    return args.includes('--no-merges') ? 'a2cdd47 feat: one real change' : '';
+  });
+
+  const out = await checkForUpdates('/repo', { now: NOW, git });
+
+  expect(out.available).toBe(1);
+  expect(out.changes).toEqual(['feat: one real change']);
+});
+
+test('a merge commit alone still counts — hiding a real update is the worse failure', async () => {
+  // `main` ahead by only a merge commit is rare, but an operator cannot run git to find out.
+  const git = vi.fn(async (_root: string, args: string[]) => {
+    if (args[0] === 'fetch') return '';
+    return args.includes('--no-merges') ? '' : '708bec6 Merge pull request #40 from someone/thing';
+  });
+
+  const out = await checkForUpdates('/repo', { now: NOW, git });
+
+  expect(out.available).toBe(1);
+  expect(out.changes).toEqual(['Merge pull request #40 from someone/thing']);
+});
+
 test('fetches before comparing — otherwise it reports on a stale view of the remote', async () => {
   const calls: string[][] = [];
   const git = vi.fn(async (_root: string, args: string[]) => { calls.push(args); return ''; });
