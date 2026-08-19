@@ -279,7 +279,7 @@ location, because it competes with the cohorts for the same browser and the same
 | Setting | Default | What it does |
 |---|---|---|
 | `events_per_day` | 1 | Live runs started per day |
-| `event_invite_cap` | 500 | Lifetime invites per event |
+| `event_invite_cap` | 1000 | Lifetime invites per event |
 | `event_bucket_ceiling` | 10 | Locations worked per run |
 | `event_run_budget_minutes` | 20 | Window reserved per run |
 | `event_shard_threshold` | 900 | Roster size above which a bucket is sub-sharded |

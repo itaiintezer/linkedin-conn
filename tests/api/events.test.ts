@@ -185,7 +185,7 @@ test('lists campaigns with their counts', async () => {
 test('exposes the event settings and accepts updates', async () => {
   const s = (await app.inject({ method: 'GET', url: '/api/settings' })).json();
   expect(s.events_per_day).toBe(1);
-  expect(s.event_invite_cap).toBe(500);
+  expect(s.event_invite_cap).toBe(1000);
   expect(s.event_bucket_ceiling).toBe(10);
   expect(s.event_run_budget_minutes).toBe(20);
 

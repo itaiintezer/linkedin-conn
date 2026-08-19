@@ -7,7 +7,7 @@ import { buildServer } from './api/server.js';
 import { Mutex } from './core/mutex.js';
 import { DATA_DIR, DB_PATH, PORT } from './config.js';
 import { log } from './core/log.js';
-import { EXIT_STOP, reconcileControlOnBoot } from './core/lifecycle.js';
+import { EXIT_STOP, clearLifecyclePauseOnBoot, reconcileControlOnBoot } from './core/lifecycle.js';
 
 // Last-resort safety net: a stray rejection/exception (e.g. a browser launch failing in a
 // background task) must be logged, not crash the whole server. The real handling lives at
@@ -40,6 +40,13 @@ if (repaired > 0) log.info('roster', 'repaired first names', { repaired });
 const supervised = process.env.THEMACHINE_SUPERVISED === '1';
 if (reconcileControlOnBoot(DATA_DIR, { supervised }) === 'abandoned') {
   log.warn('app', 'found an unfinished update request at startup', { supervised });
+}
+
+// A Restart/Update pauses on the way out so the handover is quiet — that pause is the
+// lifecycle's, not the operator's, so lift it now that we are the process it was protecting.
+// A manual pause or a weekly-limit pause carries a different reason and stays.
+if (clearLifecyclePauseOnBoot(repos.settings)) {
+  log.info('app', 'lifted the restart/update pause — sending resumes on the next tick');
 }
 
 const driver = new LinkedInDriver();

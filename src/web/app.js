@@ -751,15 +751,45 @@ function noteButton(note) {
 
 let queueDragging = false;
 
-/* Queue cohorts start collapsed (they can be huge); the ids the user expanded
-   survive the 15s re-render and full reloads. */
-const expandedCohorts = new Set(
-  (() => { try { return JSON.parse(localStorage.getItem('machine.expandedCohorts') || '[]'); } catch (_) { return []; } })(),
-);
-function isCohortCollapsed(id) { return !expandedCohorts.has(id); }
-function toggleCohortCollapse(id) {
-  if (expandedCohorts.has(id)) expandedCohorts.delete(id); else expandedCohorts.add(id);
-  try { localStorage.setItem('machine.expandedCohorts', JSON.stringify([...expandedCohorts])); } catch (_) { /* ignore */ }
+/* Queue groups start collapsed (they can be huge); the ids the user expanded
+   survive the 15s re-render and full reloads. Cohorts and event campaigns keep
+   separate ledgers — their ids come from different tables and can collide. */
+function expandLedger(storageKey) {
+  const ids = new Set(
+    (() => { try { return JSON.parse(localStorage.getItem(storageKey) || '[]'); } catch (_) { return []; } })(),
+  );
+  return {
+    isCollapsed: (id) => !ids.has(id),
+    toggle: (id) => {
+      if (ids.has(id)) ids.delete(id); else ids.add(id);
+      try { localStorage.setItem(storageKey, JSON.stringify([...ids])); } catch (_) { /* ignore */ }
+    },
+  };
+}
+const cohortLedger = expandLedger('machine.expandedCohorts');
+const eventLedger = expandLedger('machine.expandedEvents');
+
+/* The expand/collapse chevron a queue group's header leads with. Toggles the ledger AND
+   patches the already-rendered group in place, so the state change is visible before the
+   next 15s re-render. `noun` only feeds the tooltip ("cohort" / "campaign"). */
+function qgChevron(id, ledger, noun) {
+  const collapsed = ledger.isCollapsed(id);
+  return el('button', {
+    class: 'qg-ico qg-chevron' + (collapsed ? ' is-collapsed' : ''),
+    type: 'button',
+    title: collapsed ? `Expand ${noun}` : `Collapse ${noun}`,
+    'aria-expanded': String(!collapsed),
+    onclick: (e) => {
+      e.stopPropagation();
+      ledger.toggle(id);
+      const qg = e.currentTarget.closest('.qg');
+      const isNow = ledger.isCollapsed(id);
+      qg.classList.toggle('is-collapsed', isNow);
+      e.currentTarget.classList.toggle('is-collapsed', isNow);
+      e.currentTarget.title = isNow ? `Expand ${noun}` : `Collapse ${noun}`;
+      e.currentTarget.setAttribute('aria-expanded', String(!isNow));
+    },
+  }, '⌄');
 }
 
 /* A scheduled time in the past means "sends on the next tick (or gets re-flowed)" —
@@ -797,11 +827,13 @@ async function refreshQueue() {
  * ladder is visible.
  */
 function renderEventGroup(e) {
+  const collapsed = eventLedger.isCollapsed(e.id);
   const when = e.reserved_from
     ? el('span', { class: 'qg-when', text: `${fmtRelDay(e.reserved_from)} ~${fmtClock(e.reserved_from)}` })
     : el('span', { class: 'qg-when is-unscheduled', text: 'awaiting a free window' });
 
   const header = el('div', { class: 'qg-head' },
+    qgChevron(e.id, eventLedger, 'campaign'),
     kindMark('event'),
     el('span', { class: 'qg-name', text: e.title || e.event_url.replace(/^https?:\/\/(www\.)?/, '') }),
     el('span', { class: 'qg-count', text: `${plural(e.pending || 0, 'person', 'people')} to invite` }),
@@ -827,28 +859,13 @@ function renderEventGroup(e) {
       text: `${plural(e.locations_left, 'location')} roll into a later run.`,
     }));
   }
-  return el('div', { class: 'qg qg-event' }, header, body);
+  return el('div', { class: 'qg qg-event' + (collapsed ? ' is-collapsed' : '') }, header, body);
 }
 
 function renderCohortGroup(c) {
-  const collapsed = isCohortCollapsed(c.id);
+  const collapsed = cohortLedger.isCollapsed(c.id);
   const groupKind = (c.profiles[0] && c.profiles[0].kind) || 'invite';
-  const chevron = el('button', {
-    class: 'qg-ico qg-chevron' + (collapsed ? ' is-collapsed' : ''),
-    type: 'button',
-    title: collapsed ? 'Expand cohort' : 'Collapse cohort',
-    'aria-expanded': String(!collapsed),
-    onclick: (e) => {
-      e.stopPropagation();
-      toggleCohortCollapse(c.id);
-      const qg = e.currentTarget.closest('.qg');
-      const isNow = isCohortCollapsed(c.id);
-      qg.classList.toggle('is-collapsed', isNow);
-      e.currentTarget.classList.toggle('is-collapsed', isNow);
-      e.currentTarget.title = isNow ? 'Expand cohort' : 'Collapse cohort';
-      e.currentTarget.setAttribute('aria-expanded', String(!isNow));
-    },
-  }, '⌄');
+  const chevron = qgChevron(c.id, cohortLedger, 'cohort');
   const header = el('div', {
     class: 'qg-head', draggable: 'true', 'data-cohort': String(c.id),
     ondragstart: (e) => { queueDragging = true; e.dataTransfer.setData('text/plain', String(c.id)); e.dataTransfer.effectAllowed = 'move'; },
@@ -885,7 +902,9 @@ function renderCohortGroup(c) {
 
 async function onCohortDrop(draggedId, targetId) {
   if (!draggedId || draggedId === targetId) { queueDragging = false; return; }
-  const order = $$('#queueGroups .qg-head').map((h) => Number(h.dataset.cohort));
+  // Only cohort headers carry data-cohort — an event group's header must not leak a NaN
+  // into the order (it serializes to null, which the server coerces to cohort id 0).
+  const order = $$('#queueGroups .qg-head[data-cohort]').map((h) => Number(h.dataset.cohort));
   const from = order.indexOf(draggedId), to = order.indexOf(targetId);
   if (from === -1 || to === -1) { queueDragging = false; return; }
   order.splice(to, 0, order.splice(from, 1)[0]);

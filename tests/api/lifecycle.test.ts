@@ -19,7 +19,10 @@ import { Repos } from '../../src/db/repositories.js';
 import { FakeDriver } from '../../src/browser/driver.js';
 import { buildServer } from '../../src/api/server.js';
 import { Mutex } from '../../src/core/mutex.js';
-import { EXIT_RESTART, EXIT_UPDATE, reconcileControlOnBoot } from '../../src/core/lifecycle.js';
+import {
+  EXIT_RESTART, EXIT_UPDATE, RESTART_PAUSE_REASON, UPDATE_PAUSE_REASON,
+  clearLifecyclePauseOnBoot, reconcileControlOnBoot,
+} from '../../src/core/lifecycle.js';
 import { isPending, markDone, newRequest, readControl, writeControl } from '../../scripts/control-file.mjs';
 
 let app: ReturnType<typeof buildServer>;
@@ -76,6 +79,38 @@ test('POST /api/update writes the request the supervisor will read, and pauses f
   // Paused before anything else: if the handover goes wrong, the engines are already quiet.
   expect(repos.settings.get().paused).toBe(1);
   expect(repos.settings.get().pause_reason).toMatch(/Updating/);
+});
+
+test('the update pause is the handover\'s, and boot lifts it', async () => {
+  // The pause exists so the drain happens with quiet engines — it is not the operator's,
+  // so the machine must come back SENDING after the restart, not silently parked until
+  // someone notices the amber banner and clicks Resume.
+  await app.inject({ method: 'POST', url: '/api/update' });
+  expect(repos.settings.get().pause_reason).toBe(UPDATE_PAUSE_REASON);
+
+  expect(clearLifecyclePauseOnBoot(repos.settings)).toBe(true);
+  expect(repos.settings.get().paused).toBe(0);
+  expect(repos.settings.get().pause_reason).toBeNull();
+});
+
+test('an operator\'s own pause survives an update end to end', async () => {
+  // Paused by hand, then updated: the update must not overwrite the reason on the way out,
+  // and boot must not "resume" a pause the operator actually meant.
+  repos.settings.update({ paused: 1, pause_reason: 'Manual pause' });
+  await app.inject({ method: 'POST', url: '/api/update' });
+  expect(repos.settings.get().pause_reason).toBe('Manual pause');
+
+  expect(clearLifecyclePauseOnBoot(repos.settings)).toBe(false);
+  expect(repos.settings.get().paused).toBe(1);
+  expect(repos.settings.get().pause_reason).toBe('Manual pause');
+});
+
+test('clearLifecyclePauseOnBoot lifts a restart pause too, and no-ops when unpaused', async () => {
+  repos.settings.update({ paused: 1, pause_reason: RESTART_PAUSE_REASON });
+  expect(clearLifecyclePauseOnBoot(repos.settings)).toBe(true);
+  expect(repos.settings.get().paused).toBe(0);
+
+  expect(clearLifecyclePauseOnBoot(repos.settings)).toBe(false);
 });
 
 test('POST /api/update then exits 43, the code the supervisor reads as "update"', async () => {

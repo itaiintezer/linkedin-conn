@@ -323,7 +323,7 @@ export function runMigrations(db: DB): void {
     db.exec('ALTER TABLE settings ADD COLUMN events_per_day INTEGER NOT NULL DEFAULT 1');
   }
   if (cols.length > 0 && !cols.includes('event_invite_cap')) {
-    db.exec('ALTER TABLE settings ADD COLUMN event_invite_cap INTEGER NOT NULL DEFAULT 500');
+    db.exec('ALTER TABLE settings ADD COLUMN event_invite_cap INTEGER NOT NULL DEFAULT 1000');
   }
   if (cols.length > 0 && !cols.includes('event_bucket_ceiling')) {
     db.exec('ALTER TABLE settings ADD COLUMN event_bucket_ceiling INTEGER NOT NULL DEFAULT 10');

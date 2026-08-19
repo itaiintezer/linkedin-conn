@@ -17,6 +17,33 @@ export const EXIT_RESTART = 42;
 export const EXIT_UPDATE = 43;
 
 /**
+ * The pause reasons a Restart/Update writes before handing over. They exist so the engines are
+ * quiet while the browser lock drains — NOT because the operator asked for a pause. Boot
+ * recognises exactly these strings and lifts them (clearLifecyclePauseOnBoot), so the machine
+ * comes back sending; any other reason (manual pause, weekly limit) is the operator's and
+ * survives the restart untouched.
+ */
+export const UPDATE_PAUSE_REASON = 'Updating The Machine';
+export const RESTART_PAUSE_REASON = 'Restarting The Machine';
+
+/**
+ * Called once at boot: lift a pause that only exists because a Restart/Update wrote it on the
+ * way out. Matching is by the exact reason string — a pause the operator set (or the weekly
+ * limit set) carries a different reason and is deliberately left alone. Returns true if a
+ * pause was lifted.
+ */
+export function clearLifecyclePauseOnBoot(settings: {
+  get(): { paused: number; pause_reason: string | null };
+  update(patch: { paused: number; pause_reason: null }): void;
+}): boolean {
+  const s = settings.get();
+  if (s.paused !== 1) return false;
+  if (s.pause_reason !== UPDATE_PAUSE_REASON && s.pause_reason !== RESTART_PAUSE_REASON) return false;
+  settings.update({ paused: 0, pause_reason: null });
+  return true;
+}
+
+/**
  * How long to wait for in-flight browser work before exiting anyway.
  *
  * Generous on purpose. A single send is a page load, a click and a confirmation read; a

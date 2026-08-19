@@ -373,7 +373,7 @@ test('runMigrations adds the event settings columns to a legacy settings table',
   runMigrations(db);
   const row = db.prepare('SELECT * FROM settings WHERE id = 1').get() as Record<string, unknown>;
   expect(row.events_per_day).toBe(1);
-  expect(row.event_invite_cap).toBe(500);
+  expect(row.event_invite_cap).toBe(1000);
   expect(row.event_bucket_ceiling).toBe(10);
   expect(row.event_run_budget_minutes).toBe(20);
   expect(row.event_shard_threshold).toBe(900);

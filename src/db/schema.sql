@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS settings (
   -- Event-invite pipeline. Its own caps: an event invite is a different LinkedIn quota
   -- from a connection request, and 500 of them would instantly blow weekly_cap if pooled.
   events_per_day INTEGER NOT NULL DEFAULT 1,
-  event_invite_cap INTEGER NOT NULL DEFAULT 500,
+  event_invite_cap INTEGER NOT NULL DEFAULT 1000,
   event_bucket_ceiling INTEGER NOT NULL DEFAULT 10,
   event_run_budget_minutes INTEGER NOT NULL DEFAULT 20,
   -- The picker hard-caps at 1000 rows in a stable order, so anything past it is
