@@ -527,6 +527,34 @@ test('POST /api/cohorts/:id/archive hides the cohort and skips its queue', async
   expect(repos.profiles.findById(b.id)!.status).toBe('skipped');
 });
 
+test('re-adding profiles dismissed by an archived cohort queues them in the new cohort', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'FirstRound', text: 'https://linkedin.com/in/again-a\nhttps://linkedin.com/in/again-b' },
+  });
+  const first = repos.cohorts.findByName('FirstRound')!;
+  await app.inject({ method: 'POST', url: `/api/cohorts/${first.id}/archive` });
+
+  // again-a overlaps the archived cohort; again-c is brand new. Both must count and queue.
+  const res = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'SecondRound', text: 'https://linkedin.com/in/again-a\nhttps://linkedin.com/in/again-c' },
+  });
+  expect(res.statusCode).toBe(200);
+  expect(JSON.parse(res.body).added).toBe(2);
+  const second = repos.cohorts.findByName('SecondRound')!;
+  const rows = repos.profiles.all().filter((p) => p.cohort_id === second.id);
+  expect(rows.map((p) => p.profile_url).sort()).toEqual([
+    'https://www.linkedin.com/in/again-a', 'https://www.linkedin.com/in/again-c',
+  ]);
+  // queued or scheduled, depending on whether the suite runs inside working hours
+  for (const p of rows) expect(['queued', 'scheduled']).toContain(p.status);
+  // again-b stays dismissed in the archived cohort — nothing resurrected it
+  const b = repos.profiles.all().find((p) => p.profile_url.endsWith('again-b'))!;
+  expect(b.status).toBe('skipped');
+  expect(b.cohort_id).toBe(first.id);
+});
+
 test('POST /api/cohorts/:id/unarchive restores the cohort', async () => {
   const c = repos.cohorts.create('Back', null, true);
   repos.cohorts.setArchived(c.id, true);

@@ -102,6 +102,41 @@ test('getOrCreate resurrects an archived cohort instead of writing into a hidden
   expect(repos.cohorts.list().find((x) => x.id === c.id)).toBeDefined();
 });
 
+test('add re-queues a dismissed profile into the new cohort', () => {
+  const old = repos.cohorts.create('OldArch', null, true);
+  const p = repos.profiles.add(old.id, 'https://www.linkedin.com/in/redo', 'old note');
+  repos.cohorts.setArchived(old.id, true);
+  repos.profiles.skipCohortQueue(old.id);
+  const next = repos.cohorts.create('NextUp', null, true);
+  const again = repos.profiles.add(next.id, 'https://www.linkedin.com/in/redo', null);
+  expect(again.id).toBe(p.id);
+  expect(again.cohort_id).toBe(next.id);
+  expect(again.status).toBe('queued');
+  expect(again.skip_reason).toBeNull();
+  expect(again.custom_message).toBeNull(); // the old campaign's note must not follow it
+});
+
+test('add never re-queues a profile skipped for a LinkedIn-observed reason', () => {
+  const c1 = repos.cohorts.create('Verdict1', null, true);
+  const p = repos.profiles.add(c1.id, 'https://www.linkedin.com/in/conn', null);
+  repos.profiles.setStatus(p.id, 'skipped', { skip_reason: 'already_connected' });
+  const c2 = repos.cohorts.create('Verdict2', null, true);
+  const again = repos.profiles.add(c2.id, 'https://www.linkedin.com/in/conn', null);
+  expect(again.status).toBe('skipped');
+  expect(again.skip_reason).toBe('already_connected');
+  expect(again.cohort_id).toBe(c1.id);
+});
+
+test('add never re-queues a profile with real send history', () => {
+  const c1 = repos.cohorts.create('Sent1', null, true);
+  const p = repos.profiles.add(c1.id, 'https://www.linkedin.com/in/was-sent', null);
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-01-01T00:00:00.000Z' });
+  const c2 = repos.cohorts.create('Sent2', null, true);
+  const again = repos.profiles.add(c2.id, 'https://www.linkedin.com/in/was-sent', null);
+  expect(again.status).toBe('sent');
+  expect(again.cohort_id).toBe(c1.id);
+});
+
 /* ---------- kind-aware repositories ---------- */
 
 test('cohort kind: create carries kind; getOrCreate defaults to invite', () => {

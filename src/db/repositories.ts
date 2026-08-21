@@ -69,11 +69,28 @@ export class CohortRepo {
 
 export class ProfileRepo {
   constructor(private db: DB) {}
+  /**
+   * Insert, or return the row that already holds this (url, kind) — with one exception:
+   * a row skipped as 'dismissed' was never processed, only set aside by the operator
+   * (cohort archived, or removed from the queue), so re-adding it adopts it into the new
+   * cohort and re-queues it as if fresh. Every other skip reason is a LinkedIn-observed
+   * verdict, and rows with real send history must never be re-sent — those stay untouched.
+   */
   add(cohortId: number, normalizedUrl: string, customMessage: string | null, kind: CampaignKind = 'invite'): Profile {
     const existing = this.db
       .prepare('SELECT * FROM profiles WHERE profile_url = ? AND kind = ?')
       .get(normalizedUrl, kind) as unknown as Profile | undefined;
-    if (existing) return existing;
+    if (existing) {
+      if (existing.status === 'skipped' && existing.skip_reason === 'dismissed') {
+        this.db.prepare(`
+          UPDATE profiles SET cohort_id = ?, custom_message = ?, status = 'queued',
+            skip_reason = NULL, scheduled_for = NULL, attempts = 0, last_error = NULL, priority = 0
+          WHERE id = ?
+        `).run(cohortId, customMessage, existing.id);
+        return this.findById(existing.id)!;
+      }
+      return existing;
+    }
     this.db.prepare(
       'INSERT INTO profiles (cohort_id, profile_url, custom_message, kind) VALUES (?, ?, ?, ?)',
     ).run(cohortId, normalizedUrl, customMessage, kind);
