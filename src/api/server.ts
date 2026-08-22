@@ -236,9 +236,15 @@ export function buildServer(
         .run(template, allowNoNote ? 1 : 0, c.id);
     }
     const urls = extractProfileUrls(text ?? '');
-    const before = repos.profiles.countAll();
+    // Count what lands queued in THIS cohort rather than total rows: an add can also
+    // resurrect a profile dismissed when its old cohort was archived (ProfileRepo.add
+    // re-queues it here), and that is an existing row, invisible to a countAll() delta.
+    const countQueued = () => (repos.db.prepare(
+      "SELECT COUNT(*) c FROM profiles WHERE cohort_id = ? AND status = 'queued'",
+    ).get(c.id) as unknown as { c: number }).c;
+    const before = countQueued();
     for (const u of urls) repos.profiles.add(c.id, u, null, kind);
-    const added = repos.profiles.countAll() - before;
+    const added = countQueued() - before;
     // Give the new backlog real slots now instead of leaving it untouched until the hourly
     // planning tick — a cohort added at 09:05 would otherwise sit unscheduled for nearly an
     // hour while the dashboard's next-batch pill implied an imminent send. planAndAssignToday
@@ -359,7 +365,9 @@ export function buildServer(
   app.get('/api/cohorts/archived', async () => repos.cohorts.listArchived());
 
   // Archiving hides the cohort (metrics, dropdowns) and stops its remaining queue;
-  // history stays in the DB and unarchive restores it.
+  // history stays in the DB and unarchive restores it. The stopped rows are not lost to
+  // future campaigns: re-adding a dismissed profile re-queues it in its new cohort
+  // (ProfileRepo.add).
   app.post('/api/cohorts/:id/archive', async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     if (!repos.cohorts.findById(id)) return reply.code(404).send({ error: 'cohort not found' });
