@@ -536,9 +536,12 @@ card forces a pass immediately.
 
 ## API (localhost)
 
-- `POST /api/profiles` `{ url, cohort, message? }` — enqueue one invite (for AI agents).
-- `POST /api/lists` `{ cohort, text, message_template?, kind? }` — bulk enqueue; the only
-  endpoint that can create a message campaign.
+- `POST /api/profiles` `{ url, cohort, message?, prioritize? }` — enqueue one invite (for
+  AI agents). `prioritize: true` puts it first in line and hands it today's earliest
+  remaining slot — same times, same volume, displaced rows lead tomorrow.
+- `POST /api/lists` `{ cohort, text, message_template?, kind?, prioritize? }` — bulk
+  enqueue; the only endpoint that can create a message campaign. Same `prioritize`
+  semantics, in paste order.
 - `GET /api/status` — queue + weekly counts, per kind.
 - `POST /api/connections/import` `{ text }` — ingest a `Connections.csv` export or a URL list.
 - `GET /api/connections/stats` — roster size and enrichment breakdown.
