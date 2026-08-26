@@ -92,6 +92,15 @@ Response (abridged): `{ "paused": 0, "weekly_sent": 12, "weekly_cap": 100, "coun
   real `scheduled_for` among `scheduled` rows, or `null` when nothing is scheduled; it is
   deliberately **not** a `next_batch` forecast, so there is never a clock time here without a
   slot behind it.
+- `alerts` is the roster-health list — red banners on the dashboard, but **not** halts:
+  nothing is stopped, there is no latch, and each entry disappears from the next poll the
+  moment its condition clears. Empty array when healthy. Each entry is
+  `{ "id": "roster_missing" | "enrich_failures", "title": "…", "detail": "…" }` —
+  `roster_missing` fires while the roster holds fewer than 1,000 connections (the
+  connections export was probably never imported), `enrich_failures` when many
+  connections have `enrich_status = failed` (≥25 and ≥5% of the roster, or ≥250
+  outright; fix with `POST /api/enrichment/retry-failed`). Thresholds live in
+  `src/core/health.ts`.
 - A `next_batch` / `msg_next_batch` is one of four shapes: `null` (nothing queued),
   `{ blocked, reason }`, `{ estimated: false, at, count }` for a materialized slot, or
   `{ estimated: true, count, … }` for a prediction. A prediction carries **either** `at`

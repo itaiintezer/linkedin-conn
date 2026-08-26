@@ -635,6 +635,64 @@ function applyGuardrailUi(status) {
   }
 }
 
+/* ---------- roster health alerts ----------
+   The red "needs your attention" strip. Same poll as the banners above, but plural:
+   the server sends a list (status.alerts) and each entry becomes its own .health-banner.
+   Titles and details arrive ready-made from the server; the client only maps each
+   alert id to its action button. Unknown ids still render (title + detail, no button)
+   so a future server-side check never produces an invisible alert. */
+const HEALTH_ALERT_ACTIONS = {
+  roster_missing: {
+    label: 'Open Connections',
+    run: () => switchTab('connections'),
+  },
+  enrich_failures: {
+    label: 'Retry failed',
+    run: async (btn) => {
+      btn.disabled = true;
+      try {
+        const r = await api('/api/enrichment/retry-failed', { method: 'POST', body: {} });
+        btn.textContent = `Re-queued ${fmtInt(r.requeued)}`;
+      } catch (err) {
+        btn.textContent = err.message;
+        btn.disabled = false;
+      }
+    },
+  },
+};
+
+const HEALTH_ICON_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4m0 4h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Z" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+/* Only rebuilt when the alert list actually changes, so a poll never yanks a
+   mid-click Retry button (or its "Re-queued N" verdict) out from under the operator. */
+let lastHealthAlertsSig = '';
+function applyHealthAlertsUi(status) {
+  const host = $('#healthAlerts');
+  if (!host) return;
+  const alerts = status && Array.isArray(status.alerts) ? status.alerts : [];
+  const sig = JSON.stringify(alerts.map((a) => [a.id, a.title, a.detail]));
+  if (sig === lastHealthAlertsSig) return;
+  lastHealthAlertsSig = sig;
+  host.replaceChildren(...alerts.map((a) => {
+    const icon = el('span', { class: 'health-banner-icon', 'aria-hidden': 'true' });
+    icon.innerHTML = HEALTH_ICON_SVG;
+    const action = HEALTH_ALERT_ACTIONS[a.id];
+    return el('div', { class: 'health-banner', role: 'alert', 'data-alert': a.id },
+      icon,
+      el('div', { class: 'health-banner-body' },
+        el('strong', {}, a.title || 'Needs attention.'),
+        el('span', {}, a.detail || ''),
+      ),
+      action
+        ? el('button', {
+            class: 'btn health-banner-action', type: 'button',
+            onclick: (e) => action.run(e.currentTarget),
+          }, action.label)
+        : null,
+    );
+  }));
+}
+
 /* Link the banner to the screenshot captured at trip time. Fetched once per trip
    (keyed on trippedAt) so the status poll doesn't hammer /api/incidents.
    Only evidence from THIS trip qualifies: the tripping attempt starts minutes
@@ -663,6 +721,7 @@ async function refreshStatus() {
     applyPauseUi(status);
     applyGuardrailUi(status);
     applyEnrichHaltUi(status);
+    applyHealthAlertsUi(status);
   } catch (_) { /* transient; next tick retries */ }
 }
 

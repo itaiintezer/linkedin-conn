@@ -164,6 +164,25 @@ test('GET /api/status includes guardrail state', async () => {
   });
 });
 
+test('GET /api/status carries roster health alerts (empty test DB = unimported roster)', async () => {
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  const body = JSON.parse(res.body);
+  expect(body.alerts.map((a: { id: string }) => a.id)).toEqual(['roster_missing']);
+});
+
+test('GET /api/status flags many failed enrichments', async () => {
+  for (let i = 0; i < 30; i++) {
+    const url = `https://www.linkedin.com/in/hc${i}`;
+    repos.connections.upsert({ profile_url: url }, 'csv', '2026-07-01T00:00:00.000Z');
+    if (i < 26) repos.connections.markEnrichFailure(repos.connections.findByUrl(url)!.id, 'boom', 1);
+  }
+  const res = await app.inject({ method: 'GET', url: '/api/status' });
+  const body = JSON.parse(res.body);
+  // 30 rows is still an unimported roster AND 26 failed is past the floor+share.
+  expect(body.alerts.map((a: { id: string }) => a.id)).toEqual(['roster_missing', 'enrich_failures']);
+  expect(body.alerts[1].detail).toContain('26');
+});
+
 test('POST /api/guardrail/acknowledge clears the guardrail when healthy', async () => {
   const driver = new FakeDriver();
   driver.loggedIn = true; driver.checkpoint = false;
