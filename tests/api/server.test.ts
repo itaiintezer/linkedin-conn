@@ -470,6 +470,126 @@ test('GET /api/queue/grouped groups queued+scheduled by cohort', async () => {
   expect(body.cohorts[0].profiles.length).toBeGreaterThan(0);
 });
 
+/* ---------- Prioritized add (prioritize: true on /api/profiles and /api/lists) ---------- */
+
+// These pause the engine so the endpoints' internal planAndAssignToday declines: the tests
+// then observe reseatKind's work in isolation, deterministically, whatever wall-clock time
+// the suite runs at. reseatKind itself is deliberately gate-free (a pure reorder), so
+// pausing changes nothing about what is being tested.
+function pausedWithSlots(prefix: string, slots: { at: string; count: number }[]) {
+  repos.settings.update({ paused: 1, pause_reason: 'test' });
+  const c = repos.cohorts.create(`P-${prefix}`, null, true);
+  const seeded = [];
+  for (const s of slots) {
+    for (let i = 0; i < s.count; i++) {
+      const p = repos.profiles.add(c.id, `https://www.linkedin.com/in/${prefix}-${seeded.length}`, null);
+      repos.profiles.setScheduled(p.id, s.at);
+      seeded.push(p);
+    }
+  }
+  return seeded;
+}
+const inHours = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
+
+test('POST /api/profiles prioritize takes the earliest scheduled seat and reports it', async () => {
+  const t1 = inHours(2);
+  const t2 = inHours(4);
+  const seeded = pausedWithSlots('pri1', [{ at: t1, count: 1 }, { at: t2, count: 1 }]);
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/pri1-urgent', prioritize: true },
+  });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  expect(body.prioritized).toBe(true);
+  expect(body.scheduled_for).toBe(t1);
+  // Volume conserved: still 2 seated, the last incumbent displaced back to queued.
+  expect(repos.profiles.byStatus('scheduled')).toHaveLength(2);
+  expect(repos.profiles.findById(seeded[1].id)!.status).toBe('queued');
+  expect(repos.profiles.findById(body.id)!.priority).toBe(-1);
+});
+
+test('POST /api/profiles prioritize with nothing scheduled falls back to front-of-queue', async () => {
+  repos.settings.update({ paused: 1, pause_reason: 'test' });
+  const c = repos.cohorts.create('P-pri2', null, true);
+  const backlog = repos.profiles.add(c.id, 'https://www.linkedin.com/in/pri2-old', null);
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/pri2-urgent', prioritize: true },
+  });
+  const body = JSON.parse(res.body);
+  expect(body.prioritized).toBe(true);
+  expect(body.scheduled_for).toBeNull();
+  expect(repos.profiles.queuedByPriority().map((p) => p.id)).toEqual([body.id, backlog.id]);
+});
+
+test('POST /api/profiles without prioritize keeps the legacy response shape', async () => {
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/pri3-plain' },
+  });
+  const body = JSON.parse(res.body);
+  expect(body).not.toHaveProperty('prioritized');
+  expect(body).not.toHaveProperty('scheduled_for');
+});
+
+test('POST /api/lists prioritize seats the pasted list in paste order into existing slots', async () => {
+  const t1 = inHours(2);
+  const t2 = inHours(4);
+  // 5 + 2: the second slot is under-filled, so seats = 7, never capacity (10).
+  const seeded = pausedWithSlots('pri4', [{ at: t1, count: 5 }, { at: t2, count: 2 }]);
+  const urls = [1, 2, 3].map((i) => `https://www.linkedin.com/in/pri4-urgent-${i}`);
+  const res = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Urgent4', text: urls.join('\n'), prioritize: true },
+  });
+  const body = JSON.parse(res.body);
+  expect(body).toMatchObject({ added: 3, found: 3, prioritized: 3, first_scheduled_for: t1 });
+  expect(repos.profiles.byStatus('scheduled')).toHaveLength(7);
+  const slotOf = (url: string) => repos.profiles.all().find((p) => p.profile_url.endsWith(url.split('/in/')[1]))!.scheduled_for;
+  for (const u of urls) expect(slotOf(u)).toBe(t1); // paste order leads
+  // Displaced tail (3 rows) queued at priority 0, first in line tomorrow behind the block.
+  const queued = repos.profiles.byStatus('queued');
+  expect(queued).toHaveLength(3);
+  expect(queued.map((p) => p.id).sort((a, b) => a - b)).toEqual(seeded.slice(4).map((p) => p.id));
+});
+
+test('POST /api/lists prioritize never moves rows with send history', async () => {
+  repos.settings.update({ paused: 1, pause_reason: 'test' });
+  const c = repos.cohorts.create('P-pri5', null, true);
+  const done = repos.profiles.add(c.id, 'https://www.linkedin.com/in/pri5-done', null);
+  repos.profiles.setStatus(done.id, 'sent', { sent_at: new Date().toISOString() });
+  const res = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: {
+      cohort: 'P-pri5',
+      text: 'https://www.linkedin.com/in/pri5-done\nhttps://www.linkedin.com/in/pri5-new',
+      prioritize: true,
+    },
+  });
+  const body = JSON.parse(res.body);
+  expect(body.found).toBe(2);
+  expect(body.prioritized).toBe(1); // < found: the sent row was not touched
+  expect(repos.profiles.findById(done.id)!.status).toBe('sent');
+  expect(repos.profiles.findById(done.id)!.priority).toBe(0);
+});
+
+test('GET /api/queue/grouped sorts fully-scheduled cohorts first, chronologically', async () => {
+  const cQueued = repos.cohorts.create('GQ-queued', null, true);
+  repos.profiles.add(cQueued.id, 'https://www.linkedin.com/in/gq-q', null);
+  const cLater = repos.cohorts.create('GQ-later', null, true);
+  const later = repos.profiles.add(cLater.id, 'https://www.linkedin.com/in/gq-l', null);
+  repos.profiles.setScheduled(later.id, inHours(4));
+  const cSoon = repos.cohorts.create('GQ-soon', null, true);
+  const soon = repos.profiles.add(cSoon.id, 'https://www.linkedin.com/in/gq-s', null);
+  repos.profiles.setScheduled(soon.id, inHours(2));
+  const res = await app.inject({ method: 'GET', url: '/api/queue/grouped' });
+  const names = JSON.parse(res.body).cohorts.map((c: { name: string }) => c.name);
+  // The old minPriority-only sort left fully-scheduled cohorts at the Infinity sentinel —
+  // rendering the cohort that sends FIRST at the BOTTOM.
+  expect(names).toEqual(['GQ-soon', 'GQ-later', 'GQ-queued']);
+});
+
 test('POST /api/queue/profile/:id/move top reprioritizes', async () => {
   const c = repos.cohorts.create('Mv', null, true);
   repos.profiles.add(c.id, 'https://www.linkedin.com/in/first', null);

@@ -40,7 +40,7 @@ import { isRetryableEngagement } from '../db/posts-repos.js';
 import { runEnrichment, enrichmentProgress, isEnrichmentRunning, pauseEnrichment } from '../worker/enrichment.js';
 import { extractProfile, isEmptyProfile } from '../core/apify-extract.js';
 import { searchConnections } from '../core/connection-search.js';
-import { planAndAssignToday } from '../worker/scheduler-service.js';
+import { planAndAssignToday, reseatKind } from '../worker/scheduler-service.js';
 import {
   addEventInvitees, armEventCampaign, createEventCampaign, ensureEventReservation,
   eventPipelineSummary, nextEventRun, reopenEventCampaign,
@@ -163,8 +163,8 @@ export function buildServer(
   app.register(fastifyStatic, { root: incidentsDir, prefix: '/incidents/', decorateReply: false });
 
   app.post('/api/profiles', async (req, reply) => {
-    const { url, cohort, message, kind: kindRaw } =
-      req.body as { url: string; cohort?: string; message?: string; kind?: string };
+    const { url, cohort, message, kind: kindRaw, prioritize } =
+      req.body as { url: string; cohort?: string; message?: string; kind?: string; prioritize?: boolean };
     const normalized = normalizeProfileUrl(url ?? '');
     if (!normalized) return reply.code(400).send({ error: 'invalid linkedin profile url' });
     const parsedKind = parseKind(kindRaw);
@@ -192,13 +192,32 @@ export function buildServer(
     }
     const c = repos.cohorts.getOrCreate(cohortName, null, true, kind);
     const p = repos.profiles.add(c.id, normalized, note ?? null, kind);
+    // Prioritize BETWEEN the insert and the planning pass — after planning the row is
+    // frequently 'scheduled', where priority no longer orders anything, which is exactly
+    // why the two-step add-then-/api/queue/move dance cannot do this. Only rows still in
+    // play are moved: add() can return a pre-existing row with real send history, and
+    // prioritizing must never resurrect or re-send one.
+    const promoted = prioritize === true && (p.status === 'queued' || p.status === 'scheduled');
+    if (promoted) {
+      repos.profiles.frontBlock([p.id]);
+      reseatKind(repos, kind, new Date()); // take today's earliest remaining seat, if any
+    }
     planAndAssignToday(repos, new Date()); // schedule it now — see the note in /api/lists
+    if (prioritize === true) {
+      // Read back the REAL slot (post-plan) so the caller can say "goes out at 11:40"
+      // in one round trip; null means no seat today — it leads tomorrow's plan.
+      const after = repos.profiles.findById(p.id)!;
+      return {
+        id: p.id, profile_url: p.profile_url, kind: p.kind, prioritized: promoted,
+        scheduled_for: after.status === 'scheduled' ? after.scheduled_for : null,
+      };
+    }
     return { id: p.id, profile_url: p.profile_url, kind: p.kind };
   });
 
   app.post('/api/lists', async (req, reply) => {
-    const { cohort, text, message_template, kind: kindRaw } =
-      req.body as { cohort?: string; text: string; message_template?: string; kind?: string };
+    const { cohort, text, message_template, kind: kindRaw, prioritize } =
+      req.body as { cohort?: string; text: string; message_template?: string; kind?: string; prioritize?: boolean };
     const parsedKind = parseKind(kindRaw);
     if (!parsedKind.ok) return reply.code(400).send({ error: parsedKind.error });
     const kind: CampaignKind = parsedKind.kind ?? 'invite';
@@ -243,8 +262,22 @@ export function buildServer(
       "SELECT COUNT(*) c FROM profiles WHERE cohort_id = ? AND status = 'queued'",
     ).get(c.id) as unknown as { c: number }).c;
     const before = countQueued();
-    for (const u of urls) repos.profiles.add(c.id, u, null, kind);
+    // Rows still in play (queued/scheduled) are what a `prioritize` can move — add() may
+    // return a pre-existing row with real send history, and prioritizing must never
+    // resurrect or re-send one. Collected in paste order, which the shared front-block
+    // priority then preserves via the (priority, id) tie-break.
+    const eligible: number[] = [];
+    for (const u of urls) {
+      const p = repos.profiles.add(c.id, u, null, kind);
+      if (prioritize === true && (p.status === 'queued' || p.status === 'scheduled')) eligible.push(p.id);
+    }
     const added = countQueued() - before;
+    // Same placement rule as /api/profiles: BETWEEN the inserts and the planning pass,
+    // while the rows are still 'queued' and priority still orders them.
+    if (eligible.length > 0) {
+      repos.profiles.frontBlock(eligible);
+      reseatKind(repos, kind, new Date()); // take today's earliest remaining seats, if any
+    }
     // Give the new backlog real slots now instead of leaving it untouched until the hourly
     // planning tick — a cohort added at 09:05 would otherwise sit unscheduled for nearly an
     // hour while the dashboard's next-batch pill implied an imminent send. planAndAssignToday
@@ -252,6 +285,18 @@ export function buildServer(
     // adds no way to slip a send past those gates; it only stops the operator from staring
     // at an empty queue wondering what broke.
     planAndAssignToday(repos, new Date());
+    if (prioritize === true) {
+      // Earliest REAL slot any prioritized row took (post-plan) — null when today gave
+      // them no seat and they lead tomorrow instead. `prioritized < found` signals pasted
+      // URLs that were already past sending and therefore not moved.
+      let first: string | null = null;
+      for (const id of eligible) {
+        const row = repos.profiles.findById(id)!;
+        if (row.status === 'scheduled' && row.scheduled_for !== null
+          && (first === null || row.scheduled_for < first)) first = row.scheduled_for;
+      }
+      return { added, found: urls.length, prioritized: eligible.length, first_scheduled_for: first };
+    }
     return { added, found: urls.length };
   });
 
@@ -1823,16 +1868,32 @@ export function buildServer(
       priority: number; cohort_id: number; cohort_name: string; note: string | null;
     }[];
 
-    const groups = new Map<number, { id: number; name: string; count: number; minPriority: number; profiles: typeof rows }>();
+    const groups = new Map<number, { id: number; name: string; count: number; minPriority: number; firstSlot: string | null; profiles: typeof rows }>();
     for (const r of rows) {
       let g = groups.get(r.cohort_id);
-      if (!g) { g = { id: r.cohort_id, name: r.cohort_name, count: 0, minPriority: Infinity, profiles: [] }; groups.set(r.cohort_id, g); }
+      if (!g) { g = { id: r.cohort_id, name: r.cohort_name, count: 0, minPriority: Infinity, firstSlot: null, profiles: [] }; groups.set(r.cohort_id, g); }
       g.count++;
       if (r.status === 'queued') g.minPriority = Math.min(g.minPriority, r.priority);
+      // Fixed-width UTC ISO strings, so string < IS chronological (the countSentSince rule).
+      if (r.status === 'scheduled' && r.scheduled_for !== null
+        && (g.firstSlot === null || r.scheduled_for < g.firstSlot)) g.firstSlot = r.scheduled_for;
       g.profiles.push(r);
     }
+    // Cohorts with a materialized slot sort first, chronologically — a scheduled send
+    // happens before any queued row possibly can, so this is actual conveyor order.
+    // Queued-only cohorts follow by front-of-queue priority. Sorting on minPriority alone
+    // (the old rule) left a fully-scheduled cohort at its Infinity sentinel — rendering
+    // the cohort that sends FIRST at the BOTTOM, which is exactly the state a prioritized
+    // add produces (small cohort, every row seated).
     const cohorts = [...groups.values()]
-      .sort((a, b) => a.minPriority - b.minPriority || a.id - b.id)
+      .sort((a, b) => {
+        if (a.firstSlot !== null && b.firstSlot !== null) {
+          return a.firstSlot < b.firstSlot ? -1 : a.firstSlot > b.firstSlot ? 1 : a.id - b.id;
+        }
+        if (a.firstSlot !== null) return -1;
+        if (b.firstSlot !== null) return 1;
+        return a.minPriority - b.minPriority || a.id - b.id;
+      })
       .map((g) => ({
         id: g.id, name: g.name, count: g.count,
         profiles: orderUpcoming(g.profiles).map((p) => ({

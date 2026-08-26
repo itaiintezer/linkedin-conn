@@ -249,6 +249,56 @@ function planEngagements(
 }
 
 /**
+ * Re-seat one kind's day: keep today's future slot TIMES exactly as planned, but re-fill
+ * them from the queue in (priority, id) order. This is how a prioritized add takes effect
+ * today — the new front block takes the earliest seats, displaced rows return to 'queued'
+ * (priority untouched) and lead tomorrow's plan.
+ *
+ * Deliberately NOT resortSchedule: that redraws slot times via planDailyBatches, which
+ * samples the whole workday window and discards draws that land before `now` — a late-day
+ * re-plan keeps a fraction of the slots and silently sheds sends the day had capacity for,
+ * by an rng roll, with the loss landing on the urgent batch itself. It also requeues every
+ * pipeline. Re-seating moves no times, draws no rng, and touches only this kind.
+ *
+ * Two conservation rules, both load-bearing:
+ *  - Only slots strictly in the FUTURE are touched. A row whose slot is <= now is due —
+ *    the sender's pickDue takes it on the next tick, and requeueOverdue owns staleness —
+ *    so re-seating it would yank a row out from under an imminent send. Rows in 'sending'
+ *    are excluded by construction (byStatusKind('scheduled') cannot see them).
+ *  - seats = the number of rows displaced, NOT slots * batch_size. The previous assignment
+ *    may have under-filled its last slot; re-seating to slot capacity would quietly add
+ *    sends to today — a cap violation smuggled in by a reordering operation. Conserving
+ *    occupancy exactly also conserves dailyRemainingFor and the weekly budget, so neither
+ *    needs re-checking here.
+ *
+ * The reused times already passed filterReservedSlots when they were planned, so no
+ * reservation re-check: a reservation created after planning overlaps the existing
+ * schedule regardless of who sits in it.
+ */
+export function reseatKind(repos: Repos, kind: CampaignKind, now: Date): number {
+  const future = repos.profiles.byStatusKind('scheduled', kind)
+    .filter((p) => p.scheduled_for !== null && new Date(p.scheduled_for).getTime() > now.getTime());
+  if (future.length === 0) return 0;
+
+  const times = [...new Set(future.map((p) => p.scheduled_for as string))]
+    .sort()
+    .map((iso) => new Date(iso));
+  const seats = future.length;
+
+  for (const p of future) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null });
+
+  const s = repos.settings.get();
+  const batchSize = Math.max(1, capsFor(s, kind).batchSize);
+  const take = repos.profiles.queuedByPriorityKind(kind).slice(0, seats).map((p) => p.id);
+  for (const a of assignSchedule(take, times, batchSize)) {
+    repos.profiles.setScheduled(a.id, a.when.toISOString());
+  }
+
+  log.debug('scheduler', 'reseated day', { queue: kind, seats, slots: times.length });
+  return seats;
+}
+
+/**
  * Full rebuild: return EVERY scheduled profile to the queue (clearing its slot), then
  * re-flow the whole backlog into fresh policy-compliant batches. Called at startup so a
  * backlog of past-due (or otherwise stale) slots is re-sorted to policy — same batch size

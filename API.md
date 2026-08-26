@@ -21,7 +21,7 @@ out per endpoint below.
 ### POST /api/profiles
 Enqueue one profile. Creates the cohort if it does not exist.
 
-Request: `{ "url": "https://www.linkedin.com/in/jane-doe/", "cohort": "Security VPs", "message": "Hi {firstName}, …", "kind": "invite" | "message" }`
+Request: `{ "url": "https://www.linkedin.com/in/jane-doe/", "cohort": "Security VPs", "message": "Hi {firstName}, …", "kind": "invite" | "message", "prioritize": true }`
 - `url` (required) — a LinkedIn profile URL; normalized server-side.
 - `cohort` (optional) — cohort name; defaults to today's date.
 - `kind` (optional) — defaults to `invite`. Anything other than `"message"` is treated as
@@ -29,6 +29,14 @@ Request: `{ "url": "https://www.linkedin.com/in/jane-doe/", "cohort": "Security 
 - `message` (optional) — per-profile note (invites) or DM body (messages); `{firstName}` is
   substituted at send time. Max length 2000 for messages, 300 for invite notes; over that
   is `400`. It takes precedence over the cohort template.
+- `prioritize` (optional, default `false`) — the profile goes to the **front of the queue
+  and takes today's earliest remaining slot**. Slot times and today's send volume are
+  unchanged: the new row takes an existing seat, and whoever it displaced returns to the
+  queue and leads tomorrow's plan. Repeated prioritized adds join one front block in
+  arrival order — adding N profiles one-by-one ends in the same order as one pasted list.
+  When nothing is scheduled today (evening, weekend, paused), it degrades to plain
+  front-of-queue. A URL that resolves to a row with real send history is **never** moved
+  or re-sent; the response says so (see below).
 
 `400` if the URL is not a recognizable `/in/<slug>` link.
 
@@ -42,6 +50,13 @@ a non-blank `message` **or** the target cohort already has a non-blank template.
 `POST /api/lists` applies the same rule.
 
 Response: `{ "id": 42, "profile_url": "https://www.linkedin.com/in/jane-doe", "kind": "invite" }`
+
+With `prioritize: true` the response adds two fields:
+`{ …, "prioritized": true, "scheduled_for": "2026-08-26T11:40:12.000Z" }`.
+`scheduled_for` is the **real slot** the profile took (never a forecast) — tell the user
+"goes out at 11:40 today". `null` means today gave it no seat and it leads tomorrow's plan
+instead. `prioritized: false` means the URL matched a row already past sending, which was
+left untouched.
 
 ```
 curl -s http://localhost:4400/api/profiles \
@@ -88,7 +103,7 @@ Response (abridged): `{ "paused": 0, "weekly_sent": 12, "weekly_cap": 100, "coun
 ## Bulk & cohorts
 
 ### POST /api/lists
-Bulk-enqueue from pasted text. Request: `{ "cohort": "Security VPs", "text": "url1\nurl2", "message_template": "Hi {firstName}", "kind": "invite" | "message" }`. Response: `{ "added": 2, "found": 2 }`.
+Bulk-enqueue from pasted text. Request: `{ "cohort": "Security VPs", "text": "url1\nurl2", "message_template": "Hi {firstName}", "kind": "invite" | "message", "prioritize": true }`. Response: `{ "added": 2, "found": 2 }`.
 
 - `kind` (optional) — defaults to `invite`. Anything other than `"message"` is treated as
   `invite`.
@@ -101,10 +116,19 @@ Bulk-enqueue from pasted text. Request: `{ "cohort": "Security VPs", "text": "ur
   that cohort, so omit it unless you mean to change it.
 - `409` if a cohort with that name already exists with the other kind. Checked before the
   template rule, so a kind mismatch reports itself as one.
+- `prioritize` (optional, default `false`) — the pasted list goes to the **front of the
+  queue in paste order and takes today's earliest remaining slots**, same semantics as on
+  `POST /api/profiles`: slot times and today's volume are unchanged, displaced rows lead
+  tomorrow. The response gains `"prioritized": N` (rows actually moved — rows with send
+  history are never touched, so `prioritized < found` flags them) and
+  `"first_scheduled_for"` (the earliest real slot any of them took, `null` when none
+  today).
 - Both `POST /api/lists` and `POST /api/profiles` run a planning pass on the new backlog, so
   added work gets real slots immediately instead of waiting for the hourly scheduler tick.
   Planning still declines while paused, halted, outside working hours or on a non-sending
-  day — adding work never slips a send past those gates.
+  day — adding work never slips a send past those gates. (`prioritize` obeys the same
+  gates for *new* slots, but re-seating existing slots is a pure reorder and works even
+  while paused.)
 
 ### GET /api/cohorts
 List active (non-archived) cohorts: `[{ "id", "name", "kind", "message_template", "allow_no_note", "created_at" }]`.
@@ -1156,6 +1180,12 @@ Queue grouped by cohort in send-priority order: `{ "cohorts": [{ "id", "name", "
 Every profile in a cohort has the cohort's kind, so the first row identifies the group. That
 invariant is enforced at every write path: `POST /api/lists`, `POST /api/cohorts` and
 `POST /api/profiles` all `409` on a cross-kind add, and a cohort's kind is fixed at creation.
+
+Cohort order is actual conveyor order: cohorts with a materialized slot come first, by their
+earliest `scheduled_for` (a scheduled send happens before any queued row possibly can);
+cohorts with only queued rows follow, by front-of-queue priority. In particular a cohort
+whose rows are all seated — the state a prioritized add produces — sorts by when it sends,
+not last.
 
 `events` holds at most the ONE armed campaign that will run next — the same one
 `status.event.next_run` names — because a run books the browser for a reserved block and

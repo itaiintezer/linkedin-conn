@@ -109,6 +109,13 @@ A cohort is invites **or** messages, decided when you first create it and fixed 
 If you try to add people to a cohort of the other type, The Machine refuses and tells you —
 make a second cohort with a different name instead.
 
+**Need some people to go out first?** Tell your assistant to add them **prioritized**
+("add these people first in line" / "these are urgent, put them at the top"). They jump to
+the front of the queue **and** take today's next send times — the times themselves don't
+move and today still sends the same total; whoever they bumped simply goes out tomorrow
+morning, first. If it's evening or a weekend and nothing is planned, they'll simply lead
+the next sending day. The assistant will tell you when the first ones go out.
+
 ## 4. Reading the dashboard
 There are two conveyors: **invites** on top, and **messages** below it. The messages one
 stays folded away as a single slim row until you actually have a message campaign, so an

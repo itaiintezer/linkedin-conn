@@ -1,7 +1,7 @@
 import { test, expect, beforeEach } from 'vitest';
 import { openDatabase } from '../../src/db/database.js';
 import { Repos } from '../../src/db/repositories.js';
-import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending } from '../../src/worker/scheduler-service.js';
+import { planAndAssignToday, requeueOverdue, resortSchedule, recoverOrphanedSending, reseatKind } from '../../src/worker/scheduler-service.js';
 
 let repos: Repos;
 beforeEach(() => { repos = new Repos(openDatabase(':memory:')); });
@@ -408,4 +408,105 @@ test('a reservation on another day does not affect today', () => {
   );
   planAndAssignToday(repos, new Date('2026-06-29T08:00:00'), () => 0.5);
   expect(repos.profiles.byStatus('scheduled').length).toBe(5);
+});
+
+// ---------------------------------------------------------------------------
+// reseatKind: keep today's slot times, re-fill the seats in (priority, id) order.
+// ---------------------------------------------------------------------------
+
+const RESEAT_NOW = new Date('2026-06-29T10:00:00');
+const T1 = new Date('2026-06-29T11:40:00').toISOString();
+const T2 = new Date('2026-06-29T14:03:00').toISOString();
+const T3 = new Date('2026-06-29T17:22:00').toISOString();
+
+/** N queued profiles in one cohort, ids in insertion order. */
+function seedProfiles(prefix: string, n: number, kind: 'invite' | 'message' = 'invite') {
+  const c = repos.cohorts.getOrCreate(`Reseat-${prefix}`, kind === 'message' ? 'hi' : null, true, kind);
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(repos.profiles.add(c.id, `https://www.linkedin.com/in/${prefix}-${i}`, null, kind));
+  return out;
+}
+
+const slotOf = (id: number) => repos.profiles.findById(id)!.scheduled_for;
+
+test('reseatKind conserves slot times and seat count while the front block takes the earliest seats', () => {
+  const old = seedProfiles('old', 15);
+  old.slice(0, 5).forEach((p) => repos.profiles.setScheduled(p.id, T1));
+  old.slice(5, 10).forEach((p) => repos.profiles.setScheduled(p.id, T2));
+  old.slice(10, 15).forEach((p) => repos.profiles.setScheduled(p.id, T3));
+
+  const urgent = seedProfiles('urgent', 8);
+  repos.profiles.frontBlock(urgent.map((p) => p.id));
+  expect(reseatKind(repos, 'invite', RESEAT_NOW)).toBe(15);
+
+  const scheduled = repos.profiles.byStatus('scheduled');
+  expect(scheduled).toHaveLength(15); // volume conserved exactly
+  expect([...new Set(scheduled.map((p) => p.scheduled_for))].sort()).toEqual([T1, T2, T3]); // times untouched
+
+  // Front block first, in insertion order: urgent 0-4 at T1, urgent 5-7 + old 0-1 at T2,
+  // old 2-6 at T3; old 7-14 displaced back to queued, priority intact, leading tomorrow.
+  urgent.slice(0, 5).forEach((p) => expect(slotOf(p.id)).toBe(T1));
+  urgent.slice(5, 8).forEach((p) => expect(slotOf(p.id)).toBe(T2));
+  old.slice(0, 2).forEach((p) => expect(slotOf(p.id)).toBe(T2));
+  old.slice(2, 7).forEach((p) => expect(slotOf(p.id)).toBe(T3));
+  const queued = repos.profiles.byStatus('queued');
+  expect(queued.map((p) => p.id).sort((a, b) => a - b)).toEqual(old.slice(7).map((p) => p.id));
+  for (const p of queued) expect(p.priority).toBe(0);
+});
+
+test('reseatKind seats = displaced rows, not slot capacity (an under-filled slot gains nothing)', () => {
+  const old = seedProfiles('uf-old', 7);
+  old.slice(0, 5).forEach((p) => repos.profiles.setScheduled(p.id, T1));
+  old.slice(5, 7).forEach((p) => repos.profiles.setScheduled(p.id, T2)); // last slot under-filled: 2 of 5
+
+  const urgent = seedProfiles('uf-new', 4);
+  repos.profiles.frontBlock(urgent.map((p) => p.id));
+  expect(reseatKind(repos, 'invite', RESEAT_NOW)).toBe(7);
+
+  // Still exactly 7 seated — re-seating to capacity (10) would smuggle 3 extra sends into today.
+  expect(repos.profiles.byStatus('scheduled')).toHaveLength(7);
+  urgent.forEach((p) => expect(slotOf(p.id)).toBe(T1));
+  expect(slotOf(old[0].id)).toBe(T1);
+  expect(slotOf(old[1].id)).toBe(T2);
+  expect(slotOf(old[2].id)).toBe(T2);
+  expect(repos.profiles.byStatus('queued')).toHaveLength(4); // old 3-6 displaced
+});
+
+test('reseatKind leaves due rows (scheduled_for <= now) alone', () => {
+  const [due, future] = seedProfiles('due', 2);
+  const past = new Date(RESEAT_NOW.getTime() - 60_000).toISOString();
+  repos.profiles.setScheduled(due.id, past);
+  repos.profiles.setScheduled(future.id, T1);
+
+  const [urgent] = seedProfiles('due-new', 1);
+  repos.profiles.frontBlock([urgent.id]);
+  expect(reseatKind(repos, 'invite', RESEAT_NOW)).toBe(1); // only the future seat
+
+  expect(slotOf(due.id)).toBe(past); // untouched: the sender owns it now
+  expect(slotOf(urgent.id)).toBe(T1);
+  expect(repos.profiles.findById(future.id)!.status).toBe('queued');
+});
+
+test('reseatKind touches only its own kind', () => {
+  const [dm] = seedProfiles('dm', 1, 'message');
+  repos.profiles.setScheduled(dm.id, T1);
+  const [inv] = seedProfiles('inv', 1);
+  repos.profiles.setScheduled(inv.id, T2);
+
+  const [urgent] = seedProfiles('inv-new', 1);
+  repos.profiles.frontBlock([urgent.id]);
+  expect(reseatKind(repos, 'invite', RESEAT_NOW)).toBe(1);
+
+  expect(slotOf(dm.id)).toBe(T1); // message schedule never touched
+  expect(repos.profiles.findById(dm.id)!.status).toBe('scheduled');
+  expect(slotOf(urgent.id)).toBe(T2);
+});
+
+test('reseatKind with nothing scheduled returns 0 and moves nothing', () => {
+  const rows = seedProfiles('empty', 3);
+  repos.profiles.frontBlock([rows[2].id]);
+  expect(reseatKind(repos, 'invite', RESEAT_NOW)).toBe(0);
+  expect(repos.profiles.byStatus('scheduled')).toHaveLength(0);
+  // Queue order still correct for the next planning pass.
+  expect(repos.profiles.queuedByPriority().map((p) => p.id)).toEqual([rows[2].id, rows[0].id, rows[1].id]);
 });
