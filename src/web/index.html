@@ -69,7 +69,7 @@
     </div>
 
     <nav class="tabs" id="tabs">
-      <button class="tab" data-tab="add">Add List</button>
+      <button class="tab" data-tab="add">Add to Queue</button>
       <button class="tab" data-tab="cohorts">Cohorts</button>
       <button class="tab" data-tab="connections">Connections</button>
       <button class="tab" data-tab="posts">Posts</button>
@@ -529,7 +529,7 @@
     <section class="panel" id="tab-add" hidden>
       <div class="panel-head">
         <div class="panel-title">
-          <h2>Add list</h2>
+          <h2>Add to queue</h2>
           <p class="panel-sub">Paste or drop profiles, pick a cohort, and queue them</p>
         </div>
       </div>
@@ -576,6 +576,23 @@
             <label for="listTemplate"><span id="tplLabel">Message template</span> <span class="hint" id="tplCount">0 / 300</span></label>
             <textarea id="listTemplate" maxlength="300" rows="5" placeholder="Hi {firstName}, I came across your work and…"></textarea>
             <p class="hint" id="tplHelp">Use <code>{firstName}</code> to personalize. Leave blank to send without a note.</p>
+          </div>
+          <!-- Queue position, last before the button: it is the one choice here with a
+               side effect on work already scheduled, so it sits where it cannot be
+               scrolled past on the way to submitting. Off on every load, and reset after
+               each successful enqueue — prioritizing is exceptional, never sticky. -->
+          <div class="field">
+            <label class="prio-toggle" for="listPrioritize">
+              <input type="checkbox" id="listPrioritize" aria-describedby="listPrioNote" />
+              <span class="prio-ico" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5.5 11.5 6.5-6.5 6.5 6.5"/></svg>
+              </span>
+              <span class="prio-txt">Send these first<small>Jump the queue and take today’s next send times</small></span>
+            </label>
+            <p class="hint prio-note" id="listPrioNote" hidden>
+              Sends already lined up for today move to tomorrow morning, first in line.
+              The send times and the daily total don’t change — only who goes when.
+            </p>
           </div>
           <button class="btn btn-green add-submit" type="submit">Enqueue</button>
           <div class="toast" id="listResult" hidden></div>

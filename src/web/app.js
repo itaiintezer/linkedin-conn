@@ -1472,7 +1472,7 @@ function countProfiles(text) {
   return seen.size;
 }
 
-/* Which campaign kind the Add List form is building. */
+/* Which campaign kind the Add to queue form is building. */
 function selectedListKind() {
   const checked = $$('input[name="listKind"]').find((r) => r.checked);
   return (checked && checked.value) === 'message' ? 'message' : 'invite';
@@ -1509,6 +1509,29 @@ async function loadCohortOptions() {
   if (!keep && current) unlockListCohortName();
 }
 
+/**
+ * The sentence a prioritized enqueue earns: when the first of them actually goes out.
+ *
+ * `first_scheduled_for` is a REAL slot the API assigned, never a forecast, so this is the
+ * one place the form can promise a clock time honestly. It is null when today had no seat
+ * left to take (evening, weekend, paused, or the day already fully sent) — in which case
+ * the rows lead the next sending day and there is no time to quote.
+ *
+ * `prioritized < found` means some pasted URLs resolved to rows already past sending; those
+ * are never moved or re-sent, and staying quiet about them would make the count look wrong.
+ */
+function prioritizedSuffix(r, asked) {
+  if (!asked) return '';
+  const moved = Number(r.prioritized || 0);
+  if (moved === 0) return ' Nothing was moved to the front — those profiles have already been sent.';
+  const when = r.first_scheduled_for
+    ? ` — first ${moved === 1 ? 'one goes' : 'ones go'} out at ${fmtClock(r.first_scheduled_for)} ${fmtRelDay(r.first_scheduled_for)}`
+    : ` — first in line for the next sending day`;
+  const skipped = Number(r.found || 0) - moved;
+  const tail = skipped > 0 ? ` (${skipped} already sent, left as-is)` : '';
+  return ` Sending ${moved === 1 ? 'it' : 'them'} first${when}${tail}.`;
+}
+
 function initAddList() {
   const tpl = $('#listTemplate'), counter = $('#tplCount'), area = $('#listText');
   const updateTplCount = () => { counter.textContent = `${tpl.value.length} / ${tpl.maxLength}`; };
@@ -1534,13 +1557,28 @@ function initAddList() {
 
   $('#listCohort').placeholder = 'e.g. Founders Q3';
 
+  const prio = $('#listPrioritize');
   const submitBtn = $('#listForm button[type="submit"]');
+  // The button says which of the two things it will do. Prioritizing displaces sends that
+  // are already lined up, so the label — the last thing read before committing — must not
+  // be identical for both modes.
   const updateCount = () => {
     const n = countProfiles(area.value);
+    const first = prio && prio.checked;
     $('#listCount').textContent = `${n} profile${n === 1 ? '' : 's'} detected`;
-    if (submitBtn) submitBtn.textContent = n ? `Enqueue ${n}` : 'Enqueue';
+    if (submitBtn) {
+      submitBtn.textContent = first
+        ? (n ? `Enqueue ${n} first in line` : 'Enqueue first in line')
+        : (n ? `Enqueue ${n}` : 'Enqueue');
+    }
   };
   area.addEventListener('input', updateCount);
+  if (prio) {
+    prio.addEventListener('change', () => {
+      $('#listPrioNote').hidden = !prio.checked;
+      updateCount();
+    });
+  }
   updateCount();
 
   // Drag-drop a .csv/.txt onto the profiles box (replaces the old file picker).
@@ -1583,19 +1621,32 @@ function initAddList() {
       tpl.focus();
       return;
     }
+    const prioritize = !!(prio && prio.checked);
     const payload = {
       cohort: $('#listCohort').value.trim() || undefined,
       kind,
       text: area.value,
       message_template: template,
     };
+    // Only sent when actually asked for, so an ordinary add posts the body it always has.
+    if (prioritize) payload.prioritize = true;
     try {
       const r = await api('/api/lists', { method: 'POST', body: payload });
-      toast(result, `Added ${r.added} of ${r.found} found.`);
-      result.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      toast(result, `Added ${r.added} of ${r.found} found.${prioritizedSuffix(r, prioritize)}`);
       area.value = '';
+      // Prioritizing is exceptional and displaces work the operator queued earlier, so it
+      // never carries over to the next batch — same reasoning as clearing the textarea.
+      if (prio) { prio.checked = false; $('#listPrioNote').hidden = true; }
       updateCount();
       loadCohortOptions();
+      // Dead last, and guarded — same reason as the update pill's scroll (see initMaintenance):
+      // not every environment implements scrollIntoView. It used to run BEFORE the resets
+      // above, so where it is missing it threw straight into the catch below and reported a
+      // SUCCESSFUL enqueue as "Failed: result.scrollIntoView is not a function", leaving the
+      // pasted URLs sitting in the box. Scrolling is a nicety; it must be last and optional.
+      if (typeof result.scrollIntoView === 'function') {
+        result.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
     } catch (err) {
       // A cohort's kind is fixed at creation. That 409 is the one failure here the
       // user can act on, so it gets a sentence instead of a raw error.
@@ -1781,7 +1832,7 @@ function updateCohortTplCount() {
   $('#cohortTplCount').textContent = `${tpl.value.length} / ${tpl.maxLength}`;
 }
 
-/* Same rules as the Add List rail: longer, mandatory text for message cohorts. */
+/* Same rules as the Add to queue rail: longer, mandatory text for message cohorts. */
 function applyCohortKindUi() {
   const msg = $('#cohortKind').value === 'message';
   const tpl = $('#cohortTemplate');

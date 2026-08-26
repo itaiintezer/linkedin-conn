@@ -194,7 +194,7 @@ does not depend on `.gitignore` staying correct.
 1. Click **Connect LinkedIn** — a browser window opens; log in manually. Your session
    persists in `.linkedin-profile/`. (The browser itself was already downloaded during
    install, so this opens in seconds.) Click **Finish setup** once the dot turns green.
-2. Go to **Add List**, pick **Invites** or **Messages**, name a cohort, set a message
+2. Go to **Add to Queue**, pick **Invites** or **Messages**, name a cohort, set a message
    template (use `{firstName}`), paste URLs or upload a CSV/TXT.
 3. The app schedules sends at randomized times within your working hours (default
    8am–8pm weekdays), 5 per batch, up to 4 batches a day, max 100 per rolling 7 days.

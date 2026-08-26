@@ -81,7 +81,7 @@ connected to is treated as lower-risk than sending invites. Change any of them u
 few weeks, raising **Batches / day (messages)** from 6 to 8 is the safe next step.
 
 ## 3. Add people to contact
-1. Go to **Add List**.
+1. Go to **Add to Queue**.
 2. Choose what you're sending:
    - **Invites** — connection requests, for people you're not connected to.
    - **Messages** — direct messages, for people you're **already connected to**.
@@ -109,12 +109,16 @@ A cohort is invites **or** messages, decided when you first create it and fixed 
 If you try to add people to a cohort of the other type, The Machine refuses and tells you —
 make a second cohort with a different name instead.
 
-**Need some people to go out first?** Tell your assistant to add them **prioritized**
-("add these people first in line" / "these are urgent, put them at the top"). They jump to
-the front of the queue **and** take today's next send times — the times themselves don't
-move and today still sends the same total; whoever they bumped simply goes out tomorrow
-morning, first. If it's evening or a weekend and nothing is planned, they'll simply lead
-the next sending day. The assistant will tell you when the first ones go out.
+**Need some people to go out first?** Tick **Send these first** in the rail, just above the
+Enqueue button. They jump to the front of the queue **and** take today's next send times —
+the times themselves don't move and today still sends the same total; whoever they bumped
+simply goes out tomorrow morning, first. If it's evening or a weekend and nothing is
+planned, they'll simply lead the next sending day.
+
+The confirmation tells you exactly when the first of them goes out ("first ones go out at
+11:40 today"), so you never have to guess whether it worked. The tick box resets itself
+after each batch — it's for the exceptional list, not a setting you leave on. You can also
+just ask your assistant ("add these people first in line") and it does the same thing.
 
 ## 4. Reading the dashboard
 There are two conveyors: **invites** on top, and **messages** below it. The messages one
