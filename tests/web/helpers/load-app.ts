@@ -67,7 +67,13 @@ export interface AppInternals {
   renderPostsFeed: (payload: Record<string, unknown>, append?: boolean) => void;
   refreshPosts: (append?: boolean) => Promise<void>;
   refreshTracked: () => Promise<void>;
-  postsState: { filter: string; selected: Set<number>; cursor: string | null };
+  postsState: {
+    filter: string;
+    selected: Set<number>;
+    /** Tracked-profile ids ticked in the tracking manager, behind its bulk Remove. */
+    trackedSelected: Set<number>;
+    cursor: string | null;
+  };
   /** The bootstrap. Never called by loadApp — see the readyState note below. */
   init: () => void;
 }

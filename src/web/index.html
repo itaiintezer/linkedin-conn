@@ -794,10 +794,31 @@
           <span class="muted" id="postsTrackCount"></span>
           <button class="btn btn-green" type="button" id="postsTrackAdd">Track posts</button>
         </div>
+        <!-- Appears only once a row is ticked, same as the Connections and feed bars. The
+             confirm step is the cohort-card treatment, not a browser dialog: select-all here
+             can lift 200 people off the watch list in two clicks. -->
+        <div class="selection-bar" id="trackedSelectionBar" hidden>
+          <span class="selection-count" id="trackedSelectionCount">0 selected</span>
+          <div class="selection-actions">
+            <button class="btn btn-ghost" type="button" id="trackedSelectionClear">Clear</button>
+            <button class="btn btn-danger" type="button" id="trackedSelectionRemove">Remove from tracking</button>
+          </div>
+          <div class="selection-confirm">
+            <span class="selection-confirm-txt" id="trackedConfirmText"></span>
+            <button class="btn btn-ghost" type="button" id="trackedConfirmCancel">Cancel</button>
+            <button class="btn btn-danger" type="button" id="trackedConfirmRemove">Remove</button>
+          </div>
+        </div>
+
         <div class="table-wrap">
           <table class="data-table" id="postsTrackedTable">
             <thead>
-              <tr><th>Profile</th><th>Posts</th><th>Last swept</th><th></th></tr>
+              <tr>
+                <th class="c-select">
+                  <input type="checkbox" id="trackedSelectAll" aria-label="Select all tracked profiles" />
+                </th>
+                <th>Profile</th><th>Posts</th><th>Last swept</th><th></th>
+              </tr>
             </thead>
             <tbody id="postsTrackedRows"></tbody>
           </table>

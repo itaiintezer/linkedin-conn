@@ -1094,6 +1094,37 @@ export function buildServer(
     return { ok: true, id };
   });
 
+  /**
+   * Bulk untrack. The same soft deactivate as the single-id route, once per id.
+   *
+   * A POST rather than a DELETE with a body: the watch list holds up to
+   * `tracked_profile_cap` (default 200) rows, and clearing a selection of that size with 200
+   * sequential DELETEs is 200 chances to stop half-done with no way to say what landed.
+   *
+   * Unknown ids are REPORTED, not fatal — the dashboard's selection is built against a table
+   * it fetched earlier, so a row someone else already untracked must not take the rest of
+   * the batch down with it. Mirrors the per-item verdicts of the bulk engage endpoint.
+   */
+  app.post('/api/tracked-profiles/untrack', async (req, reply) => {
+    const b = (req.body ?? {}) as { ids?: unknown };
+    const asked = Array.isArray(b.ids) ? b.ids : [];
+    const ids = [...new Set(asked.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (ids.length === 0) return reply.code(400).send({ error: 'no tracked profile ids supplied' });
+
+    const removed: number[] = [];
+    const missing: number[] = [];
+    for (const id of ids) {
+      const row = repos.trackedProfiles.findById(id);
+      if (!row) { missing.push(id); continue; }
+      repos.trackedProfiles.deactivate(id);
+      removed.push(id);
+    }
+    if (removed.length > 0) {
+      defaultLog.info('api', 'profiles untracked', { removed: removed.length, missing: missing.length });
+    }
+    return { ok: true, removed, missing };
+  });
+
   const POST_FILTERS = new Set<PostFilter>(['new', 'queued', 'engaged']);
   const FEED_LIMIT_DEFAULT = 25;
   const FEED_LIMIT_MAX = 100;

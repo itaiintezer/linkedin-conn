@@ -847,9 +847,10 @@ told: track a set of profiles, and their recent posts are pulled in automaticall
 so you can react to (and optionally comment on) the ones worth engaging. Sweeping and acting
 are two different steps — this section covers both, in the order the feed uses them.
 
-**`tracked_profiles`** is the watch list. Untracking (`DELETE /api/tracked-profiles/:id`) is
-soft — `active` goes to 0 — rather than a real delete, because deleting the row would orphan
-every post already stored against it. It is capped at `tracked_profile_cap` (default 200);
+**`tracked_profiles`** is the watch list. Untracking (`DELETE /api/tracked-profiles/:id`, or
+`POST /api/tracked-profiles/untrack` for a whole selection) is soft — `active` goes to 0 —
+rather than a real delete, because deleting the row would orphan every post already stored
+against it. It is capped at `tracked_profile_cap` (default 200);
 see the reject table below for what happens at the boundary.
 
 **`posts`** is one row per post ever swept, keyed on the post's URN exactly like
@@ -930,6 +931,29 @@ Untrack. Soft — `active` goes to 0; the row and its posts stay. `404` if unkno
 
 ```
 curl -s -X DELETE http://localhost:4400/api/tracked-profiles/14
+```
+
+### POST /api/tracked-profiles/untrack
+Untrack a whole selection in one call — the same soft deactivate as the route above, once per
+id. This is what the dashboard's tracking table sends when rows are ticked and **Remove from
+tracking** is pressed; the watch list can hold 200 rows, and clearing that with 200 sequential
+DELETEs is 200 chances to stop half-done.
+
+```json
+{ "ids": [14, 15, 99] }
+```
+
+Unknown ids are reported, not fatal — a selection is built against a table fetched earlier, so
+a row someone else already untracked must not take the rest of the batch down with it. `200`
+with the per-id verdicts; `400` only when no usable id was supplied at all.
+
+```json
+{ "ok": true, "removed": [14, 15], "missing": [99] }
+```
+
+```
+curl -s http://localhost:4400/api/tracked-profiles/untrack \
+  -H 'content-type: application/json' -d '{"ids":[14,15]}'
 ```
 
 ### GET /api/posts?filter=new|queued|engaged&limit=N&before=cursor

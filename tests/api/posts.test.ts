@@ -143,6 +143,66 @@ test('an empty request is a 400', async () => {
   expect((await post('/api/tracked-profiles', { profile_urls: [] })).statusCode).toBe(400);
 });
 
+/** Track n profiles and hand back their ids, in order. */
+async function trackMany(n: number): Promise<number[]> {
+  const urls = Array.from({ length: n }, (_, i) => `https://www.linkedin.com/in/p${i}`);
+  await post('/api/tracked-profiles', { profile_urls: urls });
+  return urls.map((u) => repos.trackedProfiles.findByUrl(u)!.id);
+}
+
+test('bulk untrack deactivates every id in one call', async () => {
+  const [a, b, c] = await trackMany(3);
+  const res = await post('/api/tracked-profiles/untrack', { ids: [a, c] });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({ ok: true, removed: [a, c], missing: [] });
+
+  expect(repos.trackedProfiles.findById(a)!.active).toBe(0);
+  expect(repos.trackedProfiles.findById(c)!.active).toBe(0);
+  // Untouched: a bulk call must not reach past the ids it was handed.
+  expect(repos.trackedProfiles.findById(b)!.active).toBe(1);
+  expect(repos.trackedProfiles.countActive()).toBe(1);
+});
+
+test('bulk untrack is soft, so the posts already collected keep their parent', async () => {
+  const id = await seed(2);
+  await post('/api/tracked-profiles/untrack', { ids: [id] });
+  expect(repos.trackedProfiles.findById(id)!.active).toBe(0);
+  expect(repos.posts.findByUrn('urn:li:activity:0')).toBeDefined();
+});
+
+test('an unknown id is reported, not fatal — the rest of the batch still lands', async () => {
+  // The dashboard builds a selection against a table it fetched earlier. A row someone else
+  // already untracked must not take the whole batch down with it.
+  const [a] = await trackMany(1);
+  const res = await post('/api/tracked-profiles/untrack', { ids: [a, 9999] });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({ ok: true, removed: [a], missing: [9999] });
+  expect(repos.trackedProfiles.findById(a)!.active).toBe(0);
+});
+
+test('a repeated id is untracked once, not counted twice', async () => {
+  const [a] = await trackMany(1);
+  expect((await post('/api/tracked-profiles/untrack', { ids: [a, a] })).json().removed).toEqual([a]);
+});
+
+test('bulk untrack frees cap slots, and re-adding reactivates the same rows', async () => {
+  repos.settings.update({ tracked_profile_cap: 2 });
+  const ids = await trackMany(2);
+  await post('/api/tracked-profiles/untrack', { ids });
+  expect(repos.trackedProfiles.countActive()).toBe(0);
+
+  const again = await post('/api/tracked-profiles',
+    { profile_urls: ['https://www.linkedin.com/in/p0'] });
+  expect(again.json().added).toBe(1);
+  expect(repos.trackedProfiles.findById(ids[0])!.active).toBe(1);
+});
+
+test('bulk untrack with no usable id is a 400', async () => {
+  for (const body of [{ ids: [] }, { ids: ['abc', 0, -3] }, {}]) {
+    expect((await post('/api/tracked-profiles/untrack', body)).statusCode).toBe(400);
+  }
+});
+
 /** Insert a tracked profile and n posts, oldest first by index. */
 async function seed(n: number): Promise<number> {
   await post('/api/tracked-profiles', { profile_urls: ['https://www.linkedin.com/in/dana'] });

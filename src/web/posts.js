@@ -31,7 +31,18 @@ function postReactionLabel(r) {
 /* Selection lives here rather than being read back off the DOM: a re-render replaces every
    card, and reading checkboxes would silently drop selections on refresh. `filter` and
    `cursor` sit alongside it because all three are one conversation with /api/posts. */
-const postsState = { filter: 'new', selected: new Set(), cursor: null, loading: false };
+const postsState = {
+  filter: 'new',
+  selected: new Set(),
+  /* Tracked-profile ids ticked in the manager's table, for the bulk remove. A SECOND store
+     rather than a reuse of `selected`: that one holds post ids from the feed, both tables are
+     on screen at once, and mixing the two keyspaces would let a feed selection untrack
+     people. Kept here, not read back off the DOM, for the same reason as `selected` —
+     refreshTracked() replaces every row. */
+  trackedSelected: new Set(),
+  cursor: null,
+  loading: false,
+};
 
 /**
  * Roughly how much text needs clamping before BUILDING the expander at all.
@@ -320,10 +331,28 @@ async function refreshTracked() {
     return;
   }
   const rows = Array.isArray(payload && payload.tracked) ? payload.tracked : [];
+  /* Prune the selection to what the server just returned. A row that went away in the
+     meantime — the bulk remove that triggered this refresh, a single Remove, another tab —
+     would otherwise sit invisibly in the Set and be posted back by the next bulk remove,
+     inflating the count the confirm asks about. */
+  const live = new Set(rows.map((t) => t.id));
+  for (const id of [...postsState.trackedSelected]) {
+    if (!live.has(id)) postsState.trackedSelected.delete(id);
+  }
+
   body.replaceChildren();
   for (const t of rows) {
     const tr = el('tr', {});
     tr.dataset.trackedId = String(t.id);
+
+    /* The same `.c-select` / `.row-select` pair as the Connections results table, so the
+       column width, the hit target and the header checkbox all behave identically. */
+    const box = el('input', {
+      type: 'checkbox', class: 'row-select',
+      'aria-label': `Select ${t.full_name || t.profile_url}`,
+    });
+    box.checked = postsState.trackedSelected.has(t.id);
+    tr.appendChild(el('td', { class: 'c-select' }, box));
 
     // full_name and last_sweep_error are third-party strings like the post bodies: the name
     // comes from the scrape, the error from whatever Apify said. `text:` only.
@@ -345,6 +374,42 @@ async function refreshTracked() {
   }
   const cap = $('#postsTrackCount');
   if (cap) cap.textContent = `${fmtInt(rows.length)} of ${fmtInt(payload.cap ?? 0)} tracked`;
+  renderTrackedSelection();
+}
+
+/**
+ * The tracking table's bulk bar: visible only while something is ticked, with an honest count
+ * and a header checkbox that reflects the rows on screen.
+ *
+ * Drives the checkboxes FROM postsState, like renderPostsSelection, so the refresh that
+ * follows a remove puts the surviving ticks back where they were.
+ */
+function renderTrackedSelection() {
+  const n = postsState.trackedSelected.size;
+  const count = $('#trackedSelectionCount');
+  if (count) count.textContent = `${fmtInt(n)} selected`;
+
+  const bar = $('#trackedSelectionBar');
+  if (bar) {
+    // Hidden at zero, for the same reason as the feed's bar: a permanently visible bulk
+    // Remove beside a table is how a watch list gets emptied by accident.
+    bar.hidden = n === 0;
+    /* Any change to the selection also drops a standing confirm. It names a count ("Stop
+       tracking 12 profiles?"), and answering that question about a set edited since it was
+       asked is precisely the near-miss the confirm step exists to prevent. */
+    bar.classList.remove('is-confirming');
+  }
+
+  const boxes = $$('#postsTrackedRows .row-select');
+  for (const box of boxes) {
+    box.checked = postsState.trackedSelected.has(Number(box.closest('tr').dataset.trackedId));
+  }
+  const head = $('#trackedSelectAll');
+  if (head) {
+    const all = boxes.length > 0 && boxes.every((b) => b.checked);
+    head.checked = all;
+    head.indeterminate = !all && n > 0;
+  }
 }
 
 /**
@@ -478,6 +543,40 @@ async function untrack(id) {
 }
 
 /**
+ * Untrack the whole ticked selection in ONE request.
+ *
+ * Not a loop of single DELETEs: the watch list holds up to 200 rows, and a loop that dies on
+ * row 40 leaves the operator with a table they have to diff by eye against what they meant to
+ * remove. The endpoint answers with `removed` and `missing` per id, and the toast reads both
+ * out rather than claiming the count that was asked for.
+ */
+async function bulkUntrack() {
+  const ids = [...postsState.trackedSelected];
+  if (ids.length === 0) return;
+  const btn = $('#trackedConfirmRemove');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api('/api/tracked-profiles/untrack', { method: 'POST', body: { ids } });
+    const removed = Array.isArray(res && res.removed) ? res.removed.length : 0;
+    const missing = Array.isArray(res && res.missing) ? res.missing.length : 0;
+    // Cleared only once the server has answered, exactly like bulkQueue: a thrown call leaves
+    // the ticks in place so the operator can retry instead of re-picking a table of 200.
+    postsState.trackedSelected.clear();
+    postsToast(missing === 0
+      ? `Stopped tracking ${plural(removed, 'profile')}. Posts already collected stay in the feed.`
+      : `Stopped tracking ${plural(removed, 'profile')} · ${fmtInt(missing)} were already gone.`,
+    removed === 0);
+    await refreshTracked();
+    // The feed's "N tracked" readout and its empty-state text both depend on the watch list.
+    await refreshPosts(false);
+  } catch (err) {
+    postsToast(`Nothing was untracked: ${err.message}`, true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/**
  * Manual sweep. Long on purpose — it returns only after the actor run finishes, so the button
  * is disabled for the duration rather than inviting a second click that would bill again.
  */
@@ -563,6 +662,53 @@ function initPosts() {
     if (!btn) return;
     void untrack(Number(btn.closest('tr').dataset.trackedId));
   });
+
+  /* Delegated on the tbody, not per row: refreshTracked() replaces every <tr>. `change`
+     rather than `click`, for the same reason as the Connections table — it is the event that
+     reports the box's settled state, keyboard toggles included. */
+  $('#postsTrackedRows')?.addEventListener('change', (ev) => {
+    const box = ev.target.closest?.('.row-select');
+    if (!box) return;
+    const id = Number(box.closest('tr').dataset.trackedId);
+    if (box.checked) postsState.trackedSelected.add(id); else postsState.trackedSelected.delete(id);
+    renderTrackedSelection();
+  });
+
+  /* Header checkbox. Its scope is the rows on screen, which for this table is the whole
+     active watch list — it is not paged, so there is no "select all matching" escape hatch to
+     offer the way the Connections results table has to. */
+  $('#trackedSelectAll')?.addEventListener('change', (ev) => {
+    const on = ev.target.checked;
+    for (const box of $$('#postsTrackedRows .row-select')) {
+      const id = Number(box.closest('tr').dataset.trackedId);
+      if (on) postsState.trackedSelected.add(id); else postsState.trackedSelected.delete(id);
+    }
+    renderTrackedSelection();
+  });
+
+  $('#trackedSelectionClear')?.addEventListener('click', () => {
+    postsState.trackedSelected.clear();
+    renderTrackedSelection();
+  });
+
+  /* Two clicks, in the bar itself — the cohort card's confirm treatment, no browser dialog.
+     Select-all here can lift the entire watch list in one gesture. */
+  $('#trackedSelectionRemove')?.addEventListener('click', () => {
+    const n = postsState.trackedSelected.size;
+    if (n === 0) return;
+    const txt = $('#trackedConfirmText');
+    if (txt) {
+      txt.textContent =
+        `Stop tracking ${plural(n, 'profile')}? Posts already collected stay in the feed.`;
+    }
+    $('#trackedSelectionBar')?.classList.add('is-confirming');
+  });
+
+  $('#trackedConfirmCancel')?.addEventListener('click', () => {
+    $('#trackedSelectionBar')?.classList.remove('is-confirming');
+  });
+
+  $('#trackedConfirmRemove')?.addEventListener('click', () => { void bulkUntrack(); });
 
   $('#postsManageToggle')?.addEventListener('click', () => {
     const panel = $('#postsManage');
