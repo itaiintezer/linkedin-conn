@@ -35,6 +35,28 @@ the 409 catches.
 A `message` add needs a body: pass a non-blank `message`, or target a cohort that already
 has a template. Invites may go note-less.
 
+## Prioritized adds
+When the user signals urgency — "urgent", "first", "top of the queue", "before the others",
+"prioritize these", "send these ASAP" — pass `"prioritize": true` (both endpoints accept it).
+The new profiles jump to the front of the queue **and** take today's earliest remaining send
+slots; the people they displace go out tomorrow morning, first in line. Slot times and
+today's send volume don't change.
+
+Repeated prioritized adds join one front block in arrival order, so adding people one at a
+time works exactly like pasting them as a list.
+
+Report back using the extra response fields:
+- `/api/profiles` → `prioritized` (boolean) and `scheduled_for` — say "goes out at <time>
+  today"; if `scheduled_for` is null, say "it's first in line for the next sending day".
+  `prioritized: false` means that URL was already sent/handled and was left alone.
+- `/api/lists` → `prioritized` (count moved) and `first_scheduled_for` — say "first ones go
+  out at <time> today". If `prioritized < found`, tell the user how many were already past
+  sending and untouched.
+
+Mention that a few previously-planned sends slid to tomorrow when that's the case (i.e. the
+add landed seats today). Do NOT prioritize unless the user asked — it displaces work they
+queued earlier.
+
 ## Steps
 1. Collect the LinkedIn profile URL(s) from the user. Validate each looks like
    `https://www.linkedin.com/in/<slug>`.
@@ -46,13 +68,13 @@ has a template. Invites may go note-less.
    ```bash
    curl -sS -X POST "$BASE/api/profiles" \
      -H 'Content-Type: application/json' \
-     -d '{"url":"<URL>","cohort":"<COHORT or omit>","kind":"<invite|message, or omit for invite>","message":"<MESSAGE or omit>"}'
+     -d '{"url":"<URL>","cohort":"<COHORT or omit>","kind":"<invite|message, or omit for invite>","message":"<MESSAGE or omit>","prioritize":<true when urgent, else omit>}'
    ```
 5. If multiple URLs, join them with newlines into TEXT and run:
    ```bash
    curl -sS -X POST "$BASE/api/lists" \
      -H 'Content-Type: application/json' \
-     -d '{"text":"<URL1\nURL2\n…>","cohort":"<COHORT or omit>","kind":"<invite|message, or omit for invite>","message_template":"<TEMPLATE or omit>"}'
+     -d '{"text":"<URL1\nURL2\n…>","cohort":"<COHORT or omit>","kind":"<invite|message, or omit for invite>","message_template":"<TEMPLATE or omit>","prioritize":<true when urgent, else omit>}'
    ```
 6. Report the result. `/api/lists` returns `{ added, found }` — tell the user how many were
    added vs found (duplicates already in the queue are not re-added). `/api/profiles`

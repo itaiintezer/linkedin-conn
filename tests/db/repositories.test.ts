@@ -63,6 +63,48 @@ test('prioritizeCohort moves a cohort block ahead of others', () => {
   expect(ordered[2]).toBe(a.id);
 });
 
+test('frontBlock creates a -1 block when the queue floor is 0', () => {
+  const c = repos.cohorts.create('FB', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fb-a', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fb-b', null);
+  const d = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fb-d', null);
+  repos.profiles.frontBlock([d.id]);
+  expect(repos.profiles.findById(d.id)!.priority).toBe(-1);
+  expect(repos.profiles.queuedByPriority().map((p) => p.id)).toEqual([d.id, a.id, b.id]);
+});
+
+test('frontBlock: one-by-one adds converge on the same order as a single list', () => {
+  const c = repos.cohorts.create('FB2', null, true);
+  const backlog = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fb2-old', null);
+  // One-by-one: each call JOINS the front block instead of jumping ahead of the last —
+  // the (priority, id) tie-break keeps arrival order.
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fb2-a', null);
+  repos.profiles.frontBlock([a.id]);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fb2-b', null);
+  repos.profiles.frontBlock([b.id]);
+  expect(repos.profiles.findById(a.id)!.priority).toBe(-1);
+  expect(repos.profiles.findById(b.id)!.priority).toBe(-1);
+  expect(repos.profiles.queuedByPriority().map((p) => p.id)).toEqual([a.id, b.id, backlog.id]);
+});
+
+test('frontBlock joins an existing deeper block rather than going below it', () => {
+  const c = repos.cohorts.create('FB3', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fb3-a', null);
+  const b = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fb3-b', null);
+  repos.profiles.setPriority(a.id, -5);
+  repos.profiles.frontBlock([b.id]);
+  expect(repos.profiles.findById(b.id)!.priority).toBe(-5);
+  // Same priority -> id order: the older row keeps its lead.
+  expect(repos.profiles.queuedByPriority().map((p) => p.id)).toEqual([a.id, b.id]);
+});
+
+test('frontBlock with no ids is a no-op', () => {
+  const c = repos.cohorts.create('FB4', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/fb4-a', null);
+  repos.profiles.frontBlock([]);
+  expect(repos.profiles.findById(a.id)!.priority).toBe(0);
+});
+
 test('reorderCohorts recomputes queued priorities from the given order', () => {
   const c1 = repos.cohorts.create('C1', null, true);
   const c2 = repos.cohorts.create('C2', null, true);

@@ -140,6 +140,22 @@ export class ProfileRepo {
     const row = this.db.prepare(`SELECT ${kind}(priority) v FROM profiles WHERE status='queued'`).get() as unknown as { v: number | null };
     return row.v ?? 0;
   }
+  /**
+   * Move rows to the front of the queue by JOINING the existing front block, not going one
+   * below it: every id gets MIN(queued priority) when that is already negative, else -1.
+   * Deliberately NOT moveProfile's MIN-1: a prioritized *add* must converge on the same
+   * order whether N profiles arrive as one list or as N calls — with MIN-1 each new arrival
+   * would jump ahead of the last, reversing a one-by-one sequence. Sharing one value defers
+   * ordering to the (priority, id) tie-break, which IS arrival order. moveProfile keeps
+   * MIN-1 on purpose: "put THIS one first" is the opposite intent.
+   */
+  frontBlock(ids: number[]): void {
+    if (ids.length === 0) return;
+    const min = this.queuedBound('MIN');
+    const priority = min < 0 ? min : -1;
+    const upd = this.db.prepare('UPDATE profiles SET priority = ? WHERE id = ?');
+    for (const id of ids) upd.run(priority, id);
+  }
   moveProfile(id: number, to: 'top' | 'bottom'): void {
     const priority = to === 'top' ? this.queuedBound('MIN') - 1 : this.queuedBound('MAX') + 1;
     this.setPriority(id, priority);
