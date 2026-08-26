@@ -365,6 +365,44 @@ body > *:not(.atmosphere) { position: relative; z-index: 1; }
   #guardrailRecheck { width: 100%; justify-content: center; }
 }
 
+/* ---------- roster health alerts ---------- */
+/* Red — these are problems, not progress — but deliberately one notch below the
+   guardrail: no pulsing chip and a lighter ground, so "your account is halted" still
+   out-shouts "your roster needs attention". Structurally the same banner anatomy. */
+.health-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 13px 34px 13px 30px;
+  background: linear-gradient(90deg, #fbe7e4 0%, var(--red-bg) 70%);
+  border-bottom: 1px solid #f1b6ae;
+  border-left: 4px solid var(--red);
+  color: #8e2424; font-size: 14.5px;
+  box-shadow: var(--shadow-sm);
+}
+.health-banner-icon {
+  display: grid; place-items: center; flex: none;
+  width: 30px; height: 30px; border-radius: 9px;
+  color: #fff; background: linear-gradient(150deg, #e3493f 0%, var(--red) 100%);
+  box-shadow: 0 4px 12px -4px rgba(214,58,58,0.5), inset 0 1px 0 rgba(255,255,255,0.25);
+}
+.health-banner-body { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 9px; flex: 1; min-width: 0; line-height: 1.45; }
+.health-banner-body strong { color: #7a1d1d; font-weight: 700; letter-spacing: 0.1px; }
+.health-banner-action {
+  flex: none;
+  background: linear-gradient(180deg, #e3493f 0%, var(--red) 100%);
+  color: #fff; border-color: #c0312f;
+  box-shadow: 0 6px 16px -6px rgba(214,58,58,0.45), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+.health-banner-action:hover {
+  background: linear-gradient(180deg, #ea5249 0%, #d63a3a 100%);
+  color: #fff; border-color: #c0312f;
+  box-shadow: 0 10px 22px -8px rgba(214,58,58,0.5), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+.health-banner-action:disabled { opacity: 0.72; }
+@media (max-width: 640px) {
+  .health-banner { flex-wrap: wrap; padding: 13px 20px; }
+  .health-banner-action { width: 100%; justify-content: center; }
+}
+
 /* ---------- Tabs ---------- */
 .tabs {
   display: flex; align-items: center; gap: 4px;

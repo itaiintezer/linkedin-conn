@@ -40,6 +40,7 @@ import { isRetryableEngagement } from '../db/posts-repos.js';
 import { runEnrichment, enrichmentProgress, isEnrichmentRunning, pauseEnrichment } from '../worker/enrichment.js';
 import { extractProfile, isEmptyProfile } from '../core/apify-extract.js';
 import { searchConnections } from '../core/connection-search.js';
+import { computeHealthAlerts } from '../core/health.js';
 import { planAndAssignToday, reseatKind } from '../worker/scheduler-service.js';
 import {
   addEventInvitees, armEventCampaign, createEventCampaign, ensureEventReservation,
@@ -347,6 +348,7 @@ export function buildServer(
     const weeklyRemaining = remainingCapacity(s.weekly_cap, weekly_sent);
     const msgWeeklySent = repos.events.countSentSince(windowStartIso(now), 'message');
     const msgBacklog = (msg_counts.queued ?? 0) + (msg_counts.scheduled ?? 0);
+    const enrichCounts = repos.connections.countsByEnrichStatus();
     return {
       paused: s.paused,
       pause_reason: s.pause_reason,
@@ -395,6 +397,13 @@ export function buildServer(
       enrich_halt: a.enrich_halted === 1
         ? { reason: a.enrich_halt_reason, detail: a.enrich_halt_detail, at: a.enrich_halted_at }
         : null,
+      // Roster health — the red alert strip. Unlike the halts above there is no latch:
+      // recomputed from two indexed counts on every poll, each alert clears on its own
+      // the moment the condition does (import lands / retries succeed).
+      alerts: computeHealthAlerts({
+        connectionsTotal: Object.values(enrichCounts).reduce((sum, c) => sum + c, 0),
+        enrichFailed: enrichCounts.failed,
+      }),
       guardrail: {
         tripped: a.guardrail_tripped,
         reason: a.guardrail_reason,

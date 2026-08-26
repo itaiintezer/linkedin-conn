@@ -150,6 +150,13 @@
     <button class="btn" id="guardrailRecheck" type="button">I&rsquo;ve fixed it — re-check &amp; resume</button>
   </div>
 
+  <!-- Roster health alerts. Red like the guardrail because the operator must act, but a
+       step below it — no pulsing chip, no acknowledge latch — so a genuine halt still
+       reads as the loudest thing on the page. The server sends a LIST (status.alerts);
+       applyHealthAlertsUi() renders one .health-banner per entry into this host and
+       each clears on its own the moment its condition does. -->
+  <div id="healthAlerts"></div>
+
   <main>
     <!-- DASHBOARD -->
     <section class="panel" id="tab-dashboard">

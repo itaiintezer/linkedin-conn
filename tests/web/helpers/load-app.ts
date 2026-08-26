@@ -41,6 +41,8 @@ export interface AppInternals {
   loadSettings: () => Promise<void>;
   initSettings: () => void;
   applyEnrichHaltUi: (status: Record<string, unknown>) => void;
+  /** The red roster-health strip (#healthAlerts) — one banner per status.alerts entry. */
+  applyHealthAlertsUi: (status: Record<string, unknown>) => void;
   /** Wires the Add to queue form: profile count, kind rail, and the prioritize switch. */
   initAddList: () => void;
   /** Pure: the sentence a prioritized enqueue appends to its confirmation toast. */
@@ -116,7 +118,7 @@ export function loadApp(): AppInternals {
   const postsSrc = readFileSync(join(WEB_DIR, 'posts.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\n${postsSrc}\nreturn { initAddList, prioritizedSuffix, renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, SKIP_REASON_LABEL, loadSettings, initSettings, applyEnrichHaltUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initMaintenance, renderAvailability, refreshUpdateCheck, refreshMaintStatus, awaitComeback, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
+    `${src}\n${postsSrc}\nreturn { initAddList, prioritizedSuffix, renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, SKIP_REASON_LABEL, loadSettings, initSettings, applyEnrichHaltUi, applyHealthAlertsUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initMaintenance, renderAvailability, refreshUpdateCheck, refreshMaintStatus, awaitComeback, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }
