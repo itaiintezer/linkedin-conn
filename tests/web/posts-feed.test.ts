@@ -6,7 +6,7 @@
  * tests/web suites.
  */
 import { test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { loadApp, stubFetchRoutes, type AppInternals } from './helpers/load-app.js';
+import { loadApp, stubFetchRoutes, byId, type AppInternals, type RouteStub } from './helpers/load-app.js';
 
 let internals: AppInternals;
 const realFetch = globalThis.fetch;
@@ -689,4 +689,190 @@ test('a chip click while a page is in flight is dropped whole, not half-applied'
   // And the dropped chip still works once the feed has settled.
   (document.querySelector('[data-filter="engaged"]') as HTMLButtonElement).click();
   await vi.waitFor(() => expect(calls.some((u) => u.includes('filter=engaged'))).toBe(true));
+});
+
+
+/* ---------- the tracking table's multi-select and bulk remove ----------
+   Same checkbox column, header checkbox and selection bar as the Connections results table
+   (tests/web/search-to-campaign.test.ts), against a table that is never paged. */
+
+/** A tracking payload with `n` rows, ids 1..n. */
+const trackedPayload = (n: number) => ({
+  tracked: Array.from({ length: n }, (_, i) => ({
+    id: i + 1, profile_url: `https://www.linkedin.com/in/p${i}`, full_name: `Person ${i}`,
+    post_count: i, last_swept_at: null, last_sweep_error: null,
+  })),
+  cap: 200, swept_at: null,
+});
+
+/** Wire the screen, load `n` tracked rows, and hand back the recorded calls. */
+async function tracked(n: number, untrackStub: RouteStub = { body: { ok: true, removed: [], missing: [] } }) {
+  const calls = stubFetchRoutes({
+    '/api/tracked-profiles': { body: trackedPayload(n) },
+    '/api/tracked-profiles/untrack': untrackStub,
+    '/api/posts': { body: feedPayload() },
+  });
+  internals.initPosts();
+  internals.postsState.trackedSelected.clear();
+  await internals.refreshTracked();
+  return calls;
+}
+
+/** Tick row `i` the way a click does: set the box, then fire the event the handler listens on. */
+const tick = (i: number) => {
+  const boxes = byId('postsTrackedRows').querySelectorAll<HTMLInputElement>('input.row-select');
+  boxes[i].checked = !boxes[i].checked;
+  boxes[i].dispatchEvent(new Event('change', { bubbles: true }));
+};
+
+const toggleAll = (on: boolean) => {
+  const all = byId<HTMLInputElement>('trackedSelectAll');
+  all.checked = on;
+  all.dispatchEvent(new Event('change', { bubbles: true }));
+};
+
+test('every tracked row gets a checkbox, and the bulk bar waits to be asked for', async () => {
+  await tracked(3);
+  expect(byId('postsTrackedRows').querySelectorAll('input.row-select')).toHaveLength(3);
+  // Hidden at zero: a permanently visible bulk Remove beside the watch list is the accident.
+  expect(byId('trackedSelectionBar').hidden).toBe(true);
+
+  tick(0);
+  expect(byId('trackedSelectionBar').hidden).toBe(false);
+  expect(byId('trackedSelectionCount').textContent).toContain('1');
+});
+
+test('the header checkbox takes the whole table, and gives it all back', async () => {
+  await tracked(3);
+  toggleAll(true);
+  expect(byId('trackedSelectionCount').textContent).toContain('3');
+  expect(byId('postsTrackedRows').querySelectorAll('input.row-select:checked')).toHaveLength(3);
+
+  toggleAll(false);
+  expect(byId('trackedSelectionBar').hidden).toBe(true);
+  expect(byId('postsTrackedRows').querySelectorAll('input.row-select:checked')).toHaveLength(0);
+});
+
+test('the header checkbox goes indeterminate on a partial selection', async () => {
+  await tracked(3);
+  tick(1);
+  const all = byId<HTMLInputElement>('trackedSelectAll');
+  expect(all.checked).toBe(false);
+  expect(all.indeterminate).toBe(true);
+
+  tick(0); tick(2);
+  expect(all.checked).toBe(true);
+  expect(all.indeterminate).toBe(false);
+});
+
+test('Clear drops the selection without touching the rows', async () => {
+  await tracked(3);
+  tick(0); tick(1);
+  byId('trackedSelectionClear').dispatchEvent(new Event('click', { bubbles: true }));
+  expect(byId('trackedSelectionBar').hidden).toBe(true);
+  expect(byId('postsTrackedRows').querySelectorAll('tr')).toHaveLength(3);
+  expect(internals.postsState.trackedSelected.size).toBe(0);
+});
+
+test('Remove asks first — one click sends nothing', async () => {
+  const calls = await tracked(3);
+  tick(0); tick(2);
+  byId('trackedSelectionRemove').dispatchEvent(new Event('click', { bubbles: true }));
+
+  expect(byId('trackedSelectionBar').classList.contains('is-confirming')).toBe(true);
+  // The question names the count, so the operator is answering about the set they picked.
+  expect(byId('trackedConfirmText').textContent).toContain('2 profiles');
+  expect(calls.some((c) => c.path === '/api/tracked-profiles/untrack')).toBe(false);
+});
+
+test('confirming posts every ticked id in ONE call, then reloads the table and the feed', async () => {
+  const calls = await tracked(3, { body: { ok: true, removed: [1, 3], missing: [] } });
+  tick(0); tick(2);
+  byId('trackedSelectionRemove').dispatchEvent(new Event('click', { bubbles: true }));
+  byId('trackedConfirmRemove').dispatchEvent(new Event('click', { bubbles: true }));
+
+  await vi.waitFor(() => {
+    const sent = calls.filter((c) => c.path === '/api/tracked-profiles/untrack');
+    expect(sent).toHaveLength(1);          // one request, not one per row
+    expect(sent[0].method).toBe('POST');
+    expect(sent[0].body).toEqual({ ids: [1, 3] });
+    expect(calls.some((c) => c.path.startsWith('/api/posts?'))).toBe(true);
+  });
+  expect(internals.postsState.trackedSelected.size).toBe(0);
+  expect(byId('postsToast').textContent).toContain('2 profiles');
+});
+
+test('Cancel keeps the selection so it can be corrected, not re-picked', async () => {
+  const calls = await tracked(3);
+  tick(0);
+  byId('trackedSelectionRemove').dispatchEvent(new Event('click', { bubbles: true }));
+  byId('trackedConfirmCancel').dispatchEvent(new Event('click', { bubbles: true }));
+
+  expect(byId('trackedSelectionBar').classList.contains('is-confirming')).toBe(false);
+  expect(byId('trackedSelectionBar').hidden).toBe(false);
+  expect(internals.postsState.trackedSelected.size).toBe(1);
+  expect(calls.some((c) => c.path === '/api/tracked-profiles/untrack')).toBe(false);
+});
+
+test('editing the selection drops a standing confirm', async () => {
+  // Otherwise the confirm asks about 1 profile and Remove takes 2 — the near-miss the
+  // two-step exists to prevent.
+  await tracked(3);
+  tick(0);
+  byId('trackedSelectionRemove').dispatchEvent(new Event('click', { bubbles: true }));
+  tick(1);
+  expect(byId('trackedSelectionBar').classList.contains('is-confirming')).toBe(false);
+});
+
+test('a refused bulk remove keeps the ticks, so it can be retried', async () => {
+  await tracked(3, { status: 500, error: 'database is locked' });
+  tick(0); tick(1);
+  byId('trackedSelectionRemove').dispatchEvent(new Event('click', { bubbles: true }));
+  byId('trackedConfirmRemove').dispatchEvent(new Event('click', { bubbles: true }));
+
+  await vi.waitFor(() => {
+    expect(byId('postsToast').textContent).toContain('database is locked');
+  });
+  expect(internals.postsState.trackedSelected.size).toBe(2);
+  expect(byId<HTMLButtonElement>('trackedConfirmRemove').disabled).toBe(false);
+});
+
+test('rows that were already gone are named, not counted as removed', async () => {
+  await tracked(3, { body: { ok: true, removed: [1], missing: [3] } });
+  tick(0); tick(2);
+  byId('trackedSelectionRemove').dispatchEvent(new Event('click', { bubbles: true }));
+  byId('trackedConfirmRemove').dispatchEvent(new Event('click', { bubbles: true }));
+
+  await vi.waitFor(() => {
+    const said = byId('postsToast').textContent ?? '';
+    expect(said).toContain('1 profile');
+    expect(said).toContain('already gone');
+  });
+});
+
+test('the selection is pruned to the rows the server still returns', async () => {
+  // A row untracked elsewhere would otherwise sit invisibly in the Set and be posted back.
+  await tracked(3);
+  toggleAll(true);
+  expect(internals.postsState.trackedSelected.size).toBe(3);
+
+  stubFetchRoutes({ '/api/tracked-profiles': { body: trackedPayload(1) } });
+  await internals.refreshTracked();
+
+  expect([...internals.postsState.trackedSelected]).toEqual([1]);
+  expect(byId('trackedSelectionCount').textContent).toContain('1');
+});
+
+test('the feed selection and the tracking selection are separate stores', async () => {
+  // Both tables can be on screen at once, and their ids come from different tables. Sharing
+  // one Set would let a picked post untrack a person.
+  await tracked(3);
+  internals.renderPostsFeed(feedPayload());
+  (document.querySelector('#postsFeed [data-act="select"]') as HTMLInputElement).click();
+  tick(0);
+
+  expect([...internals.postsState.selected]).toEqual([1]);        // post id
+  expect([...internals.postsState.trackedSelected]).toEqual([1]); // tracked-profile id
+  expect(byId('postsSelectionCount').textContent).toContain('1');
+  expect(byId('trackedSelectionCount').textContent).toContain('1');
 });

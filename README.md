@@ -549,7 +549,8 @@ card forces a pass immediately.
 - `POST /api/engagements` `{ post_url, reaction?, comment? }` — queue a post engagement (or
   `{ items: [...] }` for many); `GET /api/engagements` to read them back.
 - `POST /api/tracked-profiles` `{ profile_urls }` or `{ text }` — track profiles for the posts
-  feed; `GET /api/tracked-profiles` to list them, `DELETE /api/tracked-profiles/:id` to untrack.
+  feed; `GET /api/tracked-profiles` to list them, `DELETE /api/tracked-profiles/:id` to untrack
+  one, `POST /api/tracked-profiles/untrack` `{ ids }` to untrack a whole selection.
 - `GET /api/posts?filter=new|queued|engaged` — the posts feed; `POST /api/posts/:id/engage`
   or `POST /api/posts/engage` `{ post_ids, reaction? }` to queue reactions from it.
 - `POST /api/posts/sweep-now` — sweep tracked profiles immediately (long-running, like

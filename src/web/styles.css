@@ -1509,6 +1509,14 @@ body > .drawer {
 }
 .selection-actions { display: flex; gap: 8px; }
 
+/* The in-place confirm, same idea as a cohort card's .cc-confirm: a destructive bulk action
+   asks in the bar it was triggered from, never through a browser dialog. One of the two
+   groups is shown at a time, so the bar keeps its height and the count stays readable. */
+.selection-confirm { display: none; align-items: center; gap: 10px; }
+.selection-bar.is-confirming .selection-actions { display: none; }
+.selection-bar.is-confirming .selection-confirm { display: flex; }
+.selection-confirm-txt { font-size: 13px; color: var(--ink-2); }
+
 /* Deliberately understated and a separate click from the header checkbox — this is the
    control that can turn 25 visible rows into thousands of queued messages. */
 .select-all-matching {
