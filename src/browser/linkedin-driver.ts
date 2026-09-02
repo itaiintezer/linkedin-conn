@@ -30,6 +30,10 @@ import {
  *  outcomes can carry the evidence and not just the conclusion. */
 interface RelationshipRead { relationship: Relationship; signals: RelationshipSignals }
 import { applyFirstName, MAX_MESSAGE } from '../core/message.js';
+import {
+  confirmSentMessage, MESSAGE_CONFIRM_TIMEOUT_MS, MESSAGE_CONFIRM_POLL_MS, type MessageSurfaceRead,
+} from '../core/message-confirm.js';
+import { CHECK_THREAD_HINT } from '../core/retry-safety.js';
 import { firstNameFrom } from '../core/first-name.js';
 import { detectCheckpoint } from '../core/checkpoint.js';
 import { captureEvidence } from './evidence.js';
@@ -637,46 +641,79 @@ export class LinkedInDriver implements BrowserDriver {
         // errorOutcome captures the evidence snapshot itself.
         return this.errorOutcome(page, 'send button never enabled after typing', firstName);
       }
+      // Snapshot the thread BEFORE the click: confirmation requires a NEW copy of our text
+      // (see confirmSentMessage — matching any row would "confirm" a previous attempt's copy,
+      // which is exactly the state a retried row is in).
+      const before = (await this.readMessageSurface(page)).events;
       await send.click();
       await sleep(rand(3000, 5000));
 
-      // 5) Structural confirmation: composer cleared + our text is in the thread.
-      //    Both sides are whitespace-normalized: the rendered thread collapses the
-      //    newlines of a multi-line template, so comparing raw sent text against
-      //    normalized DOM text would report "not confirmed" for a message that DID send
-      //    (a false 'error' costs a failure-streak point and invites a duplicate send).
-      //    The composer is read as the LAST match, the same one we typed into.
-      //
-      //    NOTE: the needles are normalized HERE, in Node, and the callback declares no
-      //    named inner function on purpose. Under tsx/esbuild (`npm start`), keep-names
-      //    rewrites a named inner binding to `__name(fn, "fn")`, and `__name` does not
-      //    exist inside the page — the callback would throw ReferenceError at runtime.
-      const sent30 = text.replace(/\s+/g, ' ').trim().slice(0, 30);
-      const sent40 = text.replace(/\s+/g, ' ').trim().slice(0, 40);
-      const confirmed = await page.evaluate(({ boxSel, evSel, sent30: s30, sent40: s40 }) => {
-        const boxes = document.querySelectorAll(boxSel);
-        const box = boxes[boxes.length - 1];
-        const boxText = (box?.textContent || '').replace(/\s+/g, ' ').trim();
-        const cleared = !boxText.includes(s30);
-        const events = Array.from(document.querySelectorAll(evSel))
-          .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim());
-        const inThread = events.some((e) => e.includes(s40));
-        const failed = /failed to send|couldn.t send|message not sent/i.test(document.body.textContent || '');
-        return { cleared, inThread, failed };
-      }, { boxSel: SEL.msgBox, evSel: SEL.msgEvent, sent30, sent40 });
-
-      if (confirmed.failed || !(confirmed.cleared && confirmed.inThread)) {
-        const scan = await this.scanCheckpoint(page);
-        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
-        return this.errorOutcome(page, 'message send not confirmed (composer/thread state)', firstName);
+      // 5) Structural confirmation: composer cleared + a NEW copy of our text in the thread.
+      //    The judgement is confirmSentMessage (core/message-confirm.ts) — pure, and the
+      //    place to read for why both sides have ALL whitespace removed rather than
+      //    collapsed. This used to be decided inside page.evaluate with `\s+ -> ' '` on both
+      //    sides; LinkedIn renders a template's line break as a `<br>` that contributes no
+      //    character to textContent, so every `Hi {firstName},\n\n…` template failed its own
+      //    confirmation on a message that had landed (16 false failures, 4 halts, 2 duplicate
+      //    DMs, 2026-08-25..31). Polled, because a fixed 3-5 s read was already borderline
+      //    when sends slowed ~3× on 08-31; a timeout is `unconfirmed`, never `error`.
+      const deadline = Date.now() + MESSAGE_CONFIRM_TIMEOUT_MS;
+      let seen = confirmSentMessage(await this.readMessageSurface(page), text, before);
+      while (seen.verdict !== 'sent' && !seen.failed && Date.now() < deadline) {
+        await sleep(MESSAGE_CONFIRM_POLL_MS);
+        seen = confirmSentMessage(await this.readMessageSurface(page), text, before);
       }
       const threadUrl = /\/messaging\/thread\//.test(page.url()) ? page.url() : undefined;
-      return { result: 'sent', firstName, fullName, ...(threadUrl ? { threadUrl } : {}) };
+      if (seen.verdict === 'sent') {
+        return { result: 'sent', firstName, fullName, ...(threadUrl ? { threadUrl } : {}) };
+      }
+      {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
+      }
+      if (seen.verdict === 'unconfirmed') {
+        // The composer accepted the click and emptied — the message left the account, we
+        // just could not read it back. Submitted-but-unverified is a human's call, never a
+        // failure: `error` here is what fed the failure streak and the Retry button.
+        const ev = await this.capture(page, 'message-unconfirmed', {
+          matchesBefore: seen.matchesBefore, matchesAfter: seen.matchesAfter,
+        });
+        return {
+          result: 'unconfirmed',
+          error: `message submitted but not confirmed — ${CHECK_THREAD_HINT}`,
+          firstName, fullName,
+          ...(threadUrl ? { threadUrl } : {}),
+          evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+        };
+      }
+      return this.errorOutcome(page, seen.failed
+        ? 'LinkedIn reported the message failed to send'
+        : 'message not sent (composer still holds the text after Send)', firstName);
     } catch (e) {
       const scan = await this.scanCheckpoint(page);
       if (scan.hit) return this.checkpointOutcome(page, scan);
       return this.errorOutcome(page, (e as Error).message);
     }
+  }
+
+  /**
+   * One read of the compose surface: the composer we typed into (the LAST msg-form box), every
+   * thread history element, and LinkedIn's own failed-to-send banner — in ONE evaluate so all
+   * three describe the same instant. Texts come back VERBATIM; confirmSentMessage squeezes
+   * them. The callback declares no named inner binding on purpose: under tsx/esbuild
+   * (`npm start`) keep-names rewrites one to `__name(fn, "fn")`, and `__name` does not exist
+   * inside the page — the callback would throw ReferenceError in production only.
+   */
+  private readMessageSurface(page: Page): Promise<MessageSurfaceRead> {
+    return page.evaluate(({ boxSel, evSel }) => {
+      const boxes = document.querySelectorAll(boxSel);
+      const box = boxes[boxes.length - 1];
+      return {
+        boxText: box?.textContent || '',
+        events: Array.from(document.querySelectorAll(evSel)).map((el) => el.textContent || ''),
+        failedBanner: /failed to send|couldn.t send|message not sent/i.test(document.body.textContent || ''),
+      };
+    }, { boxSel: SEL.msgBox, evSel: SEL.msgEvent });
   }
 
   /**
