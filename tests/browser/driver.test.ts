@@ -216,3 +216,14 @@ test('FakeDriver reports the name it actually used, as the real driver does', as
   // …and its own name when nothing is injected.
   expect((await d.sendConnectionRequest('https://www.linkedin.com/in/b', null)).firstName).toBe('Scraped');
 });
+
+test('FakeDriver: an unconfirmed message carries evidence, the check-the-conversation error and a thread url, like the real driver', async () => {
+  const d = new FakeDriver();
+  d.msgScripted.set('https://www.linkedin.com/in/a', 'unconfirmed');
+  d.evidence = { pageUrl: 'https://www.linkedin.com/messaging/thread/x/', screenshot: 'shot.png' };
+  const out = await d.sendMessage('https://www.linkedin.com/in/a', 'Hi {firstName}', { firstName: 'Grace' });
+  expect(out.result).toBe('unconfirmed');
+  expect(out.error).toMatch(/check the conversation before retrying/);
+  expect(out.evidence?.screenshot).toBe('shot.png');
+  expect(out.threadUrl).toMatch(/messaging\/thread/);
+});

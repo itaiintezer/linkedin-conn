@@ -26,6 +26,10 @@ export interface AppInternals {
   /** Pure: which table+endpoint an Attention row's Retry/Dismiss must target. */
   attentionActionPath: (row: Record<string, unknown>, action: string) => string;
   attentionRowSource: (row: Record<string, unknown>) => 'profile' | 'engagement';
+  /** Pure: the toast after "Retry all profiles", including the rows the server left alone. */
+  retryAllSummary: (res: Record<string, unknown> | null) => string;
+  /** Pure: does a per-row Retry need a confirm() because the DM may already have landed. */
+  retryNeedsConfirmation: (row: Record<string, unknown>) => boolean;
   renderEngagements: (engagements: Record<string, unknown> | null | undefined) => void;
   refreshEngagementUpNext: () => Promise<void>;
   kindMark: (kind: string) => HTMLElement;
@@ -118,7 +122,7 @@ export function loadApp(): AppInternals {
   const postsSrc = readFileSync(join(WEB_DIR, 'posts.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\n${postsSrc}\nreturn { initAddList, prioritizedSuffix, renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, SKIP_REASON_LABEL, loadSettings, initSettings, applyEnrichHaltUi, applyHealthAlertsUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initMaintenance, renderAvailability, refreshUpdateCheck, refreshMaintStatus, awaitComeback, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
+    `${src}\n${postsSrc}\nreturn { initAddList, prioritizedSuffix, renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, retryAllSummary, retryNeedsConfirmation, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, SKIP_REASON_LABEL, loadSettings, initSettings, applyEnrichHaltUi, applyHealthAlertsUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initMaintenance, renderAvailability, refreshUpdateCheck, refreshMaintStatus, awaitComeback, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }

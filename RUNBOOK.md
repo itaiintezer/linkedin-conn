@@ -162,6 +162,13 @@ row you can:
 - **Dismiss** — give up on it (moves it to **Skipped** with reason "dismissed").
 Or use **Retry all** to requeue everything at once.
 
+**One exception, and it matters.** A *message* row whose reason says "may already have been
+delivered" or "check the conversation before retrying" is a DM that LinkedIn accepted but
+The Machine could not read back. It probably went out. **Retry all** leaves those rows alone
+and tells you how many it skipped; the row's own **Retry** asks you to confirm first. Open the
+conversation on LinkedIn: if your message is there, **Dismiss** the row. Only retry if it
+really is not — a retry sends the message again.
+
 ## 6. How acceptance tracking works
 The Machine opens **one** LinkedIn page in the background — **Recent connections** — and
 adds everyone it finds to your **connection list** (see section 10). Any profile sitting in

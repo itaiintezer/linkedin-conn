@@ -87,13 +87,20 @@ export class FakeDriver implements BrowserDriver {
     const text = applyFirstName(message, firstName, MAX_MESSAGE);
     this.msgLog.push({ url, message: text });
     const result = this.msgScripted.get(url) ?? 'sent';
-    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable')
+    // 'unconfirmed' carries evidence in the real driver too (message-unconfirmed capture).
+    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable'
+      || result === 'unconfirmed')
       ? this.evidence : undefined;
     return {
       result,
       firstName,
       fullName: this.fullName,
-      ...(result === 'sent' ? { threadUrl: `https://www.linkedin.com/messaging/thread/fake-${slug(url)}/` } : {}),
+      ...(result === 'unconfirmed'
+        ? { error: 'message submitted but not confirmed — check the conversation before retrying' }
+        : {}),
+      ...(result === 'sent' || result === 'unconfirmed'
+        ? { threadUrl: `https://www.linkedin.com/messaging/thread/fake-${slug(url)}/` }
+        : {}),
       ...(evidence ? { evidence } : {}),
     };
   }
