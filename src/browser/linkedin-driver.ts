@@ -296,6 +296,34 @@ export class LinkedInDriver implements BrowserDriver {
   }
 
   /**
+   * The DM gate refused: the page positively showed a Pending badge or a Connect control
+   * for this person. Terminal at the sender (unless the roster disagrees), so it carries
+   * the same evidence as every other judged verdict. Until 2026-09-03 this was the one
+   * skip with no screenshot, no signals and not even the relationship recorded — which is
+   * why eight false skips on a colleague's instance could not be told apart from real
+   * ones after the fact.
+   */
+  private async notConnectedOutcome(
+    page: Page, firstName: string | undefined, fullName: string | undefined, read: RelationshipRead,
+  ): Promise<SendOutcome> {
+    const ev = await this.capture(page, 'not-connected',
+      { relationship: read.relationship, ...read.signals });
+    return {
+      result: 'not_connected',
+      firstName,
+      fullName,
+      relationship: read.relationship,
+      signals: read.signals,
+      evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+    };
+  }
+
+  /** The profile's Message control: an anchor to the compose route (see SEL.msgComposeLink). */
+  private async readComposeHref(page: Page): Promise<string | null> {
+    return page.locator(SEL.msgComposeLink).first().getAttribute('href').catch(() => null);
+  }
+
+  /**
    * The profile rendered (its name was readable) but showed none of the three relationship
    * signals — twice, with a settle between. Distinct from the 'already' skip on purpose:
    * this is "we could not read the page", and recording it as "already connected" is what
@@ -303,12 +331,13 @@ export class LinkedInDriver implements BrowserDriver {
    */
   private async relationshipUnknownOutcome(
     page: Page, firstName: string | undefined, read: RelationshipRead,
+    error = "could not read the profile's relationship — check it before retrying",
   ): Promise<SendOutcome> {
     const ev = await this.capture(page, 'relationship-unknown',
       { relationship: read.relationship, ...read.signals });
     return {
       result: 'relationship_unknown',
-      error: "could not read the profile's relationship — check it before retrying",
+      error,
       firstName,
       relationship: read.relationship,
       signals: read.signals,
@@ -380,7 +409,7 @@ export class LinkedInDriver implements BrowserDriver {
    * post-submit confirmation refuses to.
    */
   private async classifyRelationship(page: Page, url: string): Promise<RelationshipRead> {
-    const name = await this.readFullName(page);
+    const name = await this.awaitFullName(page);
     if (!name) {
       const signals: RelationshipSignals = {
         nameRead: false, pendingForTarget: false, connectForTarget: false, removeConnection: false,
@@ -549,6 +578,24 @@ export class LinkedInDriver implements BrowserDriver {
     }
   }
 
+  /** How long a pre-visit waits for the page to carry its name. LinkedIn's SPA sets the
+   *  title from the model AFTER domcontentloaded, so on a slow load it still reads
+   *  "LinkedIn" when the fixed post-goto sleep ends. Every one of the eight false
+   *  not_connected skips of 2026-09-03 resolved inside that sleep. */
+  private static readonly NAME_WAIT_MS = 6000;
+
+  /** readFullName with bounded patience: polls until the title carries a name or the budget
+   *  runs out. A page that STILL has no name after this is unreadable for real, and the
+   *  caller must treat that as "could not observe", never as a verdict. */
+  private async awaitFullName(page: Page): Promise<string | undefined> {
+    const deadline = Date.now() + LinkedInDriver.NAME_WAIT_MS;
+    for (;;) {
+      const name = await this.readFullName(page);
+      if (name || Date.now() >= deadline) return name;
+      await sleep(500);
+    }
+  }
+
   // The new profile UI has no <h1>; the profile name is reliably in the document title.
   private async readFullName(page: Page): Promise<string | undefined> {
     const title = (await page.title().catch(() => '')) || '';
@@ -569,7 +616,11 @@ export class LinkedInDriver implements BrowserDriver {
    * plus mayReceiveDirectMessage — NOT the degree badge, which renders unreliably) → navigate
    * to the profile's own /messaging/compose/ deep link → type into the classic msg-form →
    * Send → verify structurally (composer cleared + our text present in the thread).
-   * Anything not clearly a 1st-degree connection is 'not_connected' — never InMail.
+   *
+   * Only a POSITIVE non-connection signal (Pending badge / Connect control for this person)
+   * is 'not_connected'. A page that never rendered is 'relationship_unknown' (retryable), and
+   * a connection whose Message control is missing is 'unavailable' — three different facts
+   * that all used to be reported as "not a 1st-degree connection" (2026-09-03). Never InMail.
    */
   async sendMessage(url: string, message: string, opts?: SendOptions): Promise<SendOutcome> {
     const page = await this.session.page();
@@ -578,28 +629,56 @@ export class LinkedInDriver implements BrowserDriver {
       await page.goto(url, { waitUntil: 'domcontentloaded' });
       await sleep(rand(1500, 3500));
       if (isNotFoundUrl(page.url())) return this.notFoundOutcome(page);
-      // The full name is still read verbatim for the 1st-degree gate and the stored record;
-      // only the greeting name is sanitised, and an injected roster name wins outright.
-      const fullName = await this.readFullName(page);
-      const firstName = opts?.firstName ?? firstNameFrom(fullName ?? null) ?? undefined;
       {
         const scan = await this.scanCheckpoint(page);
-        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
+        if (scan.hit) return this.checkpointOutcome(page, scan, opts?.firstName ?? undefined);
       }
       // 1st-degree gate: must be an existing connection (fail-safe: skip, never InMail).
+      // classifyRelationship first waits (bounded) for the page to carry its name: the eight
+      // false not_connected skips of 2026-09-03 all resolved inside the fixed post-goto
+      // sleep, i.e. before a slow load had rendered anything there was to classify.
+      const read = await this.classifyRelationship(page, url);
+      // The full name is still read verbatim for the stored record; only the greeting name
+      // is sanitised, and an injected roster name wins outright.
+      const fullName = await this.readFullName(page);
+      const firstName = opts?.firstName ?? firstNameFrom(fullName ?? null) ?? undefined;
+      if (read.relationship === 'unreadable') {
+        // Still no name after the wait. An authwall or challenge renders exactly like this
+        // (its title carries "LinkedIn"), so scan once more before judging — then park
+        // RETRYABLE, with evidence. A page we could not read is a failure to observe, not
+        // an observation: recording it as "not a 1st-degree connection" is how real
+        // connections silently dropped out of live campaigns.
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
+        return this.relationshipUnknownOutcome(page, firstName, read,
+          'could not read the profile page (no name rendered) — check it before retrying');
+      }
       // 'pending' is rejected here specifically: under Sales Navigator a pending invite used
       // to classify as connected, inverting this gate so a non-connection could be messaged.
       // 'unknown' still passes, as it did before, so a classic-layout connection that shows no
       // positive signal keeps working.
-      const { relationship } = await this.classifyRelationship(page, url);
-      if (!mayReceiveDirectMessage(relationship)) {
-        return { result: 'not_connected', firstName, fullName, relationship };
+      if (!mayReceiveDirectMessage(read.relationship)) {
+        return this.notConnectedOutcome(page, firstName, fullName, read);
       }
-      // 2) The Message control is an anchor to the compose route; its absence on a
-      //    connection's profile means messaging is unavailable for them — skip.
-      const composeHref = await page.locator(SEL.msgComposeLink).first()
-        .getAttribute('href').catch(() => null);
-      if (!composeHref) return { result: 'not_connected', firstName, fullName };
+      // 2) The Message control is an anchor to the compose route. A Sales Navigator licence
+      //    can demote it into the "More" overflow, where it is absent from the DOM until the
+      //    menu opens — classifyRelationship usually opened it already; this covers a menu
+      //    that did not need opening for the verdict. A connection whose control is still
+      //    missing has a MESSAGING problem, not a relationship one: 'unavailable' with
+      //    evidence, never 'not_connected'.
+      let composeHref = await this.readComposeHref(page);
+      if (!composeHref && (await this.expandOverflow(page))) composeHref = await this.readComposeHref(page);
+      if (!composeHref) {
+        const scan = await this.scanCheckpoint(page);
+        if (scan.hit) return this.checkpointOutcome(page, scan, firstName);
+        const ev = await this.capture(page, 'msg-compose-link-missing',
+          { relationship: read.relationship, ...read.signals });
+        return {
+          result: 'unavailable', firstName, fullName,
+          relationship: read.relationship, signals: read.signals,
+          evidence: { pageUrl: page.url(), screenshot: ev?.screenshot ?? null },
+        };
+      }
 
       // 3) Compose route → classic msg-form overlay with stable selectors.
       await page.goto(new URL(composeHref, 'https://www.linkedin.com').href, { waitUntil: 'domcontentloaded' });

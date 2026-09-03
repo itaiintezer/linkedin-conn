@@ -4,7 +4,7 @@ import type {
   Engagement, EngagementOutcome, EngagementSkipReason,
 } from '../types.js';
 import { selectNoteSource } from '../core/message.js';
-import { confirmsExistingConnection, ROSTER_FRESH_MS } from '../core/relationship.js';
+import { confirmsExistingConnection, confirmsNotConnected, ROSTER_FRESH_MS } from '../core/relationship.js';
 import { windowStartIso, remainingCapacity, dayStartIso } from '../core/rate-limit.js';
 import { pickDue } from '../core/schedule.js';
 import { capsFor, engagementCaps } from '../core/caps.js';
@@ -547,11 +547,45 @@ async function attemptMessage(
       recordSuccess(repos);
       logVerdict(p, 'message sent');
       return { halted: false, contacted: true };
-    case 'not_connected':
-      // Not a 1st-degree connection — per-profile, terminal, never InMail, no streak.
+    case 'not_connected': {
+      // The page positively showed a Pending badge or a Connect control for them. Terminal,
+      // never InMail, no streak — UNLESS the local roster says they are a connection. The
+      // roster is LinkedIn's own export, and on 2026-09-03 every not_connected skip on a
+      // colleague's instance (8 of 8) was in it: a misread page was being recorded as a
+      // permanent fact about the relationship. Two sources disagreeing is a human's call;
+      // it is still not a send (the DOM gate keeps the InMail fail-safe).
+      const shot = outcome.evidence?.screenshot ? ` — screenshot: /incidents/${outcome.evidence.screenshot}` : '';
+      const seen = outcome.relationship ? ` (page read: ${outcome.relationship})` : '';
+      if (!confirmsNotConnected(outcome.relationship, !!repos.connections.findByUrl(p.profile_url))) {
+        repos.profiles.setStatus(p.id, 'needs_attention', {
+          last_error: 'page read as not a 1st-degree connection, but they are in your connections list — check before retrying',
+        });
+        repos.events.recordEvent(p.id, 'skipped');
+        log.warn('sender', 'verdict', {
+          profile: p.id, url: p.profile_url,
+          verdict: `needs attention: read as not a connection but present in your connections list${seen}${shot}`,
+        });
+        return { halted: false, contacted: true };
+      }
       repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_connected' });
       repos.events.recordEvent(p.id, 'skipped');
-      logVerdict(p, 'skipped: not a 1st-degree connection');
+      logVerdict(p, `skipped: not a 1st-degree connection${seen}${shot}`);
+      return { halted: false, contacted: true };
+    }
+    case 'relationship_unknown':
+      // The profile page never rendered a name. This used to fall through the DM gate as
+      // 'unreadable' → not_connected and be skipped for good; a page we could not read is
+      // no evidence about the relationship. Parked retryable with evidence, off the
+      // failure streak (a run of these is a render/selector problem, not a LinkedIn block).
+      repos.profiles.setStatus(p.id, 'needs_attention', {
+        last_error: outcome.error ?? 'could not read the profile page — check it before retrying',
+      });
+      repos.events.recordEvent(p.id, 'skipped');
+      log.warn('sender', 'verdict', {
+        profile: p.id, url: p.profile_url,
+        verdict: 'needs attention: could not read the profile page'
+          + (outcome.evidence?.screenshot ? ` — screenshot: /incidents/${outcome.evidence.screenshot}` : ''),
+      });
       return { halted: false, contacted: true };
     case 'not_found':
       repos.profiles.setStatus(p.id, 'skipped', { last_error: null, skip_reason: 'not_found' });

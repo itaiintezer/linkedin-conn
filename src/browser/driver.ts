@@ -87,12 +87,16 @@ export class FakeDriver implements BrowserDriver {
     const text = applyFirstName(message, firstName, MAX_MESSAGE);
     this.msgLog.push({ url, message: text });
     const result = this.msgScripted.get(url) ?? 'sent';
-    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable')
+    // 'not_connected' and 'relationship_unknown' carry evidence in the real driver since
+    // 2026-09-03 — the verdict line links the screenshot, so the fake must carry it too.
+    const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable'
+      || result === 'not_connected' || result === 'relationship_unknown')
       ? this.evidence : undefined;
     return {
       result,
       firstName,
       fullName: this.fullName,
+      ...(this.relationship ? { relationship: this.relationship } : {}),
       ...(result === 'sent' ? { threadUrl: `https://www.linkedin.com/messaging/thread/fake-${slug(url)}/` } : {}),
       ...(evidence ? { evidence } : {}),
     };
