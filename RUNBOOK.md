@@ -152,6 +152,11 @@ connection**: The Machine opened the profile, found you aren't actually connecte
 Sending anyway would have gone out as an InMail — a separate, metered LinkedIn product — so it
 leaves the person alone. Send them an invite instead.
 
+It doesn't take the page's word for that lightly. If the profile page never finished loading,
+or if it says you aren't connected while your connections list says you are, the person goes
+to **Needs attention** with a screenshot instead — look at the profile, and if you are
+connected, hit Retry.
+
 **Up next** lists the next 10 profiles to be processed. **View more** shows the rest.
 
 ## 5. The Attention tab

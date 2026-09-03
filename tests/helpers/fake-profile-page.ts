@@ -42,6 +42,10 @@ export interface FakeProfilePageSpec {
   /** goto(url) lands on redirects[url] when present — models LinkedIn's vanity-rename
    *  redirect (/in/<old-slug> → /in/<new-slug>). */
   redirects?: Record<string, string>;
+  /** Successive title() reads return these in turn, the last one sticking — models the
+   *  SPA setting the title from the model AFTER domcontentloaded (a slow load reads
+   *  "LinkedIn" for a while first). Overrides `title` while present. */
+  titles?: string[];
 }
 
 function el(spec: FakeElementSpec): FakeElement {
@@ -122,6 +126,7 @@ class FakeLocator {
   private els(): FakeElement[] { return this.query(this.page.currentElements()); }
 
   first(): FakeLocator { return new FakeLocator(this.page, (all) => this.query(all).slice(0, 1)); }
+  last(): FakeLocator { return new FakeLocator(this.page, (all) => this.query(all).slice(-1)); }
 
   locator(selector: string): FakeLocator {
     // Chained from a container match (e.g. SEL.overflowMenu → removeConnection): scope to
@@ -180,6 +185,7 @@ class FakeLocator {
 export class FakeProfilePage {
   private currentUrl: string;
   private expanded = false;
+  private titleReads = 0;
   gotoLog: string[] = [];
 
   constructor(private spec: FakeProfilePageSpec) { this.currentUrl = spec.url; }
@@ -206,7 +212,11 @@ export class FakeProfilePage {
 
   // --- Page surface the driver + captureEvidence touch ---
   url(): string { return this.currentUrl; }
-  async title(): Promise<string> { return this.spec.title; }
+  async title(): Promise<string> {
+    const seq = this.spec.titles;
+    if (seq && seq.length > 0) return seq[Math.min(this.titleReads++, seq.length - 1)]!;
+    return this.spec.title;
+  }
   async content(): Promise<string> { return `<html><body>fake ${this.spec.title}</body></html>`; }
   async screenshot(): Promise<Buffer> { return Buffer.from('fake-png'); }
   async goto(url: string): Promise<void> {

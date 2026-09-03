@@ -1183,8 +1183,10 @@ Up to 500 profiles, newest first, optionally filtered by status and/or kind
 Statuses are `queued` → `scheduled` → `sending` → `sent`, then `accepted` (invites) or
 `replied` (messages); plus `expired`, `skipped`, `failed`, `needs_attention`.
 `skip_reason` is one of `already_connected`, `email_required`, `unavailable`, `not_found`,
-`dismissed`, or — messages only — `not_connected` (the profile turned out not to be a
-1st-degree connection, so nothing was sent rather than risk an InMail).
+`dismissed`, or — messages only — `not_connected` (the profile page positively showed a
+Pending badge or a Connect control for them, so nothing was sent rather than risk an InMail).
+A refusal that contradicts the synced connections roster, or a profile page that never
+rendered, lands in `needs_attention` with a screenshot instead of being skipped.
 
 ### GET /api/queue?limit=N
 Flat upcoming work, both kinds interleaved: `{ "upcoming": [{ "id", "profile_url", "kind", "status", "scheduled_for", "cohort_name", "note" }], "total_remaining": N }`.

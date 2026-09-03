@@ -170,9 +170,36 @@ export function confirmsInviteLanded(r: Relationship): boolean {
  * tightening changes nothing there.
  *
  * 'unknown' stays permitted to preserve today's behaviour for the classic layout, where an
- * existing connection may present no positive signal at all. 'unreadable' is refused, as it
- * is today — a page that did not render is no evidence of a connection.
+ * existing connection may present no positive signal at all. 'unreadable' is refused — a
+ * page that did not render is no evidence of a connection — but since 2026-09-03 the driver
+ * parks it as a retryable relationship_unknown instead of letting it fall through to a
+ * terminal not_connected skip: a failure to observe is not an observation.
  */
 export function mayReceiveDirectMessage(r: Relationship): boolean {
   return r === 'connected' || r === 'unknown';
+}
+
+/**
+ * DM ROSTER TIE-BREAKER: is a "not a 1st-degree connection" refusal terminal?
+ *
+ * The DM gate refuses 'pending' and 'connectable' because each is a POSITIVE sign of a
+ * non-connection. A positive sign can still be misread (a half-rendered top card, a control
+ * attributed to the wrong person), and until 2026-09-03 the sender recorded every refusal
+ * as a terminal not_connected skip with no evidence to check it against. That day a
+ * colleague's instance had eight such skips — all eight present in the LinkedIn-exported
+ * connections roster, which is LinkedIn's own word on who is a 1st-degree connection.
+ *
+ *  - refused + not in roster → true: skip. Both sources agree they are not a connection.
+ *  - refused + in roster     → false: park it for a human. A PRESENT row is positive
+ *                              evidence at any age (same reasoning as
+ *                              confirmsExistingConnection), so the page read disagreeing
+ *                              is a misread until someone looks. Never a send either: the
+ *                              InMail fail-safe stays with the DOM gate.
+ * 'connected' and 'unknown' are never refused and 'unreadable' is retryable by
+ * construction, so none of them can be confirmed. A driver that reported no relationship
+ * at all is judged on the roster alone.
+ */
+export function confirmsNotConnected(r: Relationship | undefined, inRoster: boolean): boolean {
+  if (r === 'connected' || r === 'unknown' || r === 'unreadable') return false;
+  return !inRoster;
 }

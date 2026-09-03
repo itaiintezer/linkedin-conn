@@ -87,14 +87,17 @@ export class FakeDriver implements BrowserDriver {
     const text = applyFirstName(message, firstName, MAX_MESSAGE);
     this.msgLog.push({ url, message: text });
     const result = this.msgScripted.get(url) ?? 'sent';
-    // 'unconfirmed' carries evidence in the real driver too (message-unconfirmed capture).
+    // 'unconfirmed' (message-unconfirmed capture), 'not_connected' and 'relationship_unknown'
+    // (2026-09-03) carry evidence in the real driver too — the verdict line links the
+    // screenshot, so the fake must carry it as well.
     const evidence = (result === 'checkpoint' || result === 'error' || result === 'unavailable'
-      || result === 'unconfirmed')
+      || result === 'unconfirmed' || result === 'not_connected' || result === 'relationship_unknown')
       ? this.evidence : undefined;
     return {
       result,
       firstName,
       fullName: this.fullName,
+      ...(this.relationship ? { relationship: this.relationship } : {}),
       ...(result === 'unconfirmed'
         ? { error: 'message submitted but not confirmed — check the conversation before retrying' }
         : {}),

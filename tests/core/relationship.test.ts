@@ -1,7 +1,7 @@
 import { test, expect, describe } from 'vitest';
 import {
   classifyRelationship, skipsInvite, confirmsInviteLanded, mayReceiveDirectMessage,
-  pendingBadgeMatchesTarget, confirmsExistingConnection, type PendingBadge,
+  pendingBadgeMatchesTarget, confirmsExistingConnection, confirmsNotConnected, type PendingBadge,
   type Relationship, type RelationshipSignals,
 } from '../../src/core/relationship.js';
 
@@ -220,3 +220,35 @@ describe('confirmsExistingConnection', () => {
   });
 });
 
+
+/**
+ * The DM-side roster tie-breaker (2026-09-03). Eight of eight not_connected skips on a
+ * colleague's instance were in the LinkedIn-exported roster; the page read contradicting
+ * LinkedIn's own export is a misread until a human looks, never a terminal skip.
+ */
+describe('confirmsNotConnected (DM roster tie-breaker)', () => {
+  const matrix: Array<[Relationship | undefined, boolean, boolean]> = [
+    // relationship,  inRoster, terminal?
+    ['connectable', false, true],   // both sources agree: not a connection
+    ['pending', false, true],       // an outstanding invite is not a connection either
+    ['connectable', true, false],   // the roster says connected → park, don't skip
+    ['pending', true, false],
+    [undefined, false, true],       // a driver that reported no relationship: roster decides
+    [undefined, true, false],
+  ];
+  for (const [r, inRoster, want] of matrix) {
+    test(`${r ?? '(none)'} inRoster=${inRoster} → ${want}`, () => {
+      expect(confirmsNotConnected(r, inRoster)).toBe(want);
+    });
+  }
+
+  test('nothing the DM gate never refuses, and nothing retryable, can be confirmed', () => {
+    // 'unreadable' is parked as relationship_unknown by the driver before this is ever
+    // consulted; 'connected' / 'unknown' pass the gate. Should any of them arrive here
+    // anyway, the safe answer is "not terminal".
+    for (const r of ['connected', 'unknown', 'unreadable'] as Relationship[]) {
+      expect(confirmsNotConnected(r, false)).toBe(false);
+      expect(confirmsNotConnected(r, true)).toBe(false);
+    }
+  });
+});

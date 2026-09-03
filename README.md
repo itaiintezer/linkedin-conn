@@ -228,7 +228,10 @@ invites. 6 batches × 5 is ~30 messages a day; there's headroom to raise
 `msg_batches_per_day` to 8 (~40/day) after a few clean weeks, and no reason to rush it.
 
 If a profile turns out not to be a 1st-degree connection at send time, The Machine skips it
-(**Skipped**, reason `not_connected`) rather than send an InMail.
+(**Skipped**, reason `not_connected`) rather than send an InMail. That verdict needs a
+positive sign on the page (a Pending badge or a Connect control for that person) and takes a
+screenshot; a page that never rendered, or a refusal that contradicts your synced connections
+roster, goes to **Needs attention** for you to check instead of being silently skipped.
 
 ## Event invites
 
@@ -489,7 +492,8 @@ Two deliberate limits:
 
 - **Removals aren't tracked.** Nothing here ever deletes a connection, so someone who
   disconnects stays in the roster. If they end up in a message campaign, the send-time check
-  skips them as `not_connected`.
+  still refuses to message them — and because the roster disagrees with the page, the row is
+  parked under **Needs attention** (with a screenshot) rather than skipped outright.
 - **Discovery reads the top of the list.** Someone who connected while The Machine was off
   for a long stretch is picked up by re-importing the CSV rather than by sync.
 

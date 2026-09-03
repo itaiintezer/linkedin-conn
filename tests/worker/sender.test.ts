@@ -427,7 +427,9 @@ test('message pass: sends due message profiles, stamps full_name/thread_url, cou
   expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'invite')).toBe(0);
 });
 
-test('message pass: not_connected is a terminal skip that never touches the failure streak', async () => {
+test('message pass: not_connected (and NOT in the roster) is a terminal skip that never touches the failure streak', async () => {
+  // Both sources agree: the page showed a positive non-connection signal and the roster has
+  // no row for them. Only then is "not a 1st-degree connection" a fact worth recording.
   const c = repos.cohorts.create('M', 'hi', true, 'message');
   const p = seedScheduledMsg('https://www.linkedin.com/in/m2', '2026-06-29T09:00:00.000Z', c.id);
   driver.msgScripted.set('https://www.linkedin.com/in/m2', 'not_connected');
@@ -700,6 +702,48 @@ test('offline failures never record a failed event — the send never happened',
   });
   await run(new Date('2026-06-29T10:00:00Z'));
   expect(repos.profiles.byStatus('failed')).toHaveLength(0);
+});
+
+test('message pass: not_connected for someone IN the roster parks as needs_attention, not a terminal skip', async () => {
+  // 2026-09-03: eight of eight not_connected skips on a colleague's instance were present in
+  // the LinkedIn-exported roster. A page read that contradicts LinkedIn's own export is a
+  // misread until a human looks — and still not a send.
+  const c = repos.cohorts.create('M', 'hi', true, 'message');
+  const p = seedScheduledMsg('https://www.linkedin.com/in/m2', '2026-06-29T09:00:00.000Z', c.id);
+  repos.connections.upsert({ profile_url: 'https://www.linkedin.com/in/m2' }, 'csv', '2026-03-01T00:00:00.000Z');
+  // Deliberately NO setRosterSynced: a PRESENT row is positive evidence at any age.
+  driver.msgScripted.set('https://www.linkedin.com/in/m2', 'not_connected');
+  driver.relationship = 'connectable';
+  driver.evidence = { pageUrl: 'https://www.linkedin.com/in/m2', screenshot: 'nc.png' };
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.skip_reason).toBeNull();
+  expect(row.last_error).toMatch(/connections list/i);
+  expect(driver.msgLog).toHaveLength(1); // the gate ran — this is not a send, just not a skip
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'message')).toBe(0);
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+});
+
+test('message pass: relationship_unknown parks retryable with evidence, off the failure streak', async () => {
+  // The profile page never rendered a name. Before 2026-09-03 the DM gate folded that into
+  // not_connected and the row was skipped for good; a page we could not read is no
+  // evidence about the relationship.
+  const c = repos.cohorts.create('M', 'hi', true, 'message');
+  const p = seedScheduledMsg('https://www.linkedin.com/in/m4', '2026-06-29T09:00:00.000Z', c.id);
+  driver.msgScripted.set('https://www.linkedin.com/in/m4', 'relationship_unknown');
+  driver.evidence = { pageUrl: 'https://www.linkedin.com/in/m4', screenshot: 'blank.png' };
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.skip_reason).toBeNull();
+  expect(row.last_error).toMatch(/could not read/i);
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'message')).toBe(0);
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
 });
 
 test('message pass: an UNCONFIRMED send parks as needs_attention, COUNTS as a send, and never touches the streak', async () => {
