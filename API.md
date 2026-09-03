@@ -28,7 +28,10 @@ Request: `{ "url": "https://www.linkedin.com/in/jane-doe/", "cohort": "Security 
   `invite`.
 - `message` (optional) — per-profile note (invites) or DM body (messages); `{firstName}` is
   substituted at send time. Max length 2000 for messages, 300 for invite notes; over that
-  is `400`. It takes precedence over the cohort template.
+  is `400`. It takes precedence over the cohort template. `{firstName}` is the **only**
+  placeholder and it is case-sensitive: a near-miss (`{FirstName}`, `{first_name}`,
+  `[First name]`, `{{firstName}}`, any other `{token}`) is `400` naming the right spelling,
+  because it would otherwise go out verbatim in front of a real person.
 - `prioritize` (optional, default `false`) — the profile goes to the **front of the queue
   and takes today's earliest remaining slot**. Slot times and today's send volume are
   unchanged: the new row takes an existing seat, and whoever it displaced returns to the
@@ -119,7 +122,8 @@ Bulk-enqueue from pasted text. Request: `{ "cohort": "Security VPs", "text": "ur
 - `message_template` is required when `kind` is `message` **unless the target cohort already
   has one** — a DM has nothing to send without a body, but that body may already live on the
   cohort. `400` only when nothing can supply one. Max length 2000 for messages, 300 for
-  invite notes; over that is `400`.
+  invite notes; over that is `400`. A misspelled placeholder is `400` too — see `message`
+  under `POST /api/profiles`.
 - **Omitting `message_template` leaves the cohort's template and its no-note policy alone.**
   Supplying one overwrites both — which rewrites the message for everyone already queued in
   that cohort, so omit it unless you mean to change it.
@@ -146,7 +150,8 @@ List active (non-archived) cohorts: `[{ "id", "name", "kind", "message_template"
 Create or update by name. Request: `{ "name": "Security VPs", "kind": "message", "message_template": "Hi {firstName}" }`.
 `kind` (optional) defaults to `invite` and only applies at creation — a cohort's kind can
 never change. `409` if the name exists with the other kind **and** the request stated a
-`kind`; an edit that omits `kind` is not rejected by the default.
+`kind`; an edit that omits `kind` is not rejected by the default. The template follows the
+same length and placeholder rules as `POST /api/lists` (`400` for `{FirstName}` and friends).
 
 ### Archiving
 - `GET /api/cohorts/archived` — same shape, archived cohorts only.
@@ -1228,9 +1233,14 @@ every row carries a `source` discriminator as well.
   number. The tag is on the profile rows too, not only the new ones — a discriminator only one
   side carries is one every reader has to guess about. Profiles come first, then engagements,
   each newest-first; there is no meaningful order to interleave two id spaces into.
-- `POST /api/retry` — requeue every failed / needs_attention **profile**, both kinds. Response
-  `{ "ok": true, "retried": N }`. Engagements are not touched: retry them one row at a time
-  with `POST /api/engagements/:id/retry`.
+- `POST /api/retry` — requeue every failed / needs_attention **profile**, both kinds, **except
+  message rows whose first send may already have been delivered** (`last_error` reads
+  "submitted but not confirmed", "went offline mid-send", or the pre-2026-09-02 "message send
+  not confirmed"). A retry is a fresh send, and for a DM that is a second copy in front of a
+  real person. Response `{ "ok": true, "retried": N, "skipped": K, "skipped_reason": "…" }`
+  (`skipped_reason` only when `K > 0`). Skipped rows stay retryable one at a time with
+  `POST /api/profiles/:id/retry` once someone has looked at the conversation. Engagements are
+  not touched: retry them one row at a time with `POST /api/engagements/:id/retry`.
 - `POST /api/profiles/:id/retry` — requeue one. `404` if unknown. `409` unless its status is
   `failed`, `needs_attention` or `skipped`: retry re-queues for a *fresh* send, so retrying
   a `replied`/`accepted`/`sent` profile would contact the same person twice.

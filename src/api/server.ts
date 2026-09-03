@@ -48,7 +48,8 @@ import {
 } from '../worker/event-campaign.js';
 import { runEventCampaign } from '../worker/event-runner.js';
 import { defaultCohortName } from '../core/cohort-name.js';
-import { deriveAllowNoNote, MAX_NOTE, MAX_MESSAGE, MAX_COMMENT } from '../core/message.js';
+import { deriveAllowNoNote, validatePlaceholders, MAX_NOTE, MAX_MESSAGE, MAX_COMMENT } from '../core/message.js';
+import { mayHaveBeenDelivered } from '../core/retry-safety.js';
 import { engagementCaps } from '../core/caps.js';
 import { SETTING_RULES, validateSettingsPatch } from '../core/settings-rules.js';
 import type { Logger } from '../core/logger.js';
@@ -185,6 +186,9 @@ export function buildServer(
     if (note && note.length > max) {
       return reply.code(400).send({ error: `message too long (max ${max} characters)` });
     }
+    // A misspelled placeholder goes out VERBATIM ("Hi {FirstName},") — see validatePlaceholders.
+    const badToken = validatePlaceholders(note);
+    if (badToken) return reply.code(400).send({ error: badToken });
     // A DM has nothing to send without a body. Unlike /api/lists (which only has the
     // cohort template to work with), a single-profile add may carry its own text, so
     // either source satisfies the rule — see selectNoteSource for the precedence.
@@ -244,6 +248,9 @@ export function buildServer(
     if (template && template.length > max) {
       return reply.code(400).send({ error: `template too long (max ${max} characters)` });
     }
+    // A misspelled placeholder goes out VERBATIM ("Hi {FirstName},") — see validatePlaceholders.
+    const badToken = validatePlaceholders(template);
+    if (badToken) return reply.code(400).send({ error: badToken });
     const allowNoNote = deriveAllowNoNote(template);
     const c = repos.cohorts.getOrCreate(cohortName, template ?? null, allowNoNote, kind);
     // Only touch the cohort's template when one was actually supplied. This used to run
@@ -464,6 +471,9 @@ export function buildServer(
     if (template && template.length > max) {
       return reply.code(400).send({ error: `template too long (max ${max} characters)` });
     }
+    // A misspelled placeholder goes out VERBATIM ("Hi {FirstName},") — see validatePlaceholders.
+    const badToken = validatePlaceholders(template);
+    if (badToken) return reply.code(400).send({ error: badToken });
     const allowNoNote = deriveAllowNoNote(template);
     const c = repos.cohorts.getOrCreate(name, template ?? null, allowNoNote, kind);
     repos.db.prepare('UPDATE cohorts SET message_template = ?, allow_no_note = ? WHERE id = ?')
@@ -1726,11 +1736,23 @@ export function buildServer(
   });
 
   // Reset failed / needs-attention profiles back to queued so they get retried.
+  //
+  // EXCEPT message rows that may already have been delivered (core/retry-safety.ts). A retry
+  // is a fresh send; for a DM whose first attempt was parked as "submitted but not confirmed"
+  // or "went offline mid-send" that means a second copy in front of a real person — which is
+  // how two prospects each got the same DM twice on 2026-08-31. Those rows are reported back
+  // (`skipped`) so the dashboard can say so, and stay retryable one at a time via
+  // POST /api/profiles/:id/retry once someone has looked at the conversation.
   app.post('/api/retry', async () => {
-    const targets = [...repos.profiles.byStatus('failed'), ...repos.profiles.byStatus('needs_attention')];
-    defaultLog.info('api', 'retry', { count: targets.length });
+    const candidates = [...repos.profiles.byStatus('failed'), ...repos.profiles.byStatus('needs_attention')];
+    const targets = candidates.filter((p) => !mayHaveBeenDelivered(p));
+    const skipped = candidates.length - targets.length;
+    defaultLog.info('api', 'retry', { count: targets.length, skipped });
     for (const p of targets) repos.profiles.setStatus(p.id, 'queued', { scheduled_for: null, last_error: null, skip_reason: null });
-    return { ok: true, retried: targets.length };
+    return {
+      ok: true, retried: targets.length, skipped,
+      ...(skipped ? { skipped_reason: 'message may already have been delivered — check the conversation, then retry it individually' } : {}),
+    };
   });
 
   /**

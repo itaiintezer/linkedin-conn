@@ -1098,6 +1098,36 @@ function attentionRowLabel(row) {
     : slugFromUrl(row.profile_url);
 }
 
+/**
+ * The toast after "Retry all profiles". `skipped` counts message rows the server refused to
+ * requeue because their first send may already have landed — retrying them is a second DM to
+ * a real person, so the operator is told to look at the conversation and retry each by hand.
+ * Pure, and tested as such.
+ */
+function retryAllSummary(res) {
+  const n = res && typeof res.retried === 'number' ? res.retried : 0;
+  const k = res && typeof res.skipped === 'number' ? res.skipped : 0;
+  const parts = [];
+  if (n) parts.push(`Requeued ${n} profile${n === 1 ? '' : 's'} — they'll be re-scheduled and retried.`);
+  if (k) {
+    parts.push(`${k} message${k === 1 ? '' : 's'} left alone — ${k === 1 ? 'it' : 'they'} may already have been delivered. `
+      + 'Check the conversation, then use Retry on that row if it really did not go out.');
+  }
+  return parts.length ? parts.join(' ') : 'Nothing to retry.';
+}
+
+/**
+ * A message row parked because its send may already have landed: retrying it puts a second
+ * DM in front of a real person, so the per-row Retry asks first. Mirrors the server's
+ * mayHaveBeenDelivered (core/retry-safety.ts) — the same hint text, because last_error is
+ * the only place the sender records why a row was parked.
+ */
+function retryNeedsConfirmation(row) {
+  if (attentionRowSource(row) !== 'profile' || row.kind !== 'message') return false;
+  return /check the conversation before retrying|may (?:already )?have been sent|message send not confirmed|message submitted but not confirmed/i
+    .test(row.last_error || '');
+}
+
 function attentionActions(row) {
   return el('td', { class: 'row-actions' },
     el('button', { class: 'btn btn-ghost', onclick: (e) => actOnAttentionRow(row, 'retry', e.currentTarget) }, 'Retry'),
@@ -1179,6 +1209,10 @@ async function loadAttention() {
 async function actOnAttentionRow(row, action, btn) {
   const result = $('#attentionResult');
   const label = attentionRowLabel(row);
+  if (action === 'retry' && retryNeedsConfirmation(row)
+    && !window.confirm(`${label}'s message may already have been delivered.\n\nOpen the conversation on LinkedIn first. Retry sends it AGAIN — continue only if it is not there.`)) {
+    return;
+  }
   if (btn) { btn.disabled = true; btn.textContent = action === 'retry' ? 'Retrying…' : 'Dismissing…'; }
   try {
     await api(attentionActionPath(row, action), { method: 'POST' });
@@ -1206,7 +1240,7 @@ function initAttention() {
       const res = await api('/api/retry', { method: 'POST' });
       const n = res && typeof res.retried === 'number' ? res.retried : 0;
       retryAll.textContent = `Requeued ${n}`;
-      toast(result, n ? `Requeued ${n} profile${n === 1 ? '' : 's'} — they'll be re-scheduled and retried.` : 'Nothing to retry.');
+      toast(result, retryAllSummary(res));
       await loadAttention();
       await refreshStatus();
     } catch (err) {
@@ -1498,7 +1532,10 @@ function initDashboard() {
     try {
       const res = await api('/api/retry', { method: 'POST' });
       const n = res && typeof res.retried === 'number' ? res.retried : 0;
-      btn.textContent = `Requeued ${n}`;
+      const k = res && typeof res.skipped === 'number' ? res.skipped : 0;
+      // Skipped = message rows that may already have been delivered; the Attention tab's
+      // toast explains, this button only has room to say so.
+      btn.textContent = k ? `Requeued ${n} · ${k} left alone` : `Requeued ${n}`;
       await refreshStatus();
       await refreshQueue();
     } catch (_) {

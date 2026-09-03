@@ -9,6 +9,7 @@ import { windowStartIso, remainingCapacity, dayStartIso } from '../core/rate-lim
 import { pickDue } from '../core/schedule.js';
 import { capsFor, engagementCaps } from '../core/caps.js';
 import { isTripped, tripCheckpoint, tripLoginLost, recordFailure, recordSuccess } from './guardrail.js';
+import { CHECK_THREAD_HINT } from '../core/retry-safety.js';
 import { log } from '../core/log.js';
 
 export interface SenderOptions {
@@ -134,7 +135,7 @@ async function handleError(
     if (p.kind === 'message' && !failedAtNavigation(error)) {
       repos.profiles.setStatus(p.id, 'needs_attention', {
         scheduled_for: null,
-        last_error: 'went offline mid-send — the message may have been sent; check the conversation before retrying',
+        last_error: `went offline mid-send — the message may have been sent; ${CHECK_THREAD_HINT}`,
       });
       logVerdict(p, 'needs attention: went offline mid-send — check the conversation before retrying');
     } else {
@@ -546,6 +547,26 @@ async function attemptMessage(
       repos.events.recordSend(p.id, 'sent');
       recordSuccess(repos);
       logVerdict(p, 'message sent');
+      return { halted: false, contacted: true };
+    case 'unconfirmed':
+      // The composer cleared, so LinkedIn accepted the send — we just could not read it
+      // back in the thread. Same doctrine as the invite path's `unconfirmed`: recordSend,
+      // because the weekly cap must not under-count a message that left the account (16
+      // real sends were invisible to it on 2026-08-31); recordSuccess, because we reached
+      // LinkedIn and submitted, which is what the failure streak measures. needs_attention
+      // with the check-the-conversation hint, so the bulk Retry leaves it alone
+      // (core/retry-safety.ts) — a retry here is a second DM in front of a real person.
+      // Until 2026-09-02 this outcome had no case and fell through to handleError: four
+      // guardrail halts and two duplicate DMs on sends that had all landed.
+      repos.profiles.setStatus(p.id, 'needs_attention', {
+        full_name: outcome.fullName ?? null,
+        thread_url: outcome.threadUrl ?? null,
+        last_error: outcome.error ?? `message submitted but not confirmed — ${CHECK_THREAD_HINT}`,
+      });
+      repos.events.recordSend(p.id, 'sent');
+      recordSuccess(repos);
+      logVerdict(p, 'needs attention: message submitted but not confirmed — check the conversation before retrying'
+        + (outcome.evidence?.screenshot ? ` — screenshot: /incidents/${outcome.evidence.screenshot}` : ''));
       return { halted: false, contacted: true };
     case 'not_connected': {
       // The page positively showed a Pending badge or a Connect control for them. Terminal,

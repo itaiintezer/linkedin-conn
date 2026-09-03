@@ -61,13 +61,20 @@ export async function captureEvidence(
         fullPage: false, animations: 'disabled', caret: 'hide', timeout: 15_000,
       }));
       screenshot = `${base}.png`;
-    } catch { /* page gone mid-capture */ }
+    } catch (e) {
+      // Still best-effort — the HTML below must not be lost — but the REASON is kept. Every
+      // incident from 2026-08-31 came back screenshot-less and a bare catch here left nothing
+      // to diagnose it from; the screenshot is the fastest artifact for reading an incident.
+      log.warn('evidence', 'screenshot failed', { tag, error: (e as Error).message });
+    }
 
     let html: string | null = null;
     try {
       writeFileSync(join(dir, `${base}.html`), await page.content());
       html = `${base}.html`;
-    } catch { /* page gone mid-capture */ }
+    } catch (e) {
+      log.warn('evidence', 'html snapshot failed', { tag, error: (e as Error).message });
+    }
 
     const evidence: Evidence = { base, screenshot, html, pageUrl, title, capturedAt: now.toISOString() };
     writeFileSync(join(dir, `${base}.json`), JSON.stringify({ tag, ...extra, ...evidence }, null, 2));

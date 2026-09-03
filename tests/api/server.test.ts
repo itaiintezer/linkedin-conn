@@ -1102,7 +1102,7 @@ test('POST /api/lists schedules the new backlog immediately', async () => {
   const res = await app.inject({
     method: 'POST', url: '/api/lists',
     payload: {
-      cohort: 'PlanNow', kind: 'message', message_template: 'Hi {{first_name}}',
+      cohort: 'PlanNow', kind: 'message', message_template: 'Hi {firstName}',
       text: ['a', 'b', 'c'].map((s) => `https://www.linkedin.com/in/plan-now-${s}`).join('\n'),
     },
   });
@@ -1378,4 +1378,79 @@ test('POST /api/run-now with no belt promotes engagements too (the old gap)', as
   expect(res.statusCode).toBe(200);
   expect(JSON.parse(res.body).belt).toBe('all');
   expect(repos.engagements.byStatus('queued')).toHaveLength(0);
+});
+
+test('POST /api/retry leaves message rows that may already have been delivered alone, and says so', async () => {
+  // 2026-08-31: "Retry all profiles" re-sent a DM to two people whose first copy had landed
+  // but was reported `message send not confirmed`. Bulk retry must skip that shape — both
+  // the new needs_attention park and the legacy `failed` string — and still requeue the rest.
+  const inv = repos.cohorts.create('Inv', null, true);
+  const msg = repos.cohorts.create('Msg', 'Hi {firstName}', false, 'message');
+  const a = repos.profiles.add(inv.id, 'https://www.linkedin.com/in/retry-inv', null);
+  const b = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/retry-legacy', null, 'message');
+  const c = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/retry-unconf', null, 'message');
+  const d = repos.profiles.add(msg.id, 'https://www.linkedin.com/in/retry-never-sent', null, 'message');
+  repos.profiles.setStatus(a.id, 'failed', { last_error: 'message send not confirmed (composer/thread state)' }); // invite: retryable
+  repos.profiles.setStatus(b.id, 'failed', { last_error: 'message send not confirmed (composer/thread state)' });
+  repos.profiles.setStatus(c.id, 'needs_attention', { last_error: 'message submitted but not confirmed — check the conversation before retrying' });
+  repos.profiles.setStatus(d.id, 'failed', { last_error: 'send button never enabled after typing' });
+
+  const res = await app.inject({ method: 'POST', url: '/api/retry' });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  expect(body.retried).toBe(2);
+  expect(body.skipped).toBe(2);
+  expect(body.skipped_reason).toMatch(/may already have been delivered/);
+  expect(repos.profiles.findById(a.id)!.status).toBe('queued');
+  expect(repos.profiles.findById(d.id)!.status).toBe('queued');
+  expect(repos.profiles.findById(b.id)!.status).toBe('failed');
+  expect(repos.profiles.findById(c.id)!.status).toBe('needs_attention');
+  expect(repos.profiles.findById(c.id)!.last_error).toMatch(/check the conversation/);
+
+  // …but each stays retryable one at a time — a deliberate per-person decision.
+  const one = await app.inject({ method: 'POST', url: `/api/profiles/${b.id}/retry` });
+  expect(one.statusCode).toBe(200);
+  expect(repos.profiles.findById(b.id)!.status).toBe('queued');
+});
+
+test('POST /api/retry with nothing ambiguous reports skipped: 0 and no reason', async () => {
+  const c = repos.cohorts.create('R2', null, true);
+  const a = repos.profiles.add(c.id, 'https://www.linkedin.com/in/r2-a', null);
+  repos.profiles.setStatus(a.id, 'failed', { last_error: 'boom' });
+  const body = JSON.parse((await app.inject({ method: 'POST', url: '/api/retry' })).body);
+  expect(body).toEqual({ ok: true, retried: 1, skipped: 0 });
+});
+
+test('a misspelled placeholder is rejected at every write endpoint, naming {firstName}', async () => {
+  // Cohort 8 sent a literal "Hi {FirstName}," to four people; the Toronto template sent
+  // "Hey [First name]," to two. Nothing downstream can catch it — the write is the place.
+  const cohort = await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'Typo', kind: 'message', message_template: 'Hi {FirstName}, hello' },
+  });
+  expect(cohort.statusCode).toBe(400);
+  expect(JSON.parse(cohort.body).error).toMatch(/\{FirstName\}.*did you mean \{firstName\}/);
+  expect(repos.cohorts.findByName('Typo')).toBeUndefined();
+
+  const list = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Toronto', kind: 'message', text: 'https://www.linkedin.com/in/tor-1', message_template: 'Hey [First name],\n\nIntezer…' },
+  });
+  expect(list.statusCode).toBe(400);
+  expect(JSON.parse(list.body).error).toMatch(/\[First name\] — write \{firstName\} instead/);
+  expect(repos.cohorts.findByName('Toronto')).toBeUndefined();
+
+  const profile = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://www.linkedin.com/in/typo-1', cohort: 'Typo2', kind: 'invite', message: 'Hi {first_name}' },
+  });
+  expect(profile.statusCode).toBe(400);
+  expect(JSON.parse(profile.body).error).toMatch(/did you mean \{firstName\}/);
+
+  // The real token, and text without one, are untouched.
+  const ok = await app.inject({
+    method: 'POST', url: '/api/cohorts',
+    payload: { name: 'Fine', kind: 'message', message_template: 'Hi {firstName}, hello' },
+  });
+  expect(ok.statusCode).toBe(200);
 });

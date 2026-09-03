@@ -745,3 +745,38 @@ test('message pass: relationship_unknown parks retryable with evidence, off the 
   expect(repos.appState.get().failure_streak).toBe(0);
   expect(repos.appState.get().guardrail_tripped).toBe(0);
 });
+
+test('message pass: an UNCONFIRMED send parks as needs_attention, COUNTS as a send, and never touches the streak', async () => {
+  // The composer cleared — LinkedIn accepted the DM — but the thread could not be read back.
+  // Before 2026-09-02 this outcome had no case and fell through to handleError: `failed`,
+  // a failure-streak point, no send_log row, and a Retry button that re-sent a delivered DM.
+  const c = repos.cohorts.create('M', 'Hi {firstName},\n\nhello', true, 'message');
+  const p = seedScheduledMsg('https://www.linkedin.com/in/m1', '2026-06-29T09:00:00.000Z', c.id);
+  driver.msgScripted.set('https://www.linkedin.com/in/m1', 'unconfirmed');
+  driver.evidence = { pageUrl: 'https://www.linkedin.com/messaging/thread/x/', screenshot: 'unconf.png' };
+  await run(new Date('2026-06-29T10:00:00Z'));
+
+  const row = repos.profiles.findById(p.id)!;
+  expect(row.status).toBe('needs_attention');
+  expect(row.last_error).toMatch(/submitted but not confirmed — check the conversation before retrying/);
+  expect(row.full_name).toBe('Test Person');
+  expect(row.thread_url).toMatch(/messaging\/thread/);
+  expect(row.skip_reason).toBeNull();
+  // ONE send_log row: the weekly cap must not under-count a message that left the account.
+  expect(repos.events.countSentSince('1970-01-01T00:00:00Z', 'message')).toBe(1);
+  expect(repos.appState.get().failure_streak).toBe(0);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+  expect(repos.settings.get().paused).toBeFalsy();
+});
+
+test('message pass: a run of unconfirmed sends does not trip the guardrail or halt the pass', async () => {
+  const c = repos.cohorts.create('M', 'hi', true, 'message');
+  for (const u of ['u1', 'u2', 'u3', 'u4']) {
+    seedScheduledMsg(`https://www.linkedin.com/in/${u}`, '2026-06-29T09:00:00.000Z', c.id);
+    driver.msgScripted.set(`https://www.linkedin.com/in/${u}`, 'unconfirmed');
+  }
+  await run(new Date('2026-06-29T10:00:00Z'));
+  expect(driver.msgLog).toHaveLength(4); // every row was attempted — nothing halted
+  expect(repos.profiles.byStatusKind('needs_attention', 'message')).toHaveLength(4);
+  expect(repos.appState.get().guardrail_tripped).toBe(0);
+});
