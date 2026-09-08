@@ -326,10 +326,10 @@ export function runMigrations(db: DB): void {
     db.exec('ALTER TABLE settings ADD COLUMN event_invite_cap INTEGER NOT NULL DEFAULT 1000');
   }
   if (cols.length > 0 && !cols.includes('event_bucket_ceiling')) {
-    db.exec('ALTER TABLE settings ADD COLUMN event_bucket_ceiling INTEGER NOT NULL DEFAULT 10');
+    db.exec('ALTER TABLE settings ADD COLUMN event_bucket_ceiling INTEGER NOT NULL DEFAULT 15');
   }
   if (cols.length > 0 && !cols.includes('event_run_budget_minutes')) {
-    db.exec('ALTER TABLE settings ADD COLUMN event_run_budget_minutes INTEGER NOT NULL DEFAULT 20');
+    db.exec('ALTER TABLE settings ADD COLUMN event_run_budget_minutes INTEGER NOT NULL DEFAULT 40');
   }
   // The picker hard-caps at 1000 rows in a STABLE order, so rows past the cap are
   // permanently invisible under that filter. Any bucket whose roster count approaches it
