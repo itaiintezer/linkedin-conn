@@ -247,7 +247,7 @@ campaign you are still drafting so a list can be assembled from several searches
 buckets them by location
 (US by state, everything else by country), ranks the buckets by how many of *your list*
 each holds, and shows you that plan as a **draft**. You review it and arm it; nothing
-irreversible happens before that. A run then works up to `event_bucket_ceiling` (10)
+irreversible happens before that. A run then works up to `event_bucket_ceiling` (15)
 buckets, filtering to one location at a time, paging the invitee list, ticking every match
 by member URN, and submitting per bucket. Whoever is left rolls into the next day's run,
 until the list is exhausted or the event starts.
@@ -283,8 +283,8 @@ location, because it competes with the cohorts for the same browser and the same
 |---|---|---|
 | `events_per_day` | 1 | Live runs started per day |
 | `event_invite_cap` | 1000 | Lifetime invites per event |
-| `event_bucket_ceiling` | 10 | Locations worked per run |
-| `event_run_budget_minutes` | 20 | Window reserved per run |
+| `event_bucket_ceiling` | 15 | Locations worked per run |
+| `event_run_budget_minutes` | 40 | Window reserved per run |
 | `event_shard_threshold` | 900 | Roster size above which a bucket is sub-sharded |
 
 ## Post engagements

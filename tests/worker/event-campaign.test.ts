@@ -151,7 +151,7 @@ test('reserves a window for an armed campaign, and only one per day', () => {
   const held = repos.reservations.between(now.toISOString(), new Date('2026-08-04T00:00:00').toISOString());
   expect(held).toHaveLength(1);
   expect(new Date(held[0]!.to_ts).getTime() - new Date(held[0]!.from_ts).getTime())
-    .toBe(20 * 60 * 1000);
+    .toBe(40 * 60 * 1000);
 
   ensureEventReservation(repos, now); // idempotent
   expect(repos.reservations.between(now.toISOString(), new Date('2026-08-04T00:00:00').toISOString()))

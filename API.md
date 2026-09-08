@@ -621,7 +621,7 @@ everything. `409` for a `done` campaign: that means everyone reachable was invit
 event already started, and neither is undone by reopening.
 
 ### Scheduling
-An armed campaign reserves `event_run_budget_minutes` (default 20) in the largest free gap
+An armed campaign reserves `event_run_budget_minutes` (default 40) in the largest free gap
 of the working day, and the send planner routes invite/message batches around that window
 rather than colliding with it. `events_per_day` (default 1) caps live runs per day. The
 time budget gates *starting* another bucket — a bucket in flight always finishes, so the
@@ -629,7 +629,7 @@ worst-case overrun is one bucket.
 
 ### Settings
 `events_per_day`, `event_invite_cap` (lifetime per event, default 1000),
-`event_bucket_ceiling` (locations per run, default 10), `event_run_budget_minutes`,
+`event_bucket_ceiling` (locations per run, default 15), `event_run_budget_minutes`,
 `event_shard_threshold` (roster size above which a bucket is sub-sharded, default 900).
 
 ## Post engagements

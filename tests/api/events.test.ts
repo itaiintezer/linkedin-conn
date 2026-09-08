@@ -186,8 +186,8 @@ test('exposes the event settings and accepts updates', async () => {
   const s = (await app.inject({ method: 'GET', url: '/api/settings' })).json();
   expect(s.events_per_day).toBe(1);
   expect(s.event_invite_cap).toBe(1000);
-  expect(s.event_bucket_ceiling).toBe(10);
-  expect(s.event_run_budget_minutes).toBe(20);
+  expect(s.event_bucket_ceiling).toBe(15);
+  expect(s.event_run_budget_minutes).toBe(40);
 
   const updated = (await post('/api/settings', { event_invite_cap: 250, event_bucket_ceiling: 6 })).json();
   expect(updated.event_invite_cap).toBe(250);

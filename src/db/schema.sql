@@ -106,8 +106,8 @@ CREATE TABLE IF NOT EXISTS settings (
   -- from a connection request, and 500 of them would instantly blow weekly_cap if pooled.
   events_per_day INTEGER NOT NULL DEFAULT 1,
   event_invite_cap INTEGER NOT NULL DEFAULT 1000,
-  event_bucket_ceiling INTEGER NOT NULL DEFAULT 10,
-  event_run_budget_minutes INTEGER NOT NULL DEFAULT 20,
+  event_bucket_ceiling INTEGER NOT NULL DEFAULT 15,
+  event_run_budget_minutes INTEGER NOT NULL DEFAULT 40,
   -- The picker hard-caps at 1000 rows in a stable order, so anything past it is
   -- permanently invisible under that filter. Buckets at/over this get sub-sharded.
   event_shard_threshold INTEGER NOT NULL DEFAULT 900,
