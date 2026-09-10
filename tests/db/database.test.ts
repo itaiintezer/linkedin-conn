@@ -379,6 +379,34 @@ test('runMigrations adds the event settings columns to a legacy settings table',
   expect(row.event_shard_threshold).toBe(900);
 });
 
+test('runMigrations lifts a stored event_invite_cap of 500 to 1000, once', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), event_invite_cap INTEGER NOT NULL DEFAULT 500);');
+  db.exec('INSERT INTO settings (id) VALUES (1);');
+  db.exec('CREATE TABLE app_state (id INTEGER PRIMARY KEY CHECK (id = 1));');
+  db.exec('INSERT INTO app_state (id) VALUES (1);');
+  runMigrations(db);
+  const row = () => db.prepare('SELECT event_invite_cap FROM settings WHERE id = 1').get() as { event_invite_cap: number };
+  expect(row().event_invite_cap).toBe(1000);
+  const st = db.prepare('SELECT event_invite_cap_lifted_at FROM app_state WHERE id = 1').get() as { event_invite_cap_lifted_at: string | null };
+  expect(st.event_invite_cap_lifted_at).toBeTruthy();
+  // Run once only: an operator who later chooses 500 on purpose is not bumped again.
+  db.exec('UPDATE settings SET event_invite_cap = 500');
+  runMigrations(db);
+  expect(row().event_invite_cap).toBe(500);
+});
+
+test('runMigrations leaves a deliberately chosen event_invite_cap alone', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), event_invite_cap INTEGER NOT NULL DEFAULT 500);');
+  db.exec('INSERT INTO settings (id, event_invite_cap) VALUES (1, 300);');
+  db.exec('CREATE TABLE app_state (id INTEGER PRIMARY KEY CHECK (id = 1));');
+  db.exec('INSERT INTO app_state (id) VALUES (1);');
+  runMigrations(db);
+  const row = db.prepare('SELECT event_invite_cap FROM settings WHERE id = 1').get() as { event_invite_cap: number };
+  expect(row.event_invite_cap).toBe(300);
+});
+
 // --- Post engagements ------------------------------------------------------------
 
 test('a fresh database has the engagements table with the expected shape', () => {
