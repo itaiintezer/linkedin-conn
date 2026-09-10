@@ -167,7 +167,10 @@ CREATE TABLE IF NOT EXISTS app_state (
   posts_halted INTEGER NOT NULL DEFAULT 0,
   posts_halt_reason TEXT,
   posts_halt_detail TEXT,
-  posts_halted_at TEXT
+  posts_halted_at TEXT,
+  -- Marker for the one-time lift of a stored event_invite_cap of 500 to 1000 (2026-09-10).
+  -- Its presence means the lift has run (or, on a fresh database, was never needed).
+  event_invite_cap_lifted_at TEXT
 );
 
 INSERT OR IGNORE INTO app_state (id) VALUES (1);
@@ -235,7 +238,7 @@ CREATE TABLE IF NOT EXISTS events (
   -- past the campaign is closed: inviting people to a finished event is pointless.
   starts_at TEXT,
   status TEXT NOT NULL DEFAULT 'draft', -- draft|armed|running|done|stopped|failed
-  invite_cap INTEGER NOT NULL DEFAULT 500,     -- LIFETIME cap for this event
+  invite_cap INTEGER NOT NULL DEFAULT 1000,    -- LIFETIME cap for this event
   bucket_ceiling INTEGER NOT NULL DEFAULT 10,  -- max location buckets per run
   bucket_cursor INTEGER NOT NULL DEFAULT 0,    -- rank to resume from on the next run
   attended INTEGER NOT NULL DEFAULT 0,

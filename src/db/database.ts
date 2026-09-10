@@ -337,6 +337,18 @@ export function runMigrations(db: DB): void {
   if (cols.length > 0 && !cols.includes('event_shard_threshold')) {
     db.exec('ALTER TABLE settings ADD COLUMN event_shard_threshold INTEGER NOT NULL DEFAULT 900');
   }
+  // event_invite_cap shipped at 500 and was raised to 1000 on 2026-08-18, but an ALTER's
+  // DEFAULT only reaches installs that create the column, so everyone who installed before
+  // then kept 500. Lift exactly the old default once — an operator who chose any other
+  // value keeps it. The app_state marker column is the run-once guard: absent on every
+  // pre-existing database, present (via schema.sql) on a fresh one, which needs no lift.
+  if (appCols.length > 0 && !appCols.includes('event_invite_cap_lifted_at')) {
+    db.exec('ALTER TABLE app_state ADD COLUMN event_invite_cap_lifted_at TEXT');
+    if (cols.length > 0) {
+      db.exec("UPDATE settings SET event_invite_cap = 1000 WHERE event_invite_cap = 500");
+      db.exec("UPDATE app_state SET event_invite_cap_lifted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1");
+    }
+  }
 
   // --- Post engagements (2026-08-02) ---
   // The engagements table is back-filled by schema.sql's CREATE TABLE IF NOT EXISTS.
