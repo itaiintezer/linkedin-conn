@@ -1,6 +1,6 @@
 import type { DB } from './database.js';
 import type {
-  Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind,
+  Cohort, Profile, Settings, ProfileStatus, EventType, AppState, GuardrailReason, CampaignKind, AddOutcome,
   Connection, ConnectionInput, ConnectionSource, EnrichStatus, EnrichedProfile, EnrichHaltReason,
   PostsHaltReason,
 } from '../types.js';
@@ -67,35 +67,101 @@ export class CohortRepo {
   }
 }
 
+/**
+ * Statuses meaning "this row is still in play": it has not sent yet, or the browser is
+ * mid-flight on it. A resend never touches one — there is nothing to re-send, and a
+ * 'sending' row is held by the browser mutex, so rewriting it would race the sender.
+ */
+const IN_PLAY: ReadonlySet<ProfileStatus> = new Set<ProfileStatus>(['queued', 'scheduled', 'sending']);
+
 export class ProfileRepo {
   constructor(private db: DB) {}
   /**
-   * Insert, or return the row that already holds this (url, kind) — with one exception:
-   * a row skipped as 'dismissed' was never processed, only set aside by the operator
-   * (cohort archived, or removed from the queue), so re-adding it adopts it into the new
-   * cohort and re-queues it as if fresh. Every other skip reason is a LinkedIn-observed
-   * verdict, and rows with real send history must never be re-sent — those stay untouched.
+   * Insert, or return the row that already holds this (url, kind). See `addOrResend` for
+   * the full rule; this is the no-resend form every existing caller wants.
    */
   add(cohortId: number, normalizedUrl: string, customMessage: string | null, kind: CampaignKind = 'invite'): Profile {
+    return this.addOrResend(cohortId, normalizedUrl, customMessage, kind, false).profile;
+  }
+  /**
+   * Insert, or decide what to do with the row that already holds this (url, kind):
+   *
+   *   'created'  — no row existed; a fresh one was inserted.
+   *   'recycled' — an existing row was re-queued into this cohort (see below).
+   *   'existing' — an existing row was returned UNTOUCHED.
+   *
+   * Two things can produce 'recycled'. A row skipped as 'dismissed' was never processed,
+   * only set aside by the operator (cohort archived, or removed from the queue), so
+   * re-adding always adopts it — that has been true since long before `resend`.
+   *
+   * `resend` extends the same move to rows that DID finish: the "message this person again
+   * in a later campaign" path. It is opt-in per call because the default must stay safe —
+   * every other skip reason is a LinkedIn-observed verdict, and silently re-sending to
+   * someone already contacted is exactly the mistake this repo has always refused to make.
+   *
+   * Why reuse the row instead of inserting beside it: UNIQUE(profile_url, kind) allows only
+   * one row per person per kind, and that is load-bearing rather than incidental. Two 'sent'
+   * message rows for one person collide on BOTH keys the reply matcher indexes — LinkedIn
+   * gives one thread per person, and the display names are identical — and reply-checker.ts
+   * resolves that collision as 'ambiguous', which upgrades nobody. Replies from anyone
+   * messaged twice would then go undetected permanently.
+   *
+   * The caller gets the outcome back because the silent-no-op form of this method has
+   * already burned us once: a bulk add reported success while quietly dropping people whose
+   * rows pre-existed.
+   */
+  addOrResend(
+    cohortId: number, normalizedUrl: string, customMessage: string | null,
+    kind: CampaignKind = 'invite', resend = false,
+  ): { profile: Profile; outcome: AddOutcome } {
     const existing = this.db
       .prepare('SELECT * FROM profiles WHERE profile_url = ? AND kind = ?')
       .get(normalizedUrl, kind) as unknown as Profile | undefined;
     if (existing) {
-      if (existing.status === 'skipped' && existing.skip_reason === 'dismissed') {
-        this.db.prepare(`
-          UPDATE profiles SET cohort_id = ?, custom_message = ?, status = 'queued',
-            skip_reason = NULL, scheduled_for = NULL, attempts = 0, last_error = NULL, priority = 0
-          WHERE id = ?
-        `).run(cohortId, customMessage, existing.id);
-        return this.findById(existing.id)!;
+      const dismissed = existing.status === 'skipped' && existing.skip_reason === 'dismissed';
+      if (dismissed || (resend && !IN_PLAY.has(existing.status))) {
+        this.requeue(existing.id, cohortId, customMessage, dismissed);
+        return { profile: this.findById(existing.id)!, outcome: 'recycled' };
       }
-      return existing;
+      return { profile: existing, outcome: 'existing' };
     }
     this.db.prepare(
       'INSERT INTO profiles (cohort_id, profile_url, custom_message, kind) VALUES (?, ?, ?, ?)',
     ).run(cohortId, normalizedUrl, customMessage, kind);
-    return this.db.prepare('SELECT * FROM profiles WHERE profile_url = ? AND kind = ?')
-      .get(normalizedUrl, kind) as unknown as Profile;
+    return {
+      profile: this.db.prepare('SELECT * FROM profiles WHERE profile_url = ? AND kind = ?')
+        .get(normalizedUrl, kind) as unknown as Profile,
+      outcome: 'created',
+    };
+  }
+  /**
+   * Move a row into `cohortId` and put it back in the queue as if fresh.
+   *
+   * `dismissed` distinguishes the two callers. A dismissed row never sent, so it has no
+   * outcome fields to clear and clearing them would be noise. A resent row does: sent_at
+   * and friends describe the PREVIOUS campaign and would otherwise render a freshly queued
+   * row as already sent (or, worse, already replied — which the reply checker treats as
+   * terminal). They are cleared from the row, NOT lost: send_log and profile_events key on
+   * profile_id and are untouched, so the durable history survives. That is the whole trade
+   * of this design — the row carries the current campaign, the log carries every campaign.
+   *
+   * thread_url is deliberately KEPT. It identifies this person's LinkedIn message thread,
+   * which is the same thread the next DM lands in, so it still helps the reply matcher if
+   * the next send fails to capture one. Same person, same thread — never stale.
+   */
+  private requeue(id: number, cohortId: number, customMessage: string | null, dismissed: boolean): void {
+    const clearOutcomes = dismissed ? '' : ', sent_at = NULL, accepted_at = NULL, replied_at = NULL, resolved_at = NULL';
+    this.db.prepare(`
+      UPDATE profiles SET cohort_id = ?, custom_message = ?, status = 'queued',
+        skip_reason = NULL, scheduled_for = NULL, attempts = 0, last_error = NULL, priority = 0${clearOutcomes}
+      WHERE id = ?
+    `).run(cohortId, customMessage, id);
+    if (!dismissed) {
+      // Audit trail for the recycle itself, so the log can still answer "why does this row
+      // sit in an October cohort when send_log says we sent in July?".
+      this.db.prepare("INSERT INTO profile_events (profile_id, event_type, at) VALUES (?, 'requeued', ?)")
+        .run(id, new Date().toISOString());
+    }
   }
   findById(id: number): Profile | undefined {
     return this.db.prepare('SELECT * FROM profiles WHERE id = ?').get(id) as unknown as Profile | undefined;

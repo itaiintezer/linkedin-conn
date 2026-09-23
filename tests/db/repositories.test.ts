@@ -273,3 +273,92 @@ test('appState.setRepliesChecked stamps replies_checked_at', () => {
   repos.appState.setRepliesChecked('2026-07-28T12:00:00.000Z');
   expect(repos.appState.get().replies_checked_at).toBe('2026-07-28T12:00:00.000Z');
 });
+
+// --- resend across campaigns (2026-09-23) -----------------------------------
+// A second campaign must be able to reach someone a previous campaign already messaged.
+// The row is REUSED rather than duplicated: two 'sent' message rows for one person are
+// ambiguous to the reply matcher, which would then upgrade nobody.
+
+test('add without resend leaves a finished row untouched and reports it', () => {
+  const aug = repos.cohorts.create('Aug', 'hi', true, 'message');
+  const oct = repos.cohorts.create('Oct', 'hello', true, 'message');
+  const p = repos.profiles.add(aug.id, 'https://www.linkedin.com/in/x', null, 'message');
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-29T12:00:00.000Z' });
+
+  const r = repos.profiles.addOrResend(oct.id, 'https://www.linkedin.com/in/x', 'new text', 'message', false);
+  expect(r.outcome).toBe('existing');
+  const after = repos.profiles.findById(p.id)!;
+  expect(after.status).toBe('sent');
+  expect(after.cohort_id).toBe(aug.id);        // not moved
+  expect(repos.profiles.countAll()).toBe(1);
+});
+
+test('resend re-queues the finished row into the new cohort without duplicating it', () => {
+  const aug = repos.cohorts.create('Aug', 'hi', true, 'message');
+  const oct = repos.cohorts.create('Oct', 'hello', true, 'message');
+  const p = repos.profiles.add(aug.id, 'https://www.linkedin.com/in/x', null, 'message');
+  repos.events.recordSend(p.id, 'sent', '2026-07-29T12:00:00.000Z');
+  repos.profiles.setStatus(p.id, 'replied', {
+    sent_at: '2026-07-29T12:00:00.000Z', replied_at: '2026-07-30T09:00:00.000Z',
+    thread_url: 'https://www.linkedin.com/messaging/thread/42/',
+  });
+
+  const r = repos.profiles.addOrResend(oct.id, 'https://www.linkedin.com/in/x', 'new text', 'message', true);
+  expect(r.outcome).toBe('recycled');
+  expect(repos.profiles.countAll()).toBe(1);   // one card per person, still
+
+  const after = repos.profiles.findById(p.id)!;
+  expect(after.id).toBe(p.id);
+  expect(after.cohort_id).toBe(oct.id);
+  expect(after.status).toBe('queued');
+  expect(after.custom_message).toBe('new text');
+  // Previous campaign's outcome cleared off the row so it does not render as already sent...
+  expect(after.sent_at).toBeNull();
+  expect(after.replied_at).toBeNull();
+  // ...but the thread survives: same person, same LinkedIn thread, still useful to the matcher.
+  expect(after.thread_url).toBe('https://www.linkedin.com/messaging/thread/42/');
+});
+
+test('resend keeps the durable history in send_log and logs the recycle', () => {
+  const aug = repos.cohorts.create('Aug', 'hi', true, 'message');
+  const oct = repos.cohorts.create('Oct', 'hello', true, 'message');
+  const p = repos.profiles.add(aug.id, 'https://www.linkedin.com/in/x', null, 'message');
+  repos.events.recordSend(p.id, 'sent', '2026-07-29T12:00:00.000Z');
+  repos.profiles.setStatus(p.id, 'sent', { sent_at: '2026-07-29T12:00:00.000Z' });
+
+  repos.profiles.addOrResend(oct.id, 'https://www.linkedin.com/in/x', null, 'message', true);
+
+  // The July send still counts in a window that contains it — clearing the row must not
+  // rewrite history, because that history is what the weekly cap is computed from.
+  expect(repos.events.countSentSince('2026-07-01T00:00:00.000Z', 'message')).toBe(1);
+  const kinds = repos.db.prepare('SELECT event_type FROM profile_events WHERE profile_id = ? ORDER BY id')
+    .all(p.id) as unknown as { event_type: string }[];
+  expect(kinds.map((k) => k.event_type)).toContain('requeued');
+});
+
+test('resend never touches a row that is still in play', () => {
+  const aug = repos.cohorts.create('Aug', 'hi', true, 'message');
+  const oct = repos.cohorts.create('Oct', 'hello', true, 'message');
+  for (const status of ['queued', 'scheduled', 'sending'] as const) {
+    const url = `https://www.linkedin.com/in/inplay-${status}`;
+    const p = repos.profiles.add(aug.id, url, null, 'message');
+    repos.profiles.setStatus(p.id, status);
+    const r = repos.profiles.addOrResend(oct.id, url, 'new text', 'message', true);
+    expect(r.outcome).toBe('existing');
+    expect(repos.profiles.findById(p.id)!.cohort_id).toBe(aug.id);
+  }
+});
+
+test('a dismissed row is still adopted without resend, and logs no recycle event', () => {
+  const a = repos.cohorts.create('A', null, true);
+  const b = repos.cohorts.create('B', null, true);
+  const p = repos.profiles.add(a.id, 'https://www.linkedin.com/in/d', null);
+  repos.profiles.setStatus(p.id, 'skipped', { skip_reason: 'dismissed' });
+
+  const r = repos.profiles.addOrResend(b.id, 'https://www.linkedin.com/in/d', null, 'invite', false);
+  expect(r.outcome).toBe('recycled');
+  expect(repos.profiles.findById(p.id)!.status).toBe('queued');
+  const evs = repos.db.prepare('SELECT event_type FROM profile_events WHERE profile_id = ?')
+    .all(p.id) as unknown as { event_type: string }[];
+  expect(evs.map((e) => e.event_type)).not.toContain('requeued');
+});

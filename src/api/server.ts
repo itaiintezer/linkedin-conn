@@ -165,8 +165,11 @@ export function buildServer(
   app.register(fastifyStatic, { root: incidentsDir, prefix: '/incidents/', decorateReply: false });
 
   app.post('/api/profiles', async (req, reply) => {
-    const { url, cohort, message, kind: kindRaw, prioritize } =
-      req.body as { url: string; cohort?: string; message?: string; kind?: string; prioritize?: boolean };
+    const { url, cohort, message, kind: kindRaw, prioritize, resend } =
+      req.body as {
+        url: string; cohort?: string; message?: string; kind?: string;
+        prioritize?: boolean; resend?: boolean;
+      };
     const normalized = normalizeProfileUrl(url ?? '');
     if (!normalized) return reply.code(400).send({ error: 'invalid linkedin profile url' });
     const parsedKind = parseKind(kindRaw);
@@ -196,7 +199,15 @@ export function buildServer(
       return reply.code(400).send({ error: 'message campaigns require a message template or a per-contact message' });
     }
     const c = repos.cohorts.getOrCreate(cohortName, null, true, kind);
-    const p = repos.profiles.add(c.id, normalized, note ?? null, kind);
+    // `resend` re-queues a FINISHED row into this cohort instead of returning it untouched
+    // — the "message this person again in a later campaign" path. Opt-in, because the
+    // default has to keep refusing to re-contact someone already contacted. `outcome` is
+    // returned either way: without it a caller cannot tell an add that landed from one
+    // that was silently swallowed by a pre-existing row, which is exactly how a bulk add
+    // once reported success while dropping people.
+    const { profile: p, outcome } = repos.profiles.addOrResend(
+      c.id, normalized, note ?? null, kind, resend === true,
+    );
     // Prioritize BETWEEN the insert and the planning pass — after planning the row is
     // frequently 'scheduled', where priority no longer orders anything, which is exactly
     // why the two-step add-then-/api/queue/move dance cannot do this. Only rows still in
@@ -213,16 +224,19 @@ export function buildServer(
       // in one round trip; null means no seat today — it leads tomorrow's plan.
       const after = repos.profiles.findById(p.id)!;
       return {
-        id: p.id, profile_url: p.profile_url, kind: p.kind, prioritized: promoted,
+        id: p.id, profile_url: p.profile_url, kind: p.kind, outcome, prioritized: promoted,
         scheduled_for: after.status === 'scheduled' ? after.scheduled_for : null,
       };
     }
-    return { id: p.id, profile_url: p.profile_url, kind: p.kind };
+    return { id: p.id, profile_url: p.profile_url, kind: p.kind, outcome };
   });
 
   app.post('/api/lists', async (req, reply) => {
-    const { cohort, text, message_template, kind: kindRaw, prioritize } =
-      req.body as { cohort?: string; text: string; message_template?: string; kind?: string; prioritize?: boolean };
+    const { cohort, text, message_template, kind: kindRaw, prioritize, resend } =
+      req.body as {
+        cohort?: string; text: string; message_template?: string; kind?: string;
+        prioritize?: boolean; resend?: boolean;
+      };
     const parsedKind = parseKind(kindRaw);
     if (!parsedKind.ok) return reply.code(400).send({ error: parsedKind.error });
     const kind: CampaignKind = parsedKind.kind ?? 'invite';
@@ -275,8 +289,14 @@ export function buildServer(
     // resurrect or re-send one. Collected in paste order, which the shared front-block
     // priority then preserves via the (priority, id) tie-break.
     const eligible: number[] = [];
+    let resent = 0;
     for (const u of urls) {
-      const p = repos.profiles.add(c.id, u, null, kind);
+      // `resend` re-queues finished rows instead of skipping them — see /api/profiles.
+      // Counted separately because `added` (a queued-row delta) cannot distinguish a fresh
+      // insert from a recycled row, and the operator needs to know which people are being
+      // contacted for a second time.
+      const { profile: p, outcome } = repos.profiles.addOrResend(c.id, u, null, kind, resend === true);
+      if (outcome === 'recycled') resent += 1;
       if (prioritize === true && (p.status === 'queued' || p.status === 'scheduled')) eligible.push(p.id);
     }
     const added = countQueued() - before;
@@ -303,9 +323,9 @@ export function buildServer(
         if (row.status === 'scheduled' && row.scheduled_for !== null
           && (first === null || row.scheduled_for < first)) first = row.scheduled_for;
       }
-      return { added, found: urls.length, prioritized: eligible.length, first_scheduled_for: first };
+      return { added, found: urls.length, resent, prioritized: eligible.length, first_scheduled_for: first };
     }
-    return { added, found: urls.length };
+    return { added, found: urls.length, resent };
   });
 
   /**

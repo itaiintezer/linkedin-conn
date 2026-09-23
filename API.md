@@ -41,6 +41,22 @@ Request: `{ "url": "https://www.linkedin.com/in/jane-doe/", "cohort": "Security 
   front-of-queue. A URL that resolves to a row with real send history is **never** moved
   or re-sent; the response says so (see below).
 
+- `resend` (optional, default `false`) — **re-contact someone a previous campaign already
+  reached.** Without it, a URL whose row already exists comes back untouched and the add is
+  a no-op; that is the safe default and it stays. With it, a **finished** row (`sent`,
+  `replied`, `accepted`, `expired`, `skipped`, `failed`, `needs_attention`) is moved into
+  this cohort, given this call's message, and re-queued. A row still **in play**
+  (`queued`, `scheduled`, `sending`) is never touched — there is nothing to re-send, and a
+  `sending` row is held by the browser mutex.
+  The row is **reused, not duplicated**: `UNIQUE(profile_url, kind)` permits one row per
+  person per kind, and that is load-bearing — two `sent` message rows for one person are
+  ambiguous to the reply matcher (one LinkedIn thread per person, identical names), which
+  would leave their replies undetected for good. So the row carries the **current**
+  campaign: `sent_at` / `replied_at` / `accepted_at` / `resolved_at` are cleared, and
+  `cohort_id` moves. Nothing is lost — `send_log` and `profile_events` key on `profile_id`
+  and are untouched, and the recycle itself is logged as a `requeued` event. Ask the
+  **log**, not the row, "who did we message in the August campaign".
+
 `400` if the URL is not a recognizable `/in/<slug>` link.
 
 `409` if a cohort with that name already exists with the other kind — including the common
@@ -52,7 +68,13 @@ When `kind` is `message`, there must be something to send: `400` unless the requ
 a non-blank `message` **or** the target cohort already has a non-blank template.
 `POST /api/lists` applies the same rule.
 
-Response: `{ "id": 42, "profile_url": "https://www.linkedin.com/in/jane-doe", "kind": "invite" }`
+Response: `{ "id": 42, "profile_url": "https://www.linkedin.com/in/jane-doe", "kind": "invite", "outcome": "created" }`
+
+`outcome` is `created` (a new row), `recycled` (an existing row re-queued into this cohort —
+by `resend`, or because it was previously `dismissed`) or `existing` (**a row already held
+this URL and nothing was changed**). Read it. `existing` is the quiet case that looks like
+success and is not: the person is *not* in the cohort you just named and will *not* be sent
+this message.
 
 With `prioritize: true` the response adds two fields:
 `{ …, "prioritized": true, "scheduled_for": "2026-08-26T11:40:12.000Z" }`.
@@ -115,10 +137,19 @@ Response (abridged): `{ "paused": 0, "weekly_sent": 12, "weekly_cap": 100, "coun
 ## Bulk & cohorts
 
 ### POST /api/lists
-Bulk-enqueue from pasted text. Request: `{ "cohort": "Security VPs", "text": "url1\nurl2", "message_template": "Hi {firstName}", "kind": "invite" | "message", "prioritize": true }`. Response: `{ "added": 2, "found": 2 }`.
+Bulk-enqueue from pasted text. Request: `{ "cohort": "Security VPs", "text": "url1\nurl2", "message_template": "Hi {firstName}", "kind": "invite" | "message", "prioritize": true, "resend": true }`. Response: `{ "added": 2, "found": 2, "resent": 0 }`.
 
 - `kind` (optional) — defaults to `invite`. Anything other than `"message"` is treated as
   `invite`.
+- `resend` (optional, default `false`) — same rule as `POST /api/profiles`; see there for
+  what it does to the row and why it reuses one. `resent` counts how many pasted URLs were
+  recycled out of an earlier campaign, i.e. **people being contacted a second time** — check
+  it against what you intended before the batch goes out. Note `added` (a queued-row delta)
+  already includes those rows, so `added` is "how many are queued here now" and `resent` is
+  "how many of them we had already reached once".
+  Per-profile text is not available here: a recycled row takes this cohort's
+  `message_template`, and its old `custom_message` is cleared. Use `POST /api/profiles` when
+  someone needs their own wording.
 - `message_template` is required when `kind` is `message` **unless the target cohort already
   has one** — a DM has nothing to send without a body, but that body may already live on the
   cohort. `400` only when nothing can supply one. Max length 2000 for messages, 300 for
