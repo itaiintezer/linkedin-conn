@@ -35,7 +35,8 @@ test('happy path: list -> schedule -> send -> accept -> metrics', async () => {
     payload: { cohort: 'QA', text, message_template: 'Hi {firstName}', allow_no_note: true },
   });
   expect(addRes.statusCode).toBe(200);
-  expect(JSON.parse(addRes.body)).toEqual({ added: 3, found: 3 });
+  // resent: 0 — nobody here had a prior campaign to be recycled out of (see `resend`).
+  expect(JSON.parse(addRes.body)).toEqual({ added: 3, found: 3, resent: 0 });
   expect(repos.profiles.countAll()).toBe(3);
 
   // 2. Re-flow the whole backlog at a pinned time. /api/lists already scheduled these rows

@@ -31,7 +31,14 @@ export type SkipReason =
   | 'already_connected' | 'invite_pending' | 'email_required' | 'not_found'
   | 'unavailable' | 'dismissed' | 'not_connected';
 
-export type EventType = 'sent' | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed';
+/** 'requeued' (2026-09-23) is not a send outcome: it records that a finished row was
+ *  recycled into a later campaign by a `resend` add, which is otherwise invisible once the
+ *  row's own sent_at has been cleared. profile_events.event_type is write-only audit — no
+ *  reader switches on these — so extending the union costs nothing downstream. */
+export type EventType = 'sent' | 'accepted' | 'replied' | 'expired' | 'skipped' | 'failed' | 'requeued';
+
+/** What an add did to the row it was given — see ProfileRepo.addOrResend. */
+export type AddOutcome = 'created' | 'existing' | 'recycled';
 
 export interface Cohort {
   id: number;

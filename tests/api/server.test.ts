@@ -1454,3 +1454,88 @@ test('a misspelled placeholder is rejected at every write endpoint, naming {firs
   });
   expect(ok.statusCode).toBe(200);
 });
+
+// --- resend across campaigns (2026-09-23) -----------------------------------
+
+test('POST /api/profiles reports outcome so a swallowed add is visible', async () => {
+  const first = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://linkedin.com/in/x', cohort: 'Aug', kind: 'message', message: 'Hi {firstName}' },
+  });
+  expect(JSON.parse(first.body).outcome).toBe('created');
+  const id = JSON.parse(first.body).id;
+  repos.profiles.setStatus(id, 'sent', { sent_at: '2026-07-29T12:00:00.000Z' });
+
+  // Without resend the row is returned untouched — and the response SAYS so, which is the
+  // whole point: the silent form let a bulk add claim success while dropping people.
+  const again = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://linkedin.com/in/x', cohort: 'Oct', kind: 'message', message: 'New text' },
+  });
+  expect(JSON.parse(again.body).outcome).toBe('existing');
+  expect(repos.profiles.findById(id)!.status).toBe('sent');
+});
+
+test('POST /api/profiles with resend moves a sent row into the new cohort', async () => {
+  const first = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: { url: 'https://linkedin.com/in/x', cohort: 'Aug', kind: 'message', message: 'Hi {firstName}' },
+  });
+  const id = JSON.parse(first.body).id;
+  repos.profiles.setStatus(id, 'sent', { sent_at: '2026-07-29T12:00:00.000Z' });
+
+  const res = await app.inject({
+    method: 'POST', url: '/api/profiles',
+    payload: {
+      url: 'https://linkedin.com/in/x', cohort: 'Oct', kind: 'message',
+      message: 'New text', resend: true,
+    },
+  });
+  expect(res.statusCode).toBe(200);
+  const body = JSON.parse(res.body);
+  expect(body.outcome).toBe('recycled');
+  expect(body.id).toBe(id);                       // same row, not a duplicate
+  expect(repos.profiles.countAll()).toBe(1);
+  const after = repos.profiles.findById(id)!;
+  expect(after.cohort_id).toBe(repos.cohorts.findByName('Oct')!.id);
+  expect(after.custom_message).toBe('New text');
+  expect(['queued', 'scheduled']).toContain(after.status);
+});
+
+test('POST /api/lists counts resent rows separately from added ones', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Aug', text: 'https://linkedin.com/in/a', kind: 'message', message_template: 'Hi {firstName}' },
+  });
+  const sent = repos.profiles.all()[0];
+  repos.profiles.setStatus(sent.id, 'sent', { sent_at: '2026-07-29T12:00:00.000Z' });
+
+  const res = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: {
+      cohort: 'Oct', kind: 'message', message_template: 'Hello {firstName}',
+      text: 'https://linkedin.com/in/a\nhttps://linkedin.com/in/b', resend: true,
+    },
+  });
+  const body = JSON.parse(res.body);
+  expect(body.found).toBe(2);
+  expect(body.resent).toBe(1);                    // 'a' was recycled out of the Aug campaign
+  expect(repos.profiles.countAll()).toBe(2);      // 'a' reused, 'b' inserted
+});
+
+test('POST /api/lists without resend reports zero resent and drops the finished row', async () => {
+  await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Aug', text: 'https://linkedin.com/in/a', kind: 'message', message_template: 'Hi {firstName}' },
+  });
+  const sent = repos.profiles.all()[0];
+  repos.profiles.setStatus(sent.id, 'sent', { sent_at: '2026-07-29T12:00:00.000Z' });
+
+  const res = await app.inject({
+    method: 'POST', url: '/api/lists',
+    payload: { cohort: 'Oct', kind: 'message', message_template: 'Hello {firstName}', text: 'https://linkedin.com/in/a' },
+  });
+  const body = JSON.parse(res.body);
+  expect(body.resent).toBe(0);
+  expect(repos.profiles.findById(sent.id)!.status).toBe('sent');
+});
