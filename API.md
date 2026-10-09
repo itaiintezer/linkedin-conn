@@ -134,6 +134,24 @@ Response (abridged): `{ "paused": 0, "weekly_sent": 12, "weekly_cap": 100, "coun
   pass will place the batch. Never render a clock time for a `pending` forecast: there is no
   slot behind it.
 
+## Links (open a pre-filled screen)
+
+Two `GET` routes for links someone else writes — in Slack, a doc, a script. **They write
+nothing**: each one `302`s into the dashboard (`/?link=…`, query string carried through
+untouched), which fills an existing screen and leaves the operator to press its button.
+The full guide for link authors — slug rules, encoding, Slack, code snippets — is
+[LINKS.md](LINKS.md).
+
+- `GET /add?p=<slug>,<slug>,…` — **Add to Queue**, connection requests only, new auto-dated
+  cohort, no note, not prioritized. `p` may repeat; full profile URLs are accepted in place of
+  slugs. There is deliberately no `cohort`, `message`, `kind` or `prioritize` parameter.
+- `GET /add-event?event=<event id | encoded event URL>` — **Connections**, with a banner naming
+  the event; **Invite to event** then targets that event's draft (or starts one). No people in
+  the link, and nothing is armed.
+
+An agent asked to "make a link for these people" should build one of these rather than call
+`POST /api/profiles` — the link is for a human to confirm.
+
 ## Bulk & cohorts
 
 ### POST /api/lists

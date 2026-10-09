@@ -702,6 +702,17 @@
         <div class="panel-actions"><span class="muted" id="searchCoverage"></span></div>
       </div>
 
+      <!-- Only when the page was opened from an event link (/add-event, see LINKS.md): names the
+           event that "Invite to event" will target, so the operator picks people knowing where
+           they are going. -->
+      <div class="link-banner" id="eventLinkBanner" hidden>
+        <div class="link-banner-txt">
+          <strong id="eventLinkTitle"></strong>
+          <span id="eventLinkSub"></span>
+        </div>
+        <button class="btn btn-ghost" id="eventLinkDismiss" type="button">Done</button>
+      </div>
+
       <form class="search-form card-surface" id="searchForm">
         <div class="search-grid">
           <div class="field">

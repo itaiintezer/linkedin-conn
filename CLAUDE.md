@@ -12,7 +12,8 @@ and the log — the log file is still `data/relay.log`, deliberately, so existin
 their history.)
 
 Docs: [API.md](API.md) (endpoints), [README.md](README.md) (technical operator),
-[RUNBOOK.md](RUNBOOK.md) (non-technical operator). Per-feature design specs and plans are dated
+[RUNBOOK.md](RUNBOOK.md) (non-technical operator), [LINKS.md](LINKS.md) (writing links that open
+a pre-filled screen). Per-feature design specs and plans are dated
 under `docs/superpowers/specs/` and `docs/superpowers/plans/` — the fastest way to recover why a
 subsystem works the way it does.
 
@@ -34,6 +35,7 @@ Prefer the bundled skills over hand-rolled requests:
 |---|---|
 | Queue profiles for invites or DMs | skill `themachine-add-profiles` |
 | Find people in their network | skill `themachine-search-connections` |
+| Make a link someone can click to add people / pick event invitees | [LINKS.md](LINKS.md) — build the URL, don't call the API |
 | Anything else | [API.md](API.md) — engagements, events, status, pause/resume, settings |
 
 How to behave with a non-technical operator:

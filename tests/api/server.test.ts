@@ -1539,3 +1539,24 @@ test('POST /api/lists without resend reports zero resent and drops the finished 
   expect(body.resent).toBe(0);
   expect(repos.profiles.findById(sent.id)!.status).toBe('sent');
 });
+
+// Deep links (LINKS.md): the server only redirects into the dashboard with the query intact —
+// all parsing is app.js's — and an open must never write anything.
+test('GET /add redirects into the dashboard with the query string intact and queues nothing', async () => {
+  const res = await app.inject({ method: 'GET', url: '/add?p=jane-doe,john-smith&p=ana-lee' });
+  expect(res.statusCode).toBe(302);
+  expect(res.headers.location).toBe('/?link=add&p=jane-doe,john-smith&p=ana-lee');
+  expect(repos.profiles.all()).toHaveLength(0);
+});
+
+test('GET /add-event redirects with the (encoded) event URL untouched', async () => {
+  const ev = encodeURIComponent('https://www.linkedin.com/events/7486088214579982336/');
+  const res = await app.inject({ method: 'GET', url: `/add-event?event=${ev}` });
+  expect(res.statusCode).toBe(302);
+  expect(res.headers.location).toBe(`/?link=event&event=${ev}`);
+});
+
+test('a deep link with no query still lands on the right screen', async () => {
+  const res = await app.inject({ method: 'GET', url: '/add-event' });
+  expect(res.headers.location).toBe('/?link=event');
+});

@@ -84,6 +84,13 @@ export interface AppInternals {
     trackedSelected: Set<number>;
     cursor: string | null;
   };
+  /* ---- deep links (LINKS.md) ---- */
+  /** Pure: an add link's `p` values -> profile URLs, plus the entries that could not be one. */
+  profileUrlsFromLink: (values: string[]) => { urls: string[]; invalid: string[] };
+  /** Pure: the numeric id of an event URL (or bare id), or null. */
+  eventIdOf: (raw: string) => string | null;
+  /** Reads `?link=` off location and fills the matching screen. */
+  applyDeepLink: () => void;
   /** The bootstrap. Never called by loadApp — see the readyState note below. */
   init: () => void;
 }
@@ -122,7 +129,7 @@ export function loadApp(): AppInternals {
   const postsSrc = readFileSync(join(WEB_DIR, 'posts.js'), 'utf8');
   const factory = new Function(
     'setInterval',
-    `${src}\n${postsSrc}\nreturn { initAddList, prioritizedSuffix, renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, retryAllSummary, retryNeedsConfirmation, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, SKIP_REASON_LABEL, loadSettings, initSettings, applyEnrichHaltUi, applyHealthAlertsUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initMaintenance, renderAvailability, refreshUpdateCheck, refreshMaintStatus, awaitComeback, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
+    `${src}\n${postsSrc}\nreturn { initAddList, prioritizedSuffix, profileUrlsFromLink, eventIdOf, applyDeepLink, renderEngine, applyEngineState, loadAttention, attentionActionPath, attentionRowSource, retryAllSummary, retryNeedsConfirmation, renderEngagements, refreshEngagementUpNext, kindMark, refreshConnections, initConnections, refreshEnrichment, initEnrichment, renderApifyKey, SETTINGS_FIELDS, SKIP_REASON_LABEL, loadSettings, initSettings, applyEnrichHaltUi, applyHealthAlertsUi, initSearch, searchSelection, initEvents, initDashboard, initTabs, initDocs, refreshQueue, evRenderDetail, evLoadList, evOpen, initMaintenance, renderAvailability, refreshUpdateCheck, refreshMaintStatus, awaitComeback, initPosts, renderPostsFeed, refreshPosts, refreshTracked, postsState, init };`,
   ) as (setIntervalStub: () => number) => AppInternals;
   return factory(() => 0);
 }

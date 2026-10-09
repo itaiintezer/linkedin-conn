@@ -563,6 +563,11 @@ card forces a pass immediately.
 - `POST /api/posts/sweep-now` — sweep tracked profiles immediately (long-running, like
   `run-now`; also clears a latched posts halt).
 
+- `GET /add?p=<slugs>` and `GET /add-event?event=<id>` — **links**, not API calls: they
+  redirect into the dashboard (`/?link=…`), where `applyDeepLink()` in `src/web/app.js` fills
+  Add to Queue / the Connections event banner. They never write. Authoring guide:
+  [LINKS.md](LINKS.md).
+
 Full endpoint reference: [API.md](API.md) (also readable in-app under **Docs**).
 
 ## Troubleshooting
