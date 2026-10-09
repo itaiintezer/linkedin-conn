@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ROOT } from '../config.js';
 
-const REGISTRY: Record<string, string> = { api: 'API.md' };
+const REGISTRY: Record<string, string> = { api: 'API.md', links: 'LINKS.md' };
 
 function firstHeading(markdown: string): string | null {
   const m = markdown.match(/^#\s+(.+)$/m);

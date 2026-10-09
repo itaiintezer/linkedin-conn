@@ -2452,6 +2452,13 @@ async function openEventDialog() {
     el('option', { value: '__new__', text: '+ New event campaign…' }),
   );
   sel.value = drafts.length ? String(drafts[0].id) : '__new__';
+  // Opened from an event link: aim at THAT event — its draft if it has one, otherwise a new
+  // campaign with the URL already in. Never another event's draft that happens to be first.
+  if (linkedEvent) {
+    const own = drafts.find((e) => eventIdOf(e.event_url) === linkedEvent.id);
+    sel.value = own ? String(own.id) : '__new__';
+    if (!own) $('#evtUrl').value = linkedEvent.url;
+  }
 
   const n = selected.size;
   $('#evtImpact').textContent =
@@ -2495,6 +2502,12 @@ async function submitEventInvite() {
     if (r.unreachable.length) bits.push(`${fmtInt(r.unreachable.length)} with no location we can filter on`);
     toast(result, `${bits.join(' · ')}.`);
     clearSelection();
+    // The linked event now has a draft (or a bigger one): the banner stops saying "builds".
+    if (linkedEvent && r.event && eventIdOf(r.event.event_url) === linkedEvent.id) {
+      linkedEvent.status = r.event.status || 'draft';
+      linkedEvent.title = r.event.title || linkedEvent.title;
+      renderEventLinkBanner();
+    }
 
     const id = r.event.id;
     btn.hidden = true;
@@ -2506,6 +2519,137 @@ async function submitEventInvite() {
   } finally {
     btn.disabled = false;
   }
+}
+
+/* ---------- deep links (LINKS.md) ----------
+   `/add?p=…` and `/add-event?event=…` are written by someone else and redirected here by the
+   server as `/?link=add&…` / `/?link=event&…`. Each one only FILLS an existing screen; the
+   operator still presses that screen's own button. Every parsing rule for the link format
+   lives in this block. */
+
+/** The event a link opened Connections for: { url, id, title, status } — or null. */
+let linkedEvent = null;
+
+/** The numeric id of a LinkedIn event URL — same "digit run ending the segment" rule as
+ *  src/core/event-page.ts normalizeEventUrl, so a share-button URL resolves too. */
+function eventIdOf(raw) {
+  const s = String(raw || '').trim();
+  if (/^\d{6,}$/.test(s)) return s;
+  const m = s.match(/linkedin\.com\/events\/[^/?#]*?(\d{6,})(?=[/?#]|$)/i);
+  return m ? m[1] : null;
+}
+
+/**
+ * The `p` values of an add link, as profile URLs the Add to Queue box understands.
+ * Each value may hold several comma-separated entries; an entry is a slug (`jane-doe`,
+ * `in/jane-doe/`) or a whole profile URL. Anything that can't be one is returned in
+ * `invalid` so the page can name it rather than drop it.
+ */
+function profileUrlsFromLink(values) {
+  const urls = [], invalid = [];
+  for (const token of values.flatMap((v) => String(v).split(/[,\r\n]+/))) {
+    const t = token.trim();
+    if (!t) continue;
+    if (/linkedin\.com\/in\//i.test(t)) {
+      urls.push(/^https?:\/\//i.test(t) ? t : `https://${t.replace(/^\/+/, '')}`);
+      continue;
+    }
+    const slug = t.replace(/^\/*(in\/)?/i, '').replace(/\/+$/, '');
+    // URLSearchParams already decoded it; re-encode so non-Latin slugs keep the %-form the
+    // server's slug charset (src/core/url.ts) accepts.
+    const enc = encodeURIComponent(slug);
+    if (enc && /^[A-Za-z0-9\-_%]+$/.test(enc)) urls.push(`https://www.linkedin.com/in/${enc}/`);
+    else invalid.push(t);
+  }
+  return { urls, invalid };
+}
+
+/** Add to Queue, set to the link's defaults: connection requests, a new auto-dated cohort,
+ *  no note, not prioritized — the operator changes any of it before pressing Enqueue. */
+function fillAddFromLink(params) {
+  switchTab('add');
+  const invite = $$('input[name="listKind"]').find((r) => r.value === 'invite');
+  if (invite && !invite.checked) {
+    invite.checked = true;
+    invite.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  $('#listCohortSelect').value = '';
+  unlockListCohortName();
+  const tpl = $('#listTemplate');
+  tpl.value = '';
+  tpl.dispatchEvent(new Event('input', { bubbles: true }));
+  const prio = $('#listPrioritize');
+  if (prio && prio.checked) {
+    prio.checked = false;
+    prio.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  const { urls, invalid } = profileUrlsFromLink(params.getAll('p'));
+  const area = $('#listText');
+  area.value = urls.join('\n');
+  area.dispatchEvent(new Event('input', { bubbles: true }));
+
+  const n = urls.length;
+  let msg = n
+    ? `Filled in from a link: ${n} ${n === 1 ? 'person' : 'people'}. Check the list and the cohort, then press Enqueue.`
+    : 'This link had no people in it.';
+  if (invalid.length) {
+    msg += ` ${invalid.length === 1 ? 'One entry was' : `${invalid.length} entries were`} not a LinkedIn profile and ${invalid.length === 1 ? 'was' : 'were'} left out: ${invalid.join(', ')}.`;
+  }
+  toast($('#listResult'), msg, n === 0 || invalid.length > 0);
+}
+
+function renderEventLinkBanner() {
+  const banner = $('#eventLinkBanner');
+  if (!linkedEvent) { banner.hidden = true; return; }
+  const ev = linkedEvent;
+  const name = ev.title || `linkedin.com/events/${ev.id}/`;
+  const blocked = ev.status && ev.status !== 'draft';
+  banner.classList.toggle('is-blocked', !!blocked);
+  $('#eventLinkTitle').textContent = blocked ? name : `Inviting to ${name}`;
+  $('#eventLinkSub').textContent = blocked
+    ? `This event's campaign is already ${ev.status}, so it can't take more people now.`
+    : ev.status === 'draft'
+      ? 'Tick the people to invite, then press Invite to event. They join this event\'s draft; arm it from the Events tab.'
+      : 'Tick the people to invite, then press Invite to event. That builds a draft for this event; arm it from the Events tab.';
+  banner.hidden = false;
+}
+
+async function openEventLink(params) {
+  switchTab('connections');
+  const raw = params.get('event') || '';
+  const id = eventIdOf(raw);
+  if (!id) {
+    linkedEvent = null;
+    const banner = $('#eventLinkBanner');
+    banner.classList.add('is-blocked');
+    $('#eventLinkTitle').textContent = 'This link doesn\'t point at a LinkedIn event';
+    $('#eventLinkSub').textContent = raw ? `It says "${raw}".` : 'It has no event in it.';
+    banner.hidden = false;
+    return;
+  }
+  linkedEvent = { id, url: `https://www.linkedin.com/events/${id}/`, title: null, status: null };
+  renderEventLinkBanner();
+  try {
+    // An event has at most one campaign; its title and status say what the link can do.
+    const existing = (await api('/api/events')).find((e) => eventIdOf(e.event_url) === id);
+    if (existing && linkedEvent && linkedEvent.id === id) {
+      linkedEvent.title = existing.title || null;
+      linkedEvent.status = existing.status;
+      renderEventLinkBanner();
+    }
+  } catch (_) { /* the banner already names the event by URL; that is enough to proceed */ }
+}
+
+/** Read a deep link off the page URL once, at startup, then drop it from the address bar so a
+ *  reload doesn't refill a form the operator has since edited. */
+function applyDeepLink() {
+  const params = new URLSearchParams(location.search);
+  const link = params.get('link');
+  if (!link) return;
+  try { history.replaceState(null, '', location.pathname); } catch (_) { /* cosmetic */ }
+  if (link === 'add') fillAddFromLink(params);
+  else if (link === 'event') void openEventLink(params);
 }
 
 async function openConnection(slug) {
@@ -2675,6 +2819,7 @@ function initSearch() {
     }
   });
   $('#evtClose')?.addEventListener('click', closeEventDialog);
+  $('#eventLinkDismiss')?.addEventListener('click', () => { linkedEvent = null; renderEventLinkBanner(); });
   $('#evtCampaign')?.addEventListener('change', syncEventDialog);
   $('#evtConfirm')?.addEventListener('click', () => { void submitEventInvite(); });
   $('#campClose')?.addEventListener('click', closeCampaignDialog);
@@ -3736,6 +3881,7 @@ function init() {
   initLogViewer();
   initMaintenance();
   initWizard();
+  applyDeepLink();
 
   refreshLogin();
   tick();

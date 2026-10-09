@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -163,6 +163,18 @@ export function buildServer(
   app.register(fastifyStatic, { root: join(__dirname, '..', 'web'), prefix: '/' });
   // Halt/failure evidence (screenshots, page HTML) captured by the sender.
   app.register(fastifyStatic, { root: incidentsDir, prefix: '/incidents/', decorateReply: false });
+
+  // Deep links (LINKS.md): a URL someone else wrote that opens a PRE-FILLED dashboard screen.
+  // They never write anything — the operator still presses the screen's own button. The static
+  // plugin only serves index.html at `/`, so these redirect there with the query string intact
+  // and app.js's applyDeepLink() does all the parsing, in one place.
+  const deepLink = (name: string) => async (req: FastifyRequest, reply: FastifyReply) => {
+    const raw = req.raw.url ?? '';
+    const q = raw.includes('?') ? raw.slice(raw.indexOf('?') + 1) : '';
+    return reply.redirect(`/?link=${name}${q ? `&${q}` : ''}`);
+  };
+  app.get('/add', deepLink('add'));
+  app.get('/add-event', deepLink('event'));
 
   app.post('/api/profiles', async (req, reply) => {
     const { url, cohort, message, kind: kindRaw, prioritize, resend } =

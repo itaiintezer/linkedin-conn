@@ -120,6 +120,24 @@ The confirmation tells you exactly when the first of them goes out ("first ones 
 after each batch — it's for the exceptional list, not a setting you leave on. You can also
 just ask your assistant ("add these people first in line") and it does the same thing.
 
+### Someone sent you a link
+
+Colleagues can send you links (usually in Slack) that open The Machine with the work already
+filled in. **Clicking one never sends anything.** It only fills in a screen, and you still
+press the button. The links only work on your own computer, while The Machine is running.
+
+- **A link to add people** (`localhost:4400/add?…`) opens **Add to Queue** with the people
+  listed as **connection requests**, in a new cohort named after today's date, with **no note**.
+  Check the list, change the cohort or add a note if you want, then press **Enqueue**. If the
+  link had something in it that isn't a LinkedIn profile, a red note under the button names it.
+- **A link to an event** (`localhost:4400/add-event?…`) opens **Connections** with a purple
+  banner naming the event. Search, tick the people you want to invite, and press **Invite to
+  event**. It is already pointed at that event. That builds the event's draft; arm it from
+  **Events** as usual. If the banner is red, the event's campaign is already armed or finished
+  and can't take more people. Press **Done** to put the banner away.
+
+If you're the one writing these links, see [LINKS.md](LINKS.md).
+
 ## 4. Reading the dashboard
 There are two conveyors: **invites** on top, and **messages** below it. The messages one
 stays folded away as a single slim row until you actually have a message campaign, so an

@@ -1578,6 +1578,18 @@ body > .drawer {
   background: var(--brand-50); border: 1px solid var(--brand-100);
   border-radius: var(--radius-sm); animation: rise .18s ease both;
 }
+/* Opened from an event link: which event the selection is for. Indigo, the event colour. */
+.link-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin: 0 0 14px; padding: 12px 18px;
+  background: var(--indigo-50); border: 1px solid var(--indigo-100);
+  border-radius: var(--radius-sm); animation: rise .18s ease both;
+}
+.link-banner-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.link-banner-txt strong { color: var(--indigo-700); font-size: 14.5px; overflow-wrap: anywhere; }
+.link-banner-txt span { color: var(--ink-2); font-size: 13px; }
+.link-banner.is-blocked { background: var(--red-bg); border-color: #f3c5be; }
+.link-banner.is-blocked strong { color: var(--red); }
 .selection-count {
   font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--brand-700);
 }
